@@ -1,0 +1,27 @@
+# IDE
+*.iml
+.idea/
+.DS_Store
+
+# Gradle
+.gradle/
+build/
+.kotlin/
+local.properties
+
+# Android
+/captures
+.externalNativeBuild
+.cxx
+*.apk
+*.aab
+*.hprof
+
+# Engine compiled binaries
+engine/lx
+engine/t[0-9]*
+engine/*.dSYM
+engine/*.o
+
+# Runtime template APK (generated, not source)
+runtime/src/main/assets/runtime/template.apk

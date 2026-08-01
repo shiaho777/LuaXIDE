@@ -1,0 +1,73 @@
+=== t1 hello ===
+hello, luax!
+3
+ab
+4
+nil	true	false
+number	string	table	nil	function
+=== t2 arith ===
+10	4	21	3.5	3	1	1024
+4
+true	true	false	true	true
+yes
+y
+nil
+1	7	4	-1	16	16
+inf
+=== t3 control ===
+if yes
+while	1
+while	2
+while	3
+for	1
+for	2
+for	3
+step	10
+step	6
+step	2
+repeat once
+loop	1
+loop	2
+b
+=== t4 funcs ===
+5
+1	2	3
+15	30
+1
+10	20
+10	20
+2	10	20
+610
+false	boom
+true	42
+=== t5 tables ===
+3
+10	20	30
+hi	yo	hi
+i	1	10
+i	2	20
+i	3	30
+pairs count	5
+4	40
+5	10
+a-b-c
+5
+2	6
+2	1
+=== t6 strings ===
+5
+HELLO
+hello
+hello
+llo
+ababab
+n=42 b=true
+124
+nil
+4
+=== t7 meta ===
+hi lua
+<Obj lua>
+99
+function: 0x86d002820
+dog speaks
