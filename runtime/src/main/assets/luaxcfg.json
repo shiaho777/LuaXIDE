@@ -1,0 +1,7 @@
+{
+  "appName": "LuaX App",
+  "packageName": "dev.luaxide.runtime",
+  "versionName": "1.0.0",
+  "versionCode": 1,
+  "entryFile": "main.lua"
+}

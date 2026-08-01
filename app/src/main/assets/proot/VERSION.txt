@@ -1,0 +1,4 @@
+proot 5.1.107.84 (termux)
+libtalloc 2.4.3
+libandroid-shmem 0.7
+source: https://packages.termux.dev/apt/termux-main
