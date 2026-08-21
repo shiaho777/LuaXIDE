@@ -18,6 +18,10 @@ import dev.luaxide.engine.BreakpointSpec
 import dev.luaxide.engine.DebugState
 import dev.luaxide.engine.EngineHost
 import dev.luaxide.engine.RunResult
+import dev.luaxide.engine.UiNode
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import dev.luaxide.log.LogLevel
 import dev.luaxide.log.LogSource
 import dev.luaxide.log.LogStore
@@ -737,7 +741,59 @@ print("got", n)
 
 
     fun onEvent(handlerId: Int) {
-        viewModelScope.launch { _result.value = engine.invoke(handlerId) }
+        viewModelScope.launch { publishResult(engine.invoke(handlerId)) }
+    }
+
+    /**
+     * Single outlet for every engine result (run, event invoke, tick invoke).
+     * Publishes to the UI and keeps the App-side tick loop in sync.
+     */
+    private fun publishResult(result: RunResult) {
+        _result.value = result
+        rescheduleTicks(result)
+    }
+
+    // ---- App-side tick loop -------------------------------------------------
+    // Contract with Lua: a node with an `onTick` handler prop plus a numeric
+    // `interval` prop (ms) asks the App to invoke onTick on a timer. The engine
+    // has no timer of its own (step-limit forbids busy loops), so the App owns
+    // the clock — this is what makes the pure-Lua Snake example work. Handler
+    // ids are re-assigned every tree rebuild, so each round re-reads them.
+
+    private var tickJob: Job? = null
+
+    private fun findTicker(node: UiNode): Pair<Int, Long>? {
+        val id = node.handler("onTick")
+        if (id != null) {
+            val interval = node.number("interval", 300.0).toLong().coerceAtLeast(50L)
+            return id to interval
+        }
+        for (child in node.children) findTicker(child)?.let { return it }
+        return null
+    }
+
+    private fun rescheduleTicks(result: RunResult?) {
+        tickJob?.cancel()
+        tickJob = null
+        val tree = result?.tree ?: return
+        if (!result.ok) return
+        val ticker = findTicker(tree) ?: return
+        tickJob = viewModelScope.launch {
+            var handlerId = ticker.first
+            var interval = ticker.second
+            while (isActive) {
+                delay(interval)
+                val r = engine.invoke(handlerId)
+                _result.value = r
+                val next = r.tree?.let { findTicker(it) }
+                if (next == null) {
+                    rescheduleTicks(r) // tree dropped onTick: stop cleanly
+                    return@launch
+                }
+                handlerId = next.first
+                interval = next.second
+            }
+        }
     }
 
     fun newFile(name: String) = newFileIn("", name)
@@ -1062,7 +1118,7 @@ print("got", n)
             poll.cancel()
             _waitingStdin.value = false
         }
-        _result.value = result
+        publishResult(result)
         absorbProgramResult(result, sourceLabel = (sourceLabel ?: path)?.takeIf { isLuaPath(it) } ?: path ?: "main.lua")
         _busy.value = false
     }

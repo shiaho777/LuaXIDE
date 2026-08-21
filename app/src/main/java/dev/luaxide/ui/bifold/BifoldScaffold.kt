@@ -5,6 +5,7 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -130,9 +131,15 @@ fun BifoldScaffold(
                     state.mode = BifoldMode.BOTH
                     scope.launch { ratioAnim.snapTo(newRatio) }
                 },
-                onDragEnd = {
+                onDragEnd = { velocityPx ->
                     dragging = false
+                    // velocityPx is px/s; normalize to ratio/s by the usable pane width.
+                    // A fast flick commits to the far anchor even before the ratio crosses
+                    // the positional threshold — "decide by momentum, not raw position".
+                    val vRatio = velocityPx / usable
                     when {
+                        vRatio > 1.5f -> state.mode = BifoldMode.CODE
+                        vRatio < -1.5f -> state.mode = BifoldMode.PREVIEW
                         state.ratio < 0.12f -> state.mode = BifoldMode.PREVIEW
                         state.ratio > 0.88f -> state.mode = BifoldMode.CODE
                         else -> {
@@ -168,7 +175,7 @@ fun BifoldScaffold(
 private fun Hinge(
     progress: Float,
     onDrag: (Float) -> Unit,
-    onDragEnd: () -> Unit,
+    onDragEnd: (Float) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val cs = MaterialTheme.colorScheme
@@ -180,10 +187,15 @@ private fun Hinge(
                 alpha = 0.55f + 0.45f * (1f - edge * 0.65f)
             }
             .pointerInput(Unit) {
+                val tracker = VelocityTracker()
                 detectHorizontalDragGestures(
-                    onDragEnd = onDragEnd,
-                    onDragCancel = onDragEnd,
-                    onHorizontalDrag = { _, dragAmount -> onDrag(dragAmount) },
+                    onDragStart = { tracker.resetTracking() },
+                    onDragEnd = { onDragEnd(tracker.calculateVelocity().x) },
+                    onDragCancel = { onDragEnd(0f) },
+                    onHorizontalDrag = { change, dragAmount ->
+                        tracker.addPosition(change.uptimeMillis, change.position)
+                        onDrag(dragAmount)
+                    },
                 )
             },
     ) {

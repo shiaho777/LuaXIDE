@@ -85,7 +85,6 @@ class EngineHost(
     fun cancel() {
         val h = handle
         if (h != 0L) LuaxNative.nativeCancel(h)
-        debugStop()
     }
 
     fun pushStdin(line: String) {
