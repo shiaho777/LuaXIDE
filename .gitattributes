@@ -1,0 +1,10 @@
+# Normalize line endings across platforms; binaries are never diffed.
+* text=auto
+*.sh text eol=lf
+*.bat text eol=crlf
+*.png binary
+*.jar binary
+*.apk binary
+*.zip binary
+*.so binary
+*.jks binary
