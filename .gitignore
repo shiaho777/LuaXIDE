@@ -23,6 +23,8 @@ engine/lx_cov
 engine/t[0-9]*
 engine/*.dSYM
 engine/*.o
+# Generated test output (run `make -C engine test > engine/TEST_OUTPUT.txt` to capture)
+engine/TEST_OUTPUT.txt
 # Coverage artifacts
 engine/cov/
 engine/*.gcov
