@@ -4,8 +4,11 @@
 .DS_Store
 
 # Gradle
+# scoped: a bare `build/` would also ignore the dev/luaxide/build source package
 .gradle/
-build/
+/build/
+app/build/
+runtime/build/
 .kotlin/
 local.properties
 
