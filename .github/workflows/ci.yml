@@ -10,6 +10,11 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Latest run wins: superseded PR runs are cancelled to save CI minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   engine-tests:
     name: engine-tests
