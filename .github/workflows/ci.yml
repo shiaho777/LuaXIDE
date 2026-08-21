@@ -1,0 +1,36 @@
+name: CI
+
+# CI is the merge gate for PRs into main.
+# It never closes Issues — Issues close via "Fixes #N" when the PR merges.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  engine-tests:
+    name: engine-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build & run engine tests (t1-t24)
+        run: make -C engine test
+
+  android-build:
+    name: android-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build debug APKs (:app and :runtime)
+        run: ./gradlew :app:assembleDebug :runtime:assembleDebug --stacktrace
+      - name: Sync runtime template APK into app assets
+        run: ./gradlew :runtime:syncRuntimeTemplate --stacktrace
