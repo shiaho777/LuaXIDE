@@ -59,6 +59,10 @@ CI 在每个 PR 上运行同样的检查(`engine-tests` 与 `android-build` 两�
 - [docs/PROGRAM_MODE.md](docs/PROGRAM_MODE.md) — Program Mode(UI 树 → 预览,否则 → 终端)与交互终端命令
 - [docs/PROOT_AND_STDIN.md](docs/PROOT_AND_STDIN.md) — proot 用户态 rootfs、阻塞 stdin 与取消机制
 
+## 第三方组件
+
+引擎与 Kotlin 源码为原创;打包与执行链路使用了若干第三方组件(ARSCLib、apksig、Termux proot 等),清单、版本与许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
 ## 参与贡献
 
 欢迎 Issue 与 PR。流程与约定见 [CONTRIBUTING.md](CONTRIBUTING.md);编码代理请先读 [AGENTS.md](AGENTS.md)。
