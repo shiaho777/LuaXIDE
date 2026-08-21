@@ -68,3 +68,7 @@ CI 在每个 PR 上运行同样的检查(`engine-tests` 与 `android-build` 两�
 欢迎 Issue 与 PR。流程与约定见 [CONTRIBUTING.md](CONTRIBUTING.md);编码代理请先读 [AGENTS.md](AGENTS.md)。
 
 交付环:**Issue → PR(base=main,含 `Fixes #N`)→ CI 门禁 → merge → Issue 自动关闭**。
+
+## License
+
+本项目以 [Apache-2.0](LICENSE) 许可发布;随仓库分发的第三方组件及其许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
