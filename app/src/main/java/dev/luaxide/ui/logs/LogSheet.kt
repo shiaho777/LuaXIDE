@@ -6,6 +6,7 @@ import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -68,10 +69,16 @@ fun LogSheet(
     val scope = rememberCoroutineScope()
     val headerHeight = 40.dp
 
-    fun snapNearest(target: Float) {
+    fun snapNearest(target: Float, velocity: Float = 0f) {
         val anchors = listOf(SheetAnchors.COLLAPSED, SheetAnchors.HALF, SheetAnchors.FULL)
-        val nearest = anchors.minBy { abs(it - target) }
-        scope.launch { fraction.animateTo(nearest, spring(stiffness = Spring.StiffnessMediumLow)) }
+        // velocity is fraction-of-screen-height per second (signed: + = expanding).
+        // A flick overrides the nearest-anchor decision so the sheet follows momentum.
+        val chosen = when {
+            velocity > 1f -> SheetAnchors.FULL
+            velocity < -1f -> SheetAnchors.COLLAPSED
+            else -> anchors.minBy { abs(it - target) }
+        }
+        scope.launch { fraction.animateTo(chosen, spring(stiffness = Spring.StiffnessMediumLow)) }
     }
 
     val count by store.rawCount.collectAsState()
@@ -93,14 +100,21 @@ fun LogSheet(
                         scope.launch { fraction.animateTo(target, spring(stiffness = Spring.StiffnessMediumLow)) }
                     }
                     .pointerInput(Unit) {
+                        val tracker = VelocityTracker()
                         detectVerticalDragGestures(
-                            onVerticalDrag = { _, dragAmount ->
+                            onDragStart = { tracker.resetTracking() },
+                            onVerticalDrag = { change, dragAmount ->
+                                tracker.addPosition(change.uptimeMillis, change.position)
                                 val delta = -dragAmount / screenHeightPx
                                 scope.launch {
                                     fraction.snapTo((fraction.value + delta).coerceIn(0f, SheetAnchors.FULL))
                                 }
                             },
-                            onDragEnd = { snapNearest(fraction.value) },
+                            onDragEnd = {
+                                val vFrac = (-tracker.calculateVelocity().y / screenHeightPx).coerceIn(-8f, 8f)
+                                snapNearest(fraction.value, vFrac)
+                            },
+                            onDragCancel = { snapNearest(fraction.value) },
                         )
                     },
             ) {

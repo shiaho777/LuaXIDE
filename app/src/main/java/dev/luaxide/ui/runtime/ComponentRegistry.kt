@@ -38,6 +38,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
@@ -147,10 +148,22 @@ private fun TextComponent(node: UiNode, onEvent: OnEvent, renderChildren: Render
     val text = node.string("text", node.string("value", ""))
     val size = node.number("size", 16.0).sp
     val fontPath = node.string("font", node.string("typeface", ""))
+    val color = parseColor(node.string("color"), cs.onSurface)
+    val animate = node.bool("animate", true)
     val resolver = LocalAssetResolver.current
     val family = remember(fontPath) {
         val file = if (fontPath.isBlank()) null else resolver.resolveFile(fontPath)
         if (file != null) FontFamily(Font(file = file, weight = FontWeight.Normal)) else FontFamily.Default
+    }
+    if (!animate) {
+        // Cheap path for fast-updating text (game boards, clocks): no AnimatedContent.
+        Text(
+            text = text,
+            color = color,
+            fontSize = size,
+            fontFamily = family,
+        )
+        return
     }
     AnimatedContent(
         targetState = text,
@@ -159,11 +172,23 @@ private fun TextComponent(node: UiNode, onEvent: OnEvent, renderChildren: Render
     ) { value ->
         Text(
             text = value,
-            color = cs.onSurface,
+            color = color,
             fontSize = size,
             fontFamily = family,
             modifier = Modifier.animateContentSize(animationSpec = Motion.contentSize),
         )
+    }
+}
+
+/** Parse "#RRGGBB" or "#AARRGGBB" (also bare RRGGBB); falls back to [fallback]. */
+private fun parseColor(hex: String, fallback: Color): Color {
+    val h = hex.removePrefix("#")
+    if (h.length != 6 && h.length != 8) return fallback
+    val v = h.toLongOrNull(16) ?: return fallback
+    return if (h.length == 8) {
+        Color((v and 0xFFFFFFFFL).toInt())
+    } else {
+        Color(0xFF000000L or v)
     }
 }
 

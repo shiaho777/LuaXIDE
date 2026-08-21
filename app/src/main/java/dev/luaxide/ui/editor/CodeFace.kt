@@ -1,6 +1,7 @@
 package dev.luaxide.ui.editor
 
 import androidx.compose.animation.AnimatedVisibility
+import dev.luaxide.ui.runtime.Motion
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -216,11 +217,19 @@ fun CodeFace(
             onGoDef = { goToDefinition() },
         )
 
-        AnimatedVisibility(visible = find.visible) {
+        AnimatedVisibility(
+            visible = find.visible,
+            enter = Motion.listEnter(),
+            exit = Motion.listExit(),
+        ) {
             FindReplaceBar(editor)
         }
 
-        AnimatedVisibility(visible = paletteOpen) {
+        AnimatedVisibility(
+            visible = paletteOpen,
+            enter = Motion.listEnter(),
+            exit = Motion.listExit(),
+        ) {
             ComponentPalette(
                 onInsert = { entry ->
                     editor.insertText(entry.snippet)
@@ -229,7 +238,11 @@ fun CodeFace(
             )
         }
 
-        AnimatedVisibility(visible = completions.isNotEmpty()) {
+        AnimatedVisibility(
+            visible = completions.isNotEmpty(),
+            enter = Motion.listEnter(),
+            exit = Motion.listExit(),
+        ) {
             CompletionBar(
                 items = completions,
                 onPick = { applyItem(it) },
@@ -298,6 +311,7 @@ private fun CompletionBar(
                 items(items, key = { it.label + it.detail }) { item ->
                     Row(
                         modifier = Modifier
+                            .animateItem()
                             .fillMaxWidth()
                             .clickable { onPick(item) }
                             .padding(horizontal = 12.dp, vertical = 8.dp),
