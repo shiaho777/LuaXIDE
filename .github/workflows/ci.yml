@@ -34,7 +34,7 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v3
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       - name: Build debug APKs (:app and :runtime)
         run: ./gradlew :app:assembleDebug :runtime:assembleDebug --stacktrace
       - name: Sync runtime template APK into app assets
