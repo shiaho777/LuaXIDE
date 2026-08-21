@@ -1,6 +1,7 @@
 package dev.luaxide.ui.editor
 
 import androidx.compose.animation.AnimatedVisibility
+import dev.luaxide.ui.runtime.Motion
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -165,7 +166,11 @@ fun DebugBar(
                 }
             }
 
-            AnimatedVisibility(visible = panelOpen || paused != null) {
+            AnimatedVisibility(
+                visible = panelOpen || paused != null,
+                enter = Motion.listEnter(),
+                exit = Motion.listExit(),
+            ) {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     if (panelOpen) {
                         Row(
@@ -259,6 +264,7 @@ private fun BreakpointListPanel(
                 items(breakpoints.toList().sortedBy { it.first }, key = { it.first }) { (line, bp) ->
                     Row(
                         modifier = Modifier
+                            .animateItem()
                             .fillMaxWidth()
                             .clickable { onJumpToLine(line) }
                             .padding(vertical = 2.dp),
@@ -333,7 +339,7 @@ private fun WatchPanel(
                     items(watches, key = { it }) { expr ->
                         val w = values[expr]
                         Row(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                            modifier = Modifier.animateItem().fillMaxWidth().padding(vertical = 2.dp),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             Text(
@@ -589,6 +595,7 @@ private fun LocalsPanel(locals: List<DebugLocal>) {
                 items(locals, key = { it.name }) { local ->
                     Row(
                         modifier = Modifier
+                            .animateItem()
                             .fillMaxWidth()
                             .padding(vertical = 2.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),

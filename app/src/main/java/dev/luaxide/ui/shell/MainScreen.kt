@@ -1,5 +1,7 @@
 package dev.luaxide.ui.shell
 
+import androidx.compose.animation.AnimatedVisibility
+import dev.luaxide.ui.runtime.Motion
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -396,7 +398,11 @@ fun MainScreen(vm: EditorViewModel = viewModel()) {
             },
             bottomBar = {
                 Column {
-                    if (debugEnabled || debugState !is DebugState.Idle) {
+                    AnimatedVisibility(
+                        visible = debugEnabled || debugState !is DebugState.Idle,
+                        enter = Motion.listEnter(),
+                        exit = Motion.listExit(),
+                    ) {
                         DebugBar(
                             enabled = debugEnabled,
                             state = debugState,

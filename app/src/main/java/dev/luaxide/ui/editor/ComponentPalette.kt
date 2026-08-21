@@ -46,19 +46,19 @@ fun ComponentPalette(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             items(ComponentCatalog.entries, key = { it.type }) { entry ->
-                PaletteTile(entry = entry, onClick = { onInsert(entry) })
+                PaletteTile(entry = entry, onClick = { onInsert(entry) }, modifier = Modifier.animateItem())
             }
         }
     }
 }
 
 @Composable
-private fun PaletteTile(entry: CatalogEntry, onClick: () -> Unit) {
+private fun PaletteTile(entry: CatalogEntry, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val cs = MaterialTheme.colorScheme
     Surface(
         color = cs.surface,
         shape = RoundedCornerShape(12.dp),
-        modifier = Modifier.clickable(onClick = onClick),
+        modifier = modifier.clickable(onClick = onClick),
     ) {
         Column(
             modifier = Modifier

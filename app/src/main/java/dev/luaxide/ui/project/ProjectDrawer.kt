@@ -1,6 +1,7 @@
 package dev.luaxide.ui.project
 
 import androidx.compose.animation.AnimatedVisibility
+import dev.luaxide.ui.runtime.Motion
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.expandVertically
@@ -155,8 +156,8 @@ fun ProjectDrawer(
 
         AnimatedVisibility(
             visible = workspaceOpen,
-            enter = expandVertically() + fadeIn(),
-            exit = shrinkVertically() + fadeOut(),
+            enter = Motion.listEnter(),
+            exit = Motion.listExit(),
         ) {
             WorkspaceList(
                 projects = projects,
@@ -242,6 +243,7 @@ fun ProjectDrawer(
                             openPath = openPath,
                             entryFile = project?.entryFile,
                             actions = actions,
+                            modifier = Modifier.animateItem(),
                         )
                     }
                 }
@@ -631,6 +633,7 @@ private fun SearchRow(
     openPath: String?,
     entryFile: String?,
     actions: TreeActions,
+    modifier: Modifier = Modifier,
 ) {
     val cs = MaterialTheme.colorScheme
     val node = row.node
@@ -640,7 +643,7 @@ private fun SearchRow(
 
     Box {
         Row(
-            modifier = Modifier
+            modifier = modifier
                 .fillMaxWidth()
                 .combinedClickable(
                     onClick = {

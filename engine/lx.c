@@ -49,7 +49,7 @@ static inline Value vCfn(CFn* c){Value v; v.tag=T_CFN; v.u.c=c; return v;}
 /* AST node (defined early so forward decls can use it) */
 enum { K_CHUNK,K_LOCAL,K_ASSIGN,K_CALLSTAT,K_DO,K_IF,K_WHILE,K_REPEAT,K_NFOR,K_GFOR,K_RET,K_BREAK,
   K_FUNCDECL,K_LABEL,K_GOTO,K_NIL,K_TRUE,K_FALSE,K_NUM,K_STR,K_VARARG,K_NAME,K_INDEX,K_CALL,K_METHODCALL,
-  K_BINOP,K_UNOP,K_TABLE,K_FUNC,K_FIELD };
+  K_BINOP,K_UNOP,K_TABLE,K_FUNC,K_FIELD,K_PAREN };
 struct Node{int kind,line;double num;Str*str;char*name;int op;Node*a,*b,*c,*body;Node**list;int nlist;Node**list2;int nlist2;char**names;int nnames;bool vararg,isLocal,isKv;char*method;};
 struct Flow{int kind;int nret;Value rets[64];};
 
@@ -119,16 +119,22 @@ static void* xalloc(State* S, size_t n){ n=(n+15)&~((size_t)15);
   void* p=S->blk+S->blkused; S->blkused+=n; return p; }
 static void* xcalloc(State* S,size_t n){ void*p=xalloc(S,n); memset(p,0,n); return p; }
 static char* xstrndup(State* S,const char* s,size_t n){ char*p=xalloc(S,n+1); memcpy(p,s,n); p[n]=0; return p; }
+#if defined(__clang__)||defined(__GNUC__)
+#define LX_NORETURN __attribute__((noreturn))
+#else
+#define LX_NORETURN
+#endif
+static void lx_error(State* S,const char* fmt,...) LX_NORETURN;
 static void lx_error(State* S,const char* fmt,...){ va_list ap; va_start(ap,fmt);
   vsnprintf(S->errmsg,sizeof(S->errmsg),fmt,ap); va_end(ap); longjmp(S->err,1); }
 /* Runtime error: auto-prefixes "line N: " from S->curLine (tracked as statements
  * execute), so failures like "attempt to call a nil value" are locatable in the
  * editor. Parser errors use lx_error directly since they already know their line. */
 static void dbg_pause_now(State*S,Env*env,int line,int reason);
+static void lx_rt_error(State* S,const char* fmt,...) LX_NORETURN;
 static void lx_rt_error(State* S,const char* fmt,...){
   char msg[400]; va_list ap; va_start(ap,fmt); vsnprintf(msg,sizeof(msg),fmt,ap); va_end(ap);
-  if(S->curLine>0) snprintf(S->errmsg,sizeof(S->errmsg),"line %d: %s",S->curLine,msg);
-  else snprintf(S->errmsg,sizeof(S->errmsg),"%s",msg);
+  if(S->curLine>0) snprintf(S->errmsg,sizeof(S->errmsg),"line %d: %s",S->curLine,msg); else snprintf(S->errmsg,sizeof(S->errmsg),"%s",msg);
   if(S->debug_enabled && S->break_on_error && !S->dbg_eval_depth && S->cur_env
       && !(msg[0] && strstr(msg,"debug stopped by user"))){
     int line=S->curLine>0?S->curLine:1;
@@ -179,12 +185,17 @@ static Str* readStr(Lex*L,char q){ char buf[4096];size_t m=0;
         case'f':c='\f';break;case'v':c='\v';break;case'x':c=(char)readHex(L);break;
         case'z':while(L->n&&isspace((unsigned char)L->s[0])){if(L->s[0]=='\n')L->line++;L->s++;L->n--;}continue;
         default:if(isdigit((unsigned char)e)){L->s--;L->n++;c=(char)readDec(L);}else c=e;}}
-    if(m<sizeof(buf))buf[m++]=c; }
+    if(m>=sizeof(buf))lx_error(L->S,"line %d: string too long",L->line); buf[m++]=c; }
   if(!L->n)lx_error(L->S,"line %d: unterminated string",L->line); L->s++;L->n--; return newStr(L->S,buf,m); }
-static void skipLong(Lex*L,int sep){ while(L->n){ if(L->s[0]==']'){int k=0;const char*p=L->s;size_t nn=L->n;while(nn&&p[0]==']'){k++;p++;nn--;}if(k==sep+1){L->s=p;L->n=nn;return;}} if(L->s[0]=='\n')L->line++;L->s++;L->n--; } }
+/* does the input at L->s begin a long-bracket close "]" ("="*sep) "]" ?
+ * Lua long-bracket closers are ] followed by exactly sep '=' then ]; the old
+ * code counted consecutive ']' chars which wrongly accepted e.g. ]]==] as a
+ * level-0 closer and ]]] as a level-2 closer. */
+static int longCloseAt(Lex*L,int sep){ if(L->n<1||L->s[0]!=']')return 0; size_t i=1; for(int e=0;e<sep;e++){ if(i>=L->n||L->s[i]!='=')return 0; i++; } if(i>=L->n||L->s[i]!=']')return 0; return 1; }
+static void skipLong(Lex*L,int sep){ while(L->n){ if(L->s[0]==']'&&longCloseAt(L,sep)){ L->s+=sep+2; L->n-=sep+2; return; } if(L->s[0]=='\n')L->line++;L->s++;L->n--; } }
 static Str* longStr(Lex*L,int sep){ if(L->n&&L->s[0]=='\r'){L->s++;L->n--;} if(L->n&&L->s[0]=='\n'){L->s++;L->n--;L->line++;}
   char*buf=NULL;size_t m=0,cap=0;
-  while(L->n){ if(L->s[0]==']'){int k=0;const char*p=L->s;size_t nn=L->n;while(nn&&p[0]==']'){k++;p++;nn--;}if(k==sep+1){L->s=p;L->n=nn;Str*s=newStr(L->S,buf?buf:"",m);if(buf)free(buf);return s;}} if(L->s[0]=='\n')L->line++; if(m+1>cap){cap=cap?cap*2:64;buf=realloc(buf,cap);} buf[m++]=*L->s++;L->n--; } lx_error(L->S,"line %d: unterminated long string",L->line); return NULL; }
+  while(L->n){ if(L->s[0]==']'&&longCloseAt(L,sep)){ L->s+=sep+2; L->n-=sep+2; Str*s=newStr(L->S,buf?buf:"",m); if(buf)free(buf); return s; } if(L->s[0]=='\n')L->line++; if(m+1>cap){cap=cap?cap*2:64;buf=realloc(buf,cap);} buf[m++]=*L->s++;L->n--; } lx_error(L->S,"line %d: unterminated long string",L->line); return NULL; }
 static void lexOne(Lex*L){ State*S=L->S; L->cur=L->nxt; S->parseLine=L->cur.line;
   while(L->n){ char c=*L->s;
     if(c==' '||c=='\t'||c=='\r'){L->s++;L->n--;continue;} if(c=='\n'){L->line++;L->s++;L->n--;continue;}
@@ -230,7 +241,7 @@ static Node* suffix(P*p,Node*base){ State*S=p->S;
     else break; }
   return base; }
 static Node* prefixexp(P*p){ State*S=p->S;Node*base=NULL;
-  if(p->L.cur.kind=='('){pnext(p);base=expr(p);expect(p,')',"')'");base=suffix(p,base);}
+  if(p->L.cur.kind=='('){pnext(p);base=expr(p);expect(p,')',"')'"); /* a parenthesised expression always adjusts to a single value (Lua semantics); wrapping it in K_PAREN collapses any multi-value result so (f()) yields one value. Subsequent suffixes ( . [ ( ) apply to that single value. */ Node*pn_=node(S,K_PAREN);pn_->a=base;base=suffix(p,pn_); }
   else if(p->L.cur.kind==T_NAME){base=node(S,K_NAME);base->name=p->L.cur.name;pnext(p);base=suffix(p,base);}
   else lx_error(S,"line %d: unexpected symbol",p->L.cur.line); return base; }
 static Node* simpleexp(P*p){ State*S=p->S;Tok*t=&p->L.cur;
@@ -284,8 +295,10 @@ static Node* stat(P*p){ State*S=p->S;int line=p->L.cur.line;
     Node*n=node(S,K_LOCAL);pn(S,n,p->L.cur.name);pnext(p);while(accept(p,',')){pn(S,n,p->L.cur.name);pnext(p);}Node*vals=node(S,0);if(accept(p,'=')){pl(S,vals,expr(p));while(accept(p,','))pl(S,vals,expr(p));}n->list=vals->list;n->nlist=vals->nlist;out=n;break;}
   case T_RETURN:{pnext(p);Node*n=node(S,K_RET);if(p->L.cur.kind!=';'&&p->L.cur.kind!=T_END&&p->L.cur.kind!=T_ELSE&&p->L.cur.kind!=T_ELSEIF&&p->L.cur.kind!=T_UNTIL&&p->L.cur.kind!=T_EOF){Node*e=node(S,0);pl(S,e,expr(p));while(accept(p,','))pl(S,e,expr(p));n->list=e->list;n->nlist=e->nlist;}accept(p,';');out=n;break;}
   case T_BREAK:pnext(p);out=node(S,K_BREAK);break;
-  case T_GOTO:{pnext(p);Node*n=node(S,K_GOTO);n->name=p->L.cur.name;pnext(p);out=n;break;}
-  case T_DBCOLON:{pnext(p);Node*n=node(S,K_LABEL);n->name=p->L.cur.name;pnext(p);out=n;break;}
+  /* LuaX is a Lua 5.1 subset: goto/labels are rejected at parse time rather
+   * than silently accepted and ignored (which would be a silent-correctness bug). */
+  case T_GOTO:pnext(p);lx_error(S,"line %d: 'goto' is not supported (LuaX is a Lua 5.1 subset)",p->L.cur.line);
+  case T_DBCOLON:pnext(p);lx_error(S,"line %d: labels are not supported (LuaX is a Lua 5.1 subset)",p->L.cur.line);
   default:break; }
   if(!out){
     Node*e=prefixexp(p);
@@ -334,18 +347,23 @@ static Str* toStrx(State*S,Value v){
   return newStr(S,buf,strlen(buf));
 }
 static Value indexVal(State*S,Value t,Value k){
-  for(int depth=0;depth<100;depth++){
+  /* Follow the __index chain. A cap guards against a self-referential
+   * metatable (a real loop, e.g. setmetatable(t,{__index=t})) which would
+   * otherwise hang the interpreter; 1024 is far beyond any sane prototype
+   * chain. Lua itself raises "loop in gettable" on cycles. */
+  for(int depth=0;depth<1024;depth++){
     if(t.tag==T_TAB){Value v=tget(t.u.t,k);if(v.tag!=T_NIL)return v;if(t.u.t->meta){Value mt=tget(t.u.t->meta,VSTR(newStr(S,"__index",7)));if(mt.tag==T_TAB){t=mt;continue;}if(mt.tag!=T_NIL){Value args[2]={t,k};return callValue(S,mt,2,args);}}return VNIL;}
     lx_rt_error(S,"attempt to index a %s value",lx_typename(t));
   }
-  return VNIL;
+  lx_rt_error(S,"loop in gettable (metatable __index chain too deep)");
+  return VNIL; /* unreachable: lx_rt_error does not return */
 }
 static void newIndex(State*S,Value t,Value k,Value v){
   if(t.tag==T_TAB){ if(tget(t.u.t,k).tag!=T_NIL){tset(S,t.u.t,k,v);return;} if(t.u.t->meta){Value mt=tget(t.u.t->meta,VSTR(newStr(S,"__newindex",10)));if(mt.tag==T_TAB){newIndex(S,mt,k,v);return;}if(mt.tag!=T_NIL){Value args[3]={t,k,v};callValue(S,mt,3,args);return;}} tset(S,t.u.t,k,v);return; }
   lx_rt_error(S,"attempt to index a %s value",lx_typename(t));
 }
 static void evalInto(State*S,Env*env,Node*e,Value*out,int*nout){
-  if(e->kind==K_CALL||e->kind==K_METHODCALL){ Value v=eval(S,env,e); int n=S->nret; if(n>64)n=64; for(int i=0;i<n;i++)out[i]=S->retbuf[i]; *nout=n; return; }
+  if(e->kind==K_CALL||e->kind==K_METHODCALL||e->kind==K_VARARG){ Value v=eval(S,env,e); (void)v; int n=S->nret; if(n>64)n=64; for(int i=0;i<n;i++)out[i]=S->retbuf[i]; *nout=n; return; }
   out[0]=eval(S,env,e);*nout=1;
 }
 static int buildArgs(State*S,Env*env,Node**args,int n,Value*argv){
@@ -393,6 +411,7 @@ static Value eval(State*S,Env*env,Node*e){
   case K_NUM:return VNUM(e->num); case K_STR:return VSTR(e->str);
   case K_VARARG:{ Value v=envGetFn(S,env,"..."); if(v.tag==T_TAB){ int n=tlen(v.u.t); S->nret=n; for(int i=0;i<n&&i<64;i++)S->retbuf[i]=tget(v.u.t,VNUM(i+1)); return n?S->retbuf[0]:VNIL;} S->nret=0; return VNIL; }
   case K_NAME:return envGetFn(S,env,e->name);
+  case K_PAREN:{ Value v=eval(S,env,e->a); S->nret=1; S->retbuf[0]=v; return v; }
   case K_INDEX:{ Value t=eval(S,env,e->a); Value k=eval(S,env,e->b); return indexVal(S,t,k); }
   case K_CALL:{ Value f=eval(S,env,e->a); Value argv[256]; int na=buildArgs(S,env,e->list,e->nlist,argv); return callValue(S,f,na,argv); }
   case K_METHODCALL:{ Value o=eval(S,env,e->a); Value f=indexVal(S,o,VSTR(newStr(S,e->method,strlen(e->method)))); Value argv[256]; argv[0]=o; int na=1+buildArgs(S,env,e->list,e->nlist,argv+1); return callValue(S,f,na,argv); }
@@ -408,9 +427,15 @@ static Value eval(State*S,Env*env,Node*e){
     if(op=='<'||op=='>'||op==T_LE||op==T_GE){ double x=toNum(S,a),y=toNum(S,b); switch(op){case'<':return VBOOL(x<y);case'>':return VBOOL(x>y);case T_LE:return VBOOL(x<=y);case T_GE:return VBOOL(x>=y);} }
     if(op=='^'){return VNUM(pow(toNum(S,a),toNum(S,b)));}
     double x=toNum(S,a),y=toNum(S,b); switch(op){case'+':return VNUM(x+y);case'-':return VNUM(x-y);case'*':return VNUM(x*y);case'/':return VNUM(x/y);case'%':return VNUM(x-floor(x/y)*y);case T_IDIV:return VNUM(floor(x/y));
-      case'|':return VNUM((double)((int64_t)x|(int64_t)y));case'&':return VNUM((double)((int64_t)x&(int64_t)y));case'~':return VNUM((double)((int64_t)x^(int64_t)y));case T_SHL:return VNUM((double)((int64_t)x<<((int64_t)y&63)));case T_SHR:return VNUM((double)((int64_t)x>>((int64_t)y&63)));} }
+      case'|':return VNUM((double)((int64_t)x|(int64_t)y));case'&':return VNUM((double)((int64_t)x&(int64_t)y));case'~':return VNUM((double)((int64_t)x^(int64_t)y));case T_SHL:return VNUM((double)((int64_t)x<<((int64_t)y&63)));case T_SHR:return VNUM((double)((int64_t)x>>((int64_t)y&63)));} return VNIL; }
   }
-  return VNIL;
+  /* Defensive: the switch above is exhaustive over every AST kind that can
+   * reach eval (all expression kinds; statement kinds are handled by exec and
+   * never passed here). This line is therefore unreachable by construction —
+   * it exists only so the compiler sees a value-producing path after a switch
+   * and so a future invariant break surfaces as a clear error instead of UB. */
+  lx_rt_error(S,"internal error: bad expression node");
+  return VNIL; /* unreachable: lx_rt_error does not return */
 }
 static void assignTarget(State*S,Env*env,Node*t,Value v){
   if(t->kind==K_NAME) envAssignFn(S,env,t->name,v);
@@ -443,7 +468,6 @@ static int dbg_eval_value(State*S,Env*env,const char*expr,Value*out,char*err,int
     struct Flow fl=execChunk(S,env,chunk);
     Value v=VNIL;
     if(fl.nret>0) v=fl.rets[0];
-    else if(fl.kind==1) v=VNIL;
     if(out) *out=v;
     ok=1;
     if(err&&errlen) err[0]=0;
@@ -501,7 +525,6 @@ static void dbg_append_value(State*S,char**buf,size_t*sz,size_t*used,Value v,int
       buf_append(buf,sz,used,"}",1);
     } break;
     case T_FN: case T_CFN: buf_append(buf,sz,used,"\"[function]\"",12); break;
-    default: buf_append(buf,sz,used,"null",4); break;
   }
 }
 static void dbg_logpoint(State*S,Env*env,int line,const char*msg){
@@ -645,7 +668,7 @@ static struct Flow exec(State*S,Env*env,Node*st){
       for(int i=0;i<st->nlist;i++){ Node*eli=st->list[i]; if(toBool(eval(S,env,eli->a))){ Env*ne=newEnv(S,env); struct Flow fl=F_NORMAL; for(int j=0;j<eli->body->nlist;j++){fl=exec(S,ne,eli->body->list[j]);if(fl.kind)return fl;} return F_NORMAL; } }
       if(st->b){ Env*ne=newEnv(S,env); struct Flow fl=F_NORMAL; for(int i=0;i<st->b->nlist;i++){fl=exec(S,ne,st->b->list[i]);if(fl.kind)return fl;} } break; }
   case K_WHILE:{ while(toBool(eval(S,env,st->a))){ STEP(); Env*ne=newEnv(S,env); struct Flow fl=F_NORMAL; bool brk=false; for(int i=0;i<st->body->nlist;i++){fl=exec(S,ne,st->body->list[i]);if(fl.kind==1)return fl;if(fl.kind==2){brk=true;break;}} if(brk)break; } break; }
-  case K_REPEAT:{ while(1){ STEP(); Env*ne=newEnv(S,env); struct Flow fl=F_NORMAL; bool brk=false; for(int i=0;i<st->body->nlist;i++){fl=exec(S,ne,st->body->list[i]);if(fl.kind==1)return fl;if(fl.kind==2){brk=true;break;}} if(brk)break; if(toBool(eval(S,env,st->a)))break; } break; }
+  case K_REPEAT:{ while(1){ STEP(); Env*ne=newEnv(S,env); struct Flow fl=F_NORMAL; bool brk=false; for(int i=0;i<st->body->nlist;i++){fl=exec(S,ne,st->body->list[i]);if(fl.kind==1)return fl;if(fl.kind==2){brk=true;break;}} if(brk)break; /* the until condition can see locals declared in the loop body (Lua semantics) */ if(toBool(eval(S,ne,st->a)))break; } break; }
   case K_NFOR:{ double s=toNum(S,eval(S,env,st->a)), en=toNum(S,eval(S,env,st->b)), step=st->c?toNum(S,eval(S,env,st->c)):1;
       if(step>0){ for(double i=s;i<=en;i+=step){ STEP(); Env*ne=newEnv(S,env); envDeclareFn(S,ne,st->name,VNUM(i)); struct Flow fl=F_NORMAL; bool brk=false; for(int j=0;j<st->body->nlist;j++){fl=exec(S,ne,st->body->list[j]);if(fl.kind==1)return fl;if(fl.kind==2){brk=true;break;}} if(brk)break; } }
       else { for(double i=s;i>=en;i+=step){ STEP(); Env*ne=newEnv(S,env); envDeclareFn(S,ne,st->name,VNUM(i)); struct Flow fl=F_NORMAL; bool brk=false; for(int j=0;j<st->body->nlist;j++){fl=exec(S,ne,st->body->list[j]);if(fl.kind==1)return fl;if(fl.kind==2){brk=true;break;}} if(brk)break; } } break; }
@@ -666,6 +689,11 @@ static struct Flow execChunk(State*S,Env*env,Node*chunk){ struct Flow fl=F_NORMA
 
 /* ---------- stdlib ---------- */
 static CFn* mkCFn(State*S,const char*name,Value(*fn)(State*,int,Value*)){CFn*c=xalloc(S,sizeof(CFn));c->fn=fn;c->name=name;return c;}
+/* type guards: stdlib functions used to dereference argv[].u.* unconditionally,
+ * so string/table functions segfaulted on bad argument types (e.g. string.len(5)
+ * or table.insert(5,1)). These match Lua 5.1's luaL_checktype behavior instead. */
+static Str*   argStr(State*S,Value v,const char*fn){ if(v.tag!=T_STR)lx_rt_error(S,"bad argument #1 to '%s' (string expected, got %s)",fn,lx_typename(v)); return v.u.s; }
+static Table* argTab(State*S,Value v,const char*fn){ if(v.tag!=T_TAB)lx_rt_error(S,"bad argument #1 to '%s' (table expected, got %s)",fn,lx_typename(v)); return v.u.t; }
 static Value st_next(State*S,int argc,Value*argv);
 static Value st_ipiter(State*S,int argc,Value*argv);
 
@@ -673,16 +701,16 @@ static Value st_print(State*S,int argc,Value*argv){ for(int i=0;i<argc;i++){ Str
 static Value st_type(State*S,int argc,Value*argv){ const char*n=lx_typename(argv[0]); S->nret=1; S->retbuf[0]=VSTR(newStr(S,n,strlen(n))); return S->retbuf[0]; }
 static Value st_tostring(State*S,int argc,Value*argv){ S->nret=1; S->retbuf[0]=VSTR(toStrx(S,argv[0])); return S->retbuf[0]; }
 static Value st_tonumber(State*S,int argc,Value*argv){ Value v=argv[0]; if(v.tag==T_NUM){S->nret=1;S->retbuf[0]=v;return v;} if(v.tag==T_STR){char*e;double d=strtod(v.u.s->p,&e);if(e!=v.u.s->p){S->nret=1;S->retbuf[0]=VNUM(d);return S->retbuf[0];}} S->nret=1; S->retbuf[0]=VNIL; return VNIL; }
-static Value st_next(State*S,int argc,Value*argv){ Table*t=argv[0].u.t; Value k=argc>1?argv[1]:VNIL; int from=0;
+static Value st_next(State*S,int argc,Value*argv){ Table*t=argTab(S,argv[0],"next"); Value k=argc>1?argv[1]:VNIL; int from=0;
   if(k.tag!=T_NIL){ unsigned h=hashVal(k)&(t->cap-1); int found=-1; for(int i=0;i<t->cap;i++){int j=(h+i)&(t->cap-1);if(!t->e[j].used)break;if(valEq(t->e[j].k,k)){found=j;break;}} if(found<0)lx_rt_error(S,"invalid key to 'next'"); from=found+1; }
   for(int i=from;i<t->cap;i++){ if(t->e[i].used){ S->nret=2; S->retbuf[0]=t->e[i].k; S->retbuf[1]=t->e[i].v; return S->retbuf[0]; } } S->nret=1; S->retbuf[0]=VNIL; return VNIL; }
 static Value st_pairs(State*S,int argc,Value*argv){ S->nret=3; S->retbuf[0]=VCFN(mkCFn(S,"next",st_next)); S->retbuf[1]=argv[0]; S->retbuf[2]=VNIL; return S->retbuf[0]; }
-static Value st_ipiter(State*S,int argc,Value*argv){ Table*t=argv[0].u.t; int i=(int)argv[1].u.num+1; Value v=tget(t,VNUM(i)); if(v.tag==T_NIL){S->nret=1;S->retbuf[0]=VNIL;return VNIL;} S->nret=2; S->retbuf[0]=VNUM(i); S->retbuf[1]=v; return S->retbuf[0]; }
+static Value st_ipiter(State*S,int argc,Value*argv){ Table*t=argTab(S,argv[0],"ipairs"); int i=(int)argv[1].u.num+1; Value v=tget(t,VNUM(i)); if(v.tag==T_NIL){S->nret=1;S->retbuf[0]=VNIL;return VNIL;} S->nret=2; S->retbuf[0]=VNUM(i); S->retbuf[1]=v; return S->retbuf[0]; }
 static Value st_ipairs(State*S,int argc,Value*argv){ S->nret=3; S->retbuf[0]=VCFN(mkCFn(S,"iter",st_ipiter)); S->retbuf[1]=argv[0]; S->retbuf[2]=VNUM(0); return S->retbuf[0]; }
 static Value st_setmt(State*S,int argc,Value*argv){ if(argv[0].tag!=T_TAB)lx_rt_error(S,"bad argument #1 to 'setmetatable'"); if(argv[1].tag!=T_TAB&&argv[1].tag!=T_NIL)lx_rt_error(S,"bad argument #2 to 'setmetatable'"); argv[0].u.t->meta=argv[1].tag==T_TAB?argv[1].u.t:NULL; S->nret=1; S->retbuf[0]=argv[0]; return argv[0]; }
 static Value st_getmt(State*S,int argc,Value*argv){ Table*m=argv[0].tag==T_TAB?argv[0].u.t->meta:NULL; S->nret=1; S->retbuf[0]=m?VTAB(m):VNIL; return S->retbuf[0]; }
-static Value st_rawget(State*S,int argc,Value*argv){ S->nret=1; S->retbuf[0]=argv[0].tag==T_TAB?tget(argv[0].u.t,argv[1]):VNIL; return S->retbuf[0]; }
-static Value st_rawset(State*S,int argc,Value*argv){ tset(S,argv[0].u.t,argv[1],argv[2]); S->nret=1; S->retbuf[0]=argv[0]; return S->retbuf[0]; }
+static Value st_rawget(State*S,int argc,Value*argv){ S->nret=1; S->retbuf[0]=tget(argTab(S,argv[0],"rawget"),argv[1]); return S->retbuf[0]; }
+static Value st_rawset(State*S,int argc,Value*argv){ tset(S,argTab(S,argv[0],"rawset"),argv[1],argv[2]); S->nret=1; S->retbuf[0]=argv[0]; return S->retbuf[0]; }
 static Value st_raweq(State*S,int argc,Value*argv){ S->nret=1; S->retbuf[0]=VBOOL(valEq(argv[0],argv[1])); return S->retbuf[0]; }
 static Value st_assert(State*S,int argc,Value*argv){ if(!toBool(argv[0]))lx_rt_error(S,argc>1&&argv[1].tag==T_STR?argv[1].u.s->p:"assertion failed!"); for(int i=0;i<argc&&i<64;i++)S->retbuf[i]=argv[i]; S->nret=argc; return argc?argv[0]:VNIL; }
 static Value st_error(State*S,int argc,Value*argv){ Str*st=toStrx(S,argv[0]); lx_rt_error(S,"%.*s",(int)st->len,st->p); return VNIL; }
@@ -691,16 +719,16 @@ static Value st_pcall(State*S,int argc,Value*argv){ Value f=argv[0]; jmp_buf out
   if(setjmp(S->err)==0){ Value r=callValue(S,f,argc-1,argv+1); int n=S->nret; Value tmp[64]; tmp[0]=r; for(int i=1;i<n&&i<64;i++)tmp[i]=S->retbuf[i];
     memcpy(&S->err,&outer,sizeof(outer)); S->nstack=depth; S->retbuf[0]=VBOOL(1); for(int i=0;i<n&&i<63;i++)S->retbuf[1+i]=tmp[i]; S->nret=n+1; return S->retbuf[0]; }
   memcpy(&S->err,&outer,sizeof(outer)); S->nstack=depth; S->retbuf[0]=VBOOL(0); S->retbuf[1]=VSTR(newStr(S,S->errmsg,strlen(S->errmsg))); S->nret=2; return S->retbuf[0]; }
-static Value st_select(State*S,int argc,Value*argv){ if(argv[0].tag==T_STR&&argv[0].u.s->len==1&&argv[0].u.s->p[0]=='#'){S->nret=1;S->retbuf[0]=VNUM(argc-1);return S->retbuf[0];} int n=(int)toNum(S,argv[0]); if(n<0)n=argc+n-1; else if(n==0)lx_rt_error(S,"bad argument #1 to 'select'"); S->nret=argc-n; for(int i=0;i+n<argc;i++)S->retbuf[i]=argv[n+i]; return S->nret?S->retbuf[0]:VNIL; }
-static Value st_unpack(State*S,int argc,Value*argv){ Table*t=argv[0].u.t; int i=(int)(argc>1?toNum(S,argv[1]):1); int j=(int)(argc>2?toNum(S,argv[2]):tlen(t)); S->nret=0; for(;i<=j;i++)S->retbuf[S->nret++]=tget(t,VNUM(i)); return S->nret?S->retbuf[0]:VNIL; }
-static Value st_slen(State*S,int argc,Value*argv){S->nret=1;S->retbuf[0]=VNUM((double)argv[0].u.s->len);return S->retbuf[0];}
-static Value st_supper(State*S,int argc,Value*argv){Str*s=argv[0].u.s;char*b=xalloc(S,s->len);for(size_t i=0;i<s->len;i++)b[i]=toupper((unsigned char)s->p[i]);S->nret=1;S->retbuf[0]=VSTR(newStr(S,b,s->len));return S->retbuf[0];}
-static Value st_slower(State*S,int argc,Value*argv){Str*s=argv[0].u.s;char*b=xalloc(S,s->len);for(size_t i=0;i<s->len;i++)b[i]=tolower((unsigned char)s->p[i]);S->nret=1;S->retbuf[0]=VSTR(newStr(S,b,s->len));return S->retbuf[0];}
-static Value st_ssub(State*S,int argc,Value*argv){Str*s=argv[0].u.s;int len=(int)s->len;int i=(int)toNum(S,argv[1]);if(i<0)i+=len+1;if(i<1)i=1;int j=argc>2?(int)toNum(S,argv[2]):-1;if(j<0)j+=len+1;if(j>len)j=len;S->nret=1;S->retbuf[0]=(i<=j)?VSTR(newStr(S,s->p+i-1,j-i+1)):VSTR(newStr(S,"",0));return S->retbuf[0];}
-static Value st_srep(State*S,int argc,Value*argv){Str*s=argv[0].u.s;int n=(int)toNum(S,argv[1]);if(n<0)n=0;char*b=xalloc(S,(size_t)n*s->len+1);for(int k=0;k<n;k++)memcpy(b+k*s->len,s->p,s->len);S->nret=1;S->retbuf[0]=VSTR(newStr(S,b,(size_t)n*s->len));return S->retbuf[0];}
-static Value st_tinsert(State*S,int argc,Value*argv){Table*t=argv[0].u.t;if(argc==2){int n=tlen(t);tset(S,t,VNUM(n+1),argv[1]);}else{int p=(int)toNum(S,argv[1]);int n=tlen(t);for(int i=n;i>=p;i--)tset(S,t,VNUM(i+1),tget(t,VNUM(i)));tset(S,t,VNUM(p),argv[2]);}S->nret=0;return VNIL;}
-static Value st_tremove(State*S,int argc,Value*argv){Table*t=argv[0].u.t;int n=tlen(t);int p=argc>1?(int)toNum(S,argv[1]):n;if(p<1)p=1;if(p>n){S->nret=1;S->retbuf[0]=VNIL;return VNIL;}Value v=tget(t,VNUM(p));for(int i=p;i<n;i++)tset(S,t,VNUM(i),tget(t,VNUM(i+1)));tset(S,t,VNUM(n),VNIL);S->nret=1;S->retbuf[0]=v;return v;}
-static Value st_tconcat(State*S,int argc,Value*argv){Table*t=argv[0].u.t;Str*sep=argc>1&&argv[1].tag==T_STR?argv[1].u.s:NULL;int i=argc>2?(int)toNum(S,argv[2]):1;int j=argc>3?(int)toNum(S,argv[3]):tlen(t);char*buf=NULL;size_t m=0,cap=0;for(;i<=j;i++){Value v=tget(t,VNUM(i));if(v.tag!=T_STR&&v.tag!=T_NUM)lx_rt_error(S,"invalid value (table.concat)");Str*s=toStrx(S,v);if(m+s->len>cap){cap=cap?cap*2:64;while(m+s->len>cap)cap*=2;buf=realloc(buf,cap);}memcpy(buf+m,s->p,s->len);m+=s->len;if(i<j&&sep){if(m+sep->len>cap){cap=cap?cap*2:64;while(m+sep->len>cap)cap*=2;buf=realloc(buf,cap);}memcpy(buf+m,sep->p,sep->len);m+=sep->len;}}S->nret=1;S->retbuf[0]=m?VSTR(newStr(S,buf,m)):VSTR(newStr(S,"",0));if(buf)free(buf);return S->retbuf[0];}
+static Value st_select(State*S,int argc,Value*argv){ if(argv[0].tag==T_STR&&argv[0].u.s->len==1&&argv[0].u.s->p[0]=='#'){S->nret=1;S->retbuf[0]=VNUM(argc-1);return S->retbuf[0];} int n=(int)toNum(S,argv[0]); if(n<0)n=argc+n; else if(n==0)lx_rt_error(S,"bad argument #1 to 'select'"); S->nret=argc-n; for(int i=0;i+n<argc;i++)S->retbuf[i]=argv[n+i]; return S->nret?S->retbuf[0]:VNIL; }
+static Value st_unpack(State*S,int argc,Value*argv){ Table*t=argTab(S,argv[0],"table.unpack"); int i=(int)(argc>1?toNum(S,argv[1]):1); int j=(int)(argc>2?toNum(S,argv[2]):tlen(t)); if(i<=j && (long)j-(long)i+1>64)lx_rt_error(S,"too many results to unpack"); S->nret=0; for(;i<=j;i++)S->retbuf[S->nret++]=tget(t,VNUM(i)); return S->nret?S->retbuf[0]:VNIL; }
+static Value st_slen(State*S,int argc,Value*argv){S->nret=1;S->retbuf[0]=VNUM((double)argStr(S,argv[0],"string.len")->len);return S->retbuf[0];}
+static Value st_supper(State*S,int argc,Value*argv){Str*s=argStr(S,argv[0],"string.upper");char*b=xalloc(S,s->len);for(size_t i=0;i<s->len;i++)b[i]=toupper((unsigned char)s->p[i]);S->nret=1;S->retbuf[0]=VSTR(newStr(S,b,s->len));return S->retbuf[0];}
+static Value st_slower(State*S,int argc,Value*argv){Str*s=argStr(S,argv[0],"string.lower");char*b=xalloc(S,s->len);for(size_t i=0;i<s->len;i++)b[i]=tolower((unsigned char)s->p[i]);S->nret=1;S->retbuf[0]=VSTR(newStr(S,b,s->len));return S->retbuf[0];}
+static Value st_ssub(State*S,int argc,Value*argv){Str*s=argStr(S,argv[0],"string.sub");int len=(int)s->len;int i=(int)toNum(S,argv[1]);if(i<0)i+=len+1;if(i<1)i=1;int j=argc>2?(int)toNum(S,argv[2]):-1;if(j<0)j+=len+1;if(j>len)j=len;S->nret=1;S->retbuf[0]=(i<=j)?VSTR(newStr(S,s->p+i-1,j-i+1)):VSTR(newStr(S,"",0));return S->retbuf[0];}
+static Value st_srep(State*S,int argc,Value*argv){Str*s=argStr(S,argv[0],"string.rep");int n=(int)toNum(S,argv[1]);if(n<0)n=0;if(s->len>0&&(size_t)n>0xFFFFFFFu/s->len)lx_rt_error(S,"resulting string too large");char*b=xalloc(S,(size_t)n*s->len+1);for(int k=0;k<n;k++)memcpy(b+k*s->len,s->p,s->len);S->nret=1;S->retbuf[0]=VSTR(newStr(S,b,(size_t)n*s->len));return S->retbuf[0];}
+static Value st_tinsert(State*S,int argc,Value*argv){Table*t=argTab(S,argv[0],"table.insert");if(argc==2){int n=tlen(t);tset(S,t,VNUM(n+1),argv[1]);}else{int p=(int)toNum(S,argv[1]);int n=tlen(t);for(int i=n;i>=p;i--)tset(S,t,VNUM(i+1),tget(t,VNUM(i)));tset(S,t,VNUM(p),argv[2]);}S->nret=0;return VNIL;}
+static Value st_tremove(State*S,int argc,Value*argv){Table*t=argTab(S,argv[0],"table.remove");int n=tlen(t);int p=argc>1?(int)toNum(S,argv[1]):n;if(p<1)p=1;if(p>n){S->nret=1;S->retbuf[0]=VNIL;return VNIL;}Value v=tget(t,VNUM(p));for(int i=p;i<n;i++)tset(S,t,VNUM(i),tget(t,VNUM(i+1)));tset(S,t,VNUM(n),VNIL);S->nret=1;S->retbuf[0]=v;return v;}
+static Value st_tconcat(State*S,int argc,Value*argv){Table*t=argTab(S,argv[0],"table.concat");Str*sep=argc>1&&argv[1].tag==T_STR?argv[1].u.s:NULL;int i=argc>2?(int)toNum(S,argv[2]):1;int j=argc>3?(int)toNum(S,argv[3]):tlen(t);char*buf=NULL;size_t m=0,cap=0;for(;i<=j;i++){Value v=tget(t,VNUM(i));if(v.tag!=T_STR&&v.tag!=T_NUM)lx_rt_error(S,"invalid value (table.concat)");Str*s=toStrx(S,v);if(m+s->len>cap){cap=cap?cap*2:64;while(m+s->len>cap)cap*=2;buf=realloc(buf,cap);}memcpy(buf+m,s->p,s->len);m+=s->len;if(i<j&&sep){if(m+sep->len>cap){cap=cap?cap*2:64;while(m+sep->len>cap)cap*=2;buf=realloc(buf,cap);}memcpy(buf+m,sep->p,sep->len);m+=sep->len;}}S->nret=1;S->retbuf[0]=m?VSTR(newStr(S,buf,m)):VSTR(newStr(S,"",0));if(buf)free(buf);return S->retbuf[0];}
 static void regFn(State*S,Table*t,const char*name,Value(*fn)(State*,int,Value*)){tset(S,t,VSTR(newStr(S,name,strlen(name))),VCFN(mkCFn(S,name,fn)));}
 
 /* ---------- declarative ui library ---------- */

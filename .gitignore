@@ -19,9 +19,14 @@ local.properties
 
 # Engine compiled binaries
 engine/lx
+engine/lx_cov
 engine/t[0-9]*
 engine/*.dSYM
 engine/*.o
+# Coverage artifacts
+engine/cov/
+engine/*.gcov
+engine/run-coverage.log
 
 # Runtime template APK (generated, not source)
 runtime/src/main/assets/runtime/template.apk
