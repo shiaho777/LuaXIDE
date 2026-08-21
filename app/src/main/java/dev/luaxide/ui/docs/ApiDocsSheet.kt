@@ -142,6 +142,7 @@ private fun ApiDocsContent(
                     open = expanded == doc.id,
                     onToggle = { expanded = if (expanded == doc.id) null else doc.id },
                     onInsert = { onInsert(doc.example) },
+                    modifier = Modifier.animateItem(),
                 )
             }
         }
@@ -154,12 +155,13 @@ private fun DocCard(
     open: Boolean,
     onToggle: () -> Unit,
     onInsert: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val cs = MaterialTheme.colorScheme
     Surface(
         color = cs.surfaceVariant.copy(alpha = 0.55f),
         shape = RoundedCornerShape(14.dp),
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .clickable(onClick = onToggle),
     ) {
