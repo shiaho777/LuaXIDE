@@ -20,7 +20,7 @@ jobs:
     name: engine-tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build & run engine tests (t1-t24)
         run: make -C engine test
 
@@ -28,7 +28,7 @@ jobs:
     name: android-build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
