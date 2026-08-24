@@ -1,0 +1,195 @@
+-- t25_bytecode.lua — bytecode VM v0 coverage.
+-- Every assertion here must hold identically on the tree-walking interpreter;
+-- the Makefile bc-diff target runs this file under LUAX_NO_BC=1 and diffs.
+local fails = 0
+local function contains(s, sub)
+  s = tostring(s); sub = tostring(sub)
+  for i = 1, #s - #sub + 1 do
+    if string.sub(s, i, i + #sub - 1) == sub then return true end
+  end
+  return false
+end
+local function eq(got, want, label)
+  if got ~= want then
+    print("FAIL " .. label .. ": got " .. tostring(got) .. " want " .. tostring(want))
+    fails = fails + 1
+  end
+end
+
+-- arithmetic & numeric edge semantics
+eq(7 % 3, 1, "mod")
+eq(-7 % 3, 2, "mod negative")
+eq(7 // 2, 3, "idiv")
+eq(-7 // 2, -4, "idiv negative")
+eq(2 ^ 10, 1024, "pow")
+eq(1 / 4, 0.25, "div")
+eq(~5, -6, "bnot")
+eq(5 & 3, 1, "band")
+eq(5 | 3, 7, "bor")
+eq(5 ~ 3, 6, "bxor")
+eq(1 << 10, 1024, "shl")
+eq(1024 >> 3, 128, "shr")
+eq(-(3 + 4) * 2, -14, "precedence")
+
+-- strings
+eq("a" .. "b" .. 1, "ab1", "concat")
+eq(#"hello", 5, "len")
+eq(string.sub("hello", 2, 3), "el", "sub")
+eq(string.rep("ab", 3), "ababab", "rep")
+eq(string.upper("aB"), "AB", "upper")
+eq(tostring(1.5), "1.5", "tostring num")
+eq(tostring(nil), "nil", "tostring nil")
+
+-- comparisons & logic (value-preserving and/or)
+eq(1 < 2, true, "lt")
+eq(2 <= 2, true, "le")
+eq("x" == "x", true, "eq str")
+eq(1 ~= 2, true, "ne")
+eq(false or "fallback", "fallback", "or value")
+eq(nil and 9, nil, "and nil")
+eq(false and 9, false, "and false value")
+eq(true and 9, 9, "and true")
+eq(not nil, true, "not")
+
+-- scopes & shadowing
+local x = "outer"
+do
+  local x = "inner"
+  eq(x, "inner", "shadow inner")
+end
+eq(x, "outer", "shadow outer")
+for i = 1, 1 do local x = "loop" ; eq(x, "loop", "shadow loop") end
+eq(x, "outer", "shadow after loop")
+
+-- while / repeat / break
+local n = 0
+while true do n = n + 1 if n >= 5 then break end end
+eq(n, 5, "while break")
+local r = 0
+repeat r = r + 1 local seen = r until seen >= 3   -- until sees body locals
+eq(r, 3, "repeat sees body locals")
+local nest = 0
+for i = 1, 3 do
+  for j = 1, 3 do
+    if j == 2 then break end
+    nest = nest + 1
+  end
+end
+eq(nest, 3, "nested break inner only")
+
+-- numeric for
+local acc = {}
+for i = 10, 2, -4 do acc[#acc + 1] = i end
+eq(#acc, 3, "desc count")
+eq(acc[2], 6, "desc step")
+local empty = 0
+for i = 1, 0 do empty = empty + 1 end
+eq(empty, 0, "empty range")
+
+-- generic for
+local vals = 0
+local t = {a = 1, b = 2, c = 3}
+for k, v in pairs(t) do vals = vals + v end
+eq(vals, 6, "pairs values")
+local arr = {"x", "y", "z"}
+local cat = ""
+for idx, v in ipairs(arr) do cat = cat .. idx .. v end
+eq(cat, "1x2y3z", "ipairs")
+
+-- tables: every positional field expands multi-values (engine semantics)
+function two() return 10, 20 end
+local ct = {1, two(), 50}
+eq(#ct, 4, "positional field expansion")
+local kt = {x = two()}
+eq(kt.x, 10, "kv takes single value")
+
+-- multi-return plumbing
+local a, b = two()
+eq(a, 10, "multi a")
+eq(b, 20, "multi b")
+local only = two()
+eq(only, 10, "multi adjusted to one")
+local function passthru(...) return ... end
+local p1, p2 = passthru(two())
+eq(p2, 20, "tail multret through params")
+
+-- varargs function stays tree-walked but must behave identically
+local function va(...)
+  local s = select("#", ...)
+  local first = ...
+  return s, first
+end
+local vs, vf = va("A", "B", "C")
+eq(vs, 3, "vararg select#")
+eq(vf, "A", "vararg first")
+
+-- upvalue function stays tree-walked but must behave identically
+local base = 100
+local function addbase(v) return v + base end
+eq(addbase(5), 105, "upvalue fallback")
+
+-- methods
+local obj = {n = 40}
+function obj:bump(d) self.n = self.n + d return self.n end
+eq(obj:bump(2), 42, "methodcall self")
+eq(obj.n, 42, "methodcall mutates")
+
+-- metatables
+local proto = {greet = function() return "hi" end}
+local inst = setmetatable({}, {__index = proto})
+eq(inst.greet(), "hi", "__index chain")
+local boxed = setmetatable({items = {1, 2, 3}}, {
+  __len = function() return 99 end,
+  __tostring = function() return "BOX" end,
+})
+eq(#boxed, 99, "__len hook")
+eq(tostring(boxed), "BOX", "__tostring hook")
+
+-- recursion via global name
+function bfib(n) if n < 2 then return n end return bfib(n-1) + bfib(n-2) end
+eq(bfib(15), 610, "recursive global fn")
+
+-- runtime errors keep line-prefixed messages under the VM
+local eok, emsg = pcall(function()
+  local q = nil
+  return q.field
+end)
+eq(eok, false, "pcall caught")
+if not contains(emsg, "attempt to index") then
+  print("FAIL error message shape: " .. tostring(emsg)); fails = fails + 1
+end
+if not contains(emsg, "line ") then
+  print("FAIL line prefix missing: " .. tostring(emsg)); fails = fails + 1
+end
+
+-- rep-too-large guard identical on both engines
+local rok, rmsg = pcall(string.rep, "a", 1e18)
+eq(rok, false, "rep guard")
+
+-- assignment order: all RHS first, then targets left-to-right
+local ai = 1
+local at = {}
+ai, at[ai] = 2, "x"          -- at gets key from UPDATED ai (=2)
+eq(ai, 2, "assign rhs order")
+eq(at[2], "x", "target key sees updated value")
+eq(at[1], nil, "no stale key")
+
+-- missing values become nil
+local m1v, m2v = 1
+eq(m2v, nil, "missing value nil")
+
+-- select / unpack round trip
+eq(select("#", 1, 2, 3), 3, "select #")
+local u1, u2, u3 = table.unpack({7, 8, 9})
+eq(u1 + u2 + u3, 24, "unpack")
+
+-- positional counter shares key space with explicit keys (engine semantics;
+-- real Lua would keep "one" here — both engine paths agree on "two")
+local mt2 = {[1] = "one", "two"}
+eq(mt2[1], "two", "positional overrides explicit key")
+
+if fails > 0 then
+  print("t25 FAILED: " .. fails .. " case(s)")
+  return 1
+end
+print("t25 ok")

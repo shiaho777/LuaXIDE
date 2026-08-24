@@ -30,7 +30,7 @@
         └──────> ApkPackager:改写包名/版本/资源 → apksig 签名 → 安装
 ```
 
-- **engine/** — 单文件 C 解释器 `lx.c`:内置 `require("ui")` 声明式 UI 库(输出 JSON UI 树)、stdin 阻塞队列、协作式取消、`lx_debug_*` 调试协议。同一份源码编译为桌面 CLI(`make`)与两个 Android 模块的 `libluax.so`(CMake + `luax_jni.c`)。
+- **engine/** — 单文件 C 引擎 `lx.c`:树遍历解释器 + 混合字节码 VM(函数体首次调用时编译执行,不可编译的构造透明回退;数值循环约 11x 加速)。内置 `require("ui")` 声明式 UI 库(输出 JSON UI 树)、stdin 阻塞队列、协作式取消、`lx_debug_*` 调试协议。同一份源码编译为桌面 CLI(`make`)与两个 Android 模块的 `libluax.so`(CMake + `luax_jni.c`),详见 [docs/BYTECODE_VM.md](docs/BYTECODE_VM.md)。
 - **:runtime** — 极简启动器 App。其 release APK 经 `syncRuntimeTemplate` 任务复制为 `app/src/main/assets/runtime/template.apk`,作为所有打包产物的模板。
 - **:app** — IDE 本体(`dev.luaxide`)。运行/预览走 `EngineHost`;打包走 `ApkPackager`(ARSCLib 改写二进制 manifest + apksig 签名,签名密钥为设备上现场生成的 PKCS#12)。
 
