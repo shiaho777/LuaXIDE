@@ -47,4 +47,9 @@ const char* lx_debug_locals(lx_State*);
 const char* lx_debug_stack(lx_State*);
 const char* lx_debug_eval(lx_State*, const char* expr);
 
+/* bytecode VM (Phase 1b): disassemble every compilable function in src to
+ * stdout (returns function count, -1 on parse error); execution counters */
+int  lx_bc_disassemble(lx_State*, const char* src, char* errbuf, int errbuflen);
+void lx_bc_stats(lx_State*, long* calls, long* fallbacks);
+
 #endif

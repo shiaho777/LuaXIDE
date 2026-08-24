@@ -21,13 +21,13 @@
 enum { T_NIL, T_BOOL, T_NUM, T_STR, T_TAB, T_FN, T_CFN };
 typedef struct Str Str; typedef struct Table Table; typedef struct Value Value;
 typedef struct Node Node; typedef struct Env Env; typedef struct Func Func;
-typedef struct Closure Closure; typedef struct CFn CFn; typedef struct State State;
+typedef struct Closure Closure; typedef struct CFn CFn; typedef struct State State; typedef struct Proto Proto;
 
 struct Str    { size_t len; char* p; };
 struct Value  { int tag; union { bool b; double num; Str* s; Table* t; Closure* f; CFn* c; } u; };
 struct Table  { int cap, n; struct TEntry { Value k, v; int used; } *e; Table* meta; };
 struct Env    { Table* vars; Env* parent; };
-struct Func   { int nparam; char** params; bool vararg; Node* body; Env* env; int line; };
+struct Func   { int nparam; char** params; bool vararg; Node* body; Env* env; int line; Proto* bc; signed char bc_tried; };
 struct Closure{ Func* f; };
 struct CFn    { Value (*fn)(State*, int, Value*); const char* name; };
 
@@ -70,6 +70,9 @@ struct State {
   Value handlers[LX_MAX_HANDLERS]; int nhandlers;
   /* runaway-execution guard */
   long steps; long step_limit;
+  /* bytecode VM (Phase 1b): value stack shared by compiled frames + stats */
+  Value* vstack; int vstack_sz; int vtop;
+  long bc_calls; long bc_fallbacks;
   /* line tracking: parseLine follows the lexer token-by-token so every AST
    * node picks up its source line automatically at creation time; curLine is
    * refreshed from the executing statement's node so runtime errors can
@@ -337,6 +340,9 @@ static struct Flow execChunk(State*S,Env*env,Node*chunk);
 static void dbg_pause_now(State*S,Env*env,int line,int reason);
 static Value callValue(State*S,Value f,int argc,Value*argv);
 static Str* toStrx(State*S,Value v);
+static Proto* bc_build(State*S,Func*fn);
+static Value vm_call(State*S,Proto*p,Closure*cl,int argc,Value*argv);
+static bool bc_globals_still_global(State*S,Func*fn,Proto*p);
 
 static Str* toStrx(State*S,Value v){
   if(v.tag==T_STR)return v.u.s;
@@ -391,7 +397,18 @@ static Value callValue(State*S,Value f,int argc,Value*argv){
     return r;
   }
   if(f.tag==T_FN){
-    Func*fn=f.u.f->f; Env*e=newEnv(S,fn->env);
+    Func*fn=f.u.f->f;
+    /* Bytecode VM (Phase 1b v0): compile closure-free function bodies on first
+     * call; anything else (debug sessions, varargs, nested defs, upvalues)
+     * transparently uses the tree-walking path below. */
+    if(!S->debug_enabled && !getenv("LUAX_NO_BC")){
+      if(!fn->bc && !fn->bc_tried){ fn->bc=bc_build(S,fn); fn->bc_tried=1; }
+      if(fn->bc){
+        if(!bc_globals_still_global(S,fn,fn->bc)){ S->bc_fallbacks++; }
+        else { S->bc_calls++; return vm_call(S,fn->bc,f.u.f,argc,argv); }
+      } else S->bc_fallbacks++;
+    }
+    Env*e=newEnv(S,fn->env);
     char nm[48];
     if(fn->line>0) snprintf(nm,sizeof(nm),"fn@%d",fn->line); else snprintf(nm,sizeof(nm),"fn");
     if(S->nstack>0) dbg_touch_top(S,S->curLine);
@@ -418,7 +435,7 @@ static Value eval(State*S,Env*env,Node*e){
   case K_INDEX:{ Value t=eval(S,env,e->a); Value k=eval(S,env,e->b); return indexVal(S,t,k); }
   case K_CALL:{ Value f=eval(S,env,e->a); Value argv[256]; int na=buildArgs(S,env,e->list,e->nlist,argv); return callValue(S,f,na,argv); }
   case K_METHODCALL:{ Value o=eval(S,env,e->a); Value f=indexVal(S,o,VSTR(newStr(S,e->method,strlen(e->method)))); Value argv[256]; argv[0]=o; int na=1+buildArgs(S,env,e->list,e->nlist,argv+1); return callValue(S,f,na,argv); }
-  case K_FUNC:{ Func*fn=xalloc(S,sizeof(Func)); fn->nparam=e->nnames; fn->params=e->names; fn->vararg=e->vararg; fn->body=e->body; fn->env=env; fn->line=e->line>0?e->line:(e->body&&e->body->line>0?e->body->line:S->curLine); Closure*cl=xalloc(S,sizeof(Closure)); cl->f=fn; return VFN(cl); }
+  case K_FUNC:{ Func*fn=xalloc(S,sizeof(Func)); fn->nparam=e->nnames; fn->params=e->names; fn->vararg=e->vararg; fn->body=e->body; fn->env=env; fn->line=e->line>0?e->line:(e->body&&e->body->line>0?e->body->line:S->curLine); fn->bc=NULL; fn->bc_tried=0; Closure*cl=xalloc(S,sizeof(Closure)); cl->f=fn; return VFN(cl); }
   case K_TABLE:{ Table*t=newTable(S); int idx=1; for(int i=0;i<e->nlist;i++){ Node*f=e->list[i]; if(f->isKv){ tset(S,t,eval(S,env,f->a),eval(S,env,f->b)); } else { int m; Value tmp[64]; evalInto(S,env,f->a,tmp,&m); for(int j=0;j<m;j++)tset(S,t,VNUM(idx++),tmp[j]); if(m==0)idx++; } } return VTAB(t); }
   case K_UNOP:{ Value a=eval(S,env,e->a); switch(e->op){ case'-':return VNUM(-toNum(S,a)); case'#':{ if(a.tag==T_STR)return VNUM((double)a.u.s->len); if(a.tag==T_TAB){ if(a.u.t->meta){Value m=tget(a.u.t->meta,VSTR(newStr(S,"__len",5)));if(m.tag!=T_NIL)return callValue(S,m,1,&a);} return VNUM((double)tlen(a.u.t));} lx_rt_error(S,"attempt to get length of a %s value",lx_typename(a)); } case T_NOT:return VBOOL(!toBool(a)); case'~':return VNUM((double)(~(int64_t)toNum(S,a))); } return VNIL; }
   case K_BINOP:{ int op=e->op;
@@ -461,6 +478,7 @@ static int dbg_eval_value(State*S,Env*env,const char*expr,Value*out,char*err,int
   if(n<=0||n>=(int)sizeof(src)){ if(err&&errlen)snprintf(err,errlen,"expr too long"); return 0; }
   jmp_buf outer; memcpy(&outer,&S->err,sizeof(outer));
   int depth=S->nstack;
+  int vdepth=S->vtop;
   int saved_steps=S->steps;
   long saved_limit=S->step_limit;
   S->dbg_eval_depth++;
@@ -480,6 +498,7 @@ static int dbg_eval_value(State*S,Env*env,const char*expr,Value*out,char*err,int
   }
   memcpy(&S->err,&outer,sizeof(outer));
   S->nstack=depth;
+  S->vtop=vdepth;
   S->steps=saved_steps;
   S->step_limit=saved_limit;
   S->dbg_eval_depth--;
@@ -690,6 +709,515 @@ static struct Flow exec(State*S,Env*env,Node*st){
 }
 static struct Flow execChunk(State*S,Env*env,Node*chunk){ struct Flow fl=F_NORMAL; for(int i=0;i<chunk->nlist;i++){fl=exec(S,env,chunk->list[i]);if(fl.kind)break;} return fl; }
 
+/* ---------- bytecode VM (Phase 1b v0) ----------
+ * Compiles closure-free function bodies to register bytecode on first call and
+ * runs them on a stack VM. Anything the compiler cannot represent — nested
+ * function definitions (upvalue capture), varargs, free variables — keeps using
+ * the tree-walking interpreter above, so semantics can only gain speed, never
+ * diverge on those constructs.
+ * Parity rules mirrored from exec()/eval():
+ *   - every positional table-constructor field expands multi-values (engine
+ *     behavior; Lua proper only expands the last)
+ *   - numeric for with step<=0 takes the descending branch (step 0 loops are
+ *     stopped by the step limit exactly like the tree-walker)
+ *   - comparisons go through toNum (no string ordering)
+ *   - AND/OR yield the deciding operand value, not a normalized bool
+ *   - names resolving outside locals/globals (dynamic-scope upvalues) bail;
+ *     "global" names are re-validated per call in case an enclosing tree-walk
+ *     scope shadowed them after first compilation */
+enum {
+  BC_LOADK,BC_LOADNIL,BC_LOADBOOL,BC_MOVE,
+  BC_GETGLOBAL,BC_SETGLOBAL,BC_GETTABLE,BC_SETTABLE,BC_GETFIELD,BC_SETFIELD,
+  BC_ADD,BC_SUB,BC_MUL,BC_DIV,BC_MOD,BC_POW,BC_IDIV,BC_BAND,BC_BOR,BC_BXOR,BC_SHL,BC_SHR,
+  BC_UNM,BC_BNOT,BC_NOT,BC_LEN,BC_CONCAT,BC_EQ,BC_LT,BC_LE,
+  BC_TEST,BC_TESTN,BC_JMP,BC_CALL,BC_RETURN,BC_EXPAND,BC_NEWTABLE,BC_TSETMULT,BC_INC,
+  BC_FORPREP,BC_FORLOOP,BC_GFORPREP,BC_GFORLOOP
+};
+typedef struct { unsigned char op,a,b,c; int imm; } BIns;
+struct Proto { BIns* code; int ncode; Value* k; int nk; int* lines; int* gk; int ngk; int nparam; int maxstack; int defline; };
+
+#define BC_MAXREG 200
+typedef struct {
+  State*S; Func*fn;
+  BIns* code; int ncode,capcode;
+  int* lines;
+  Value* k; int nk,capk;
+  int gk[64]; int ngk;
+  int reg,maxreg;
+  struct { char*name; int reg; } loc[256]; int nloc;
+  int scope[40]; int scopereg[40]; int depth;
+  struct { int brk[32]; int nbrk; } loops[16]; int nloops;
+  int curline;
+  int failed;
+} Bc;
+
+static const char* bc_opname(int op){
+  static const char* N[]={"LOADK","LOADNIL","LOADBOOL","MOVE","GETGLOBAL","SETGLOBAL","GETTABLE","SETTABLE","GETFIELD","SETFIELD",
+    "ADD","SUB","MUL","DIV","MOD","POW","IDIV","BAND","BOR","BXOR","SHL","SHR","UNM","BNOT","NOT","LEN","CONCAT","EQ","LT","LE",
+    "TEST","TESTN","JMP","CALL","RETURN","EXPAND","NEWTABLE","TSETMULT","INC","FORPREP","FORLOOP","GFORPREP","GFORLOOP"};
+  return op>=0&&(size_t)op<sizeof(N)/sizeof(*N)?N[op]:"?";
+}
+static int bc_emit(Bc*C,int op,int a,int b,int c,int imm){
+  if(C->ncode>=C->capcode){ C->capcode=C->capcode?C->capcode*2:64; C->code=realloc(C->code,(size_t)C->capcode*sizeof(BIns)); C->lines=realloc(C->lines,(size_t)C->capcode*sizeof(int)); }
+  C->code[C->ncode]=(BIns){(unsigned char)op,(unsigned char)a,(unsigned char)b,(unsigned char)c,imm};
+  C->lines[C->ncode]=C->curline;
+  if(C->reg>C->maxreg)C->maxreg=C->reg;
+  return C->ncode++;
+}
+static int bc_reg(Bc*C){ if(C->failed)return 0; if(C->reg>=BC_MAXREG){C->failed=1;return 0;} return C->reg++; }
+/* watermark only ever rises within a block; scopes release via bc_endscope */
+static void bc_raise(Bc*C,int r){ if(!C->failed && r>C->reg)C->reg=r; }
+static int bc_k(Bc*C,Value v){ if(C->nk>=C->capk){C->capk=C->capk?C->capk*2:16;C->k=realloc(C->k,(size_t)C->capk*sizeof(Value));} C->k[C->nk]=v; return C->nk++; }
+static int bc_kstr(Bc*C,const char*s){ Str*st=newStr(C->S,s,strlen(s)); return bc_k(C,VSTR(st)); }
+static int bc_jmp(Bc*C){ return bc_emit(C,BC_JMP,0,0,0,0); }
+static void bc_patch(Bc*C,int j,int target){ C->code[j].imm=target-(j+1); }
+static void bc_scope(Bc*C){ if(C->depth>=40){C->failed=1;return;} C->scope[C->depth]=C->nloc; C->scopereg[C->depth]=C->reg; C->depth++; }
+static void bc_endscope(Bc*C){ C->depth--; if(C->depth<40){ C->nloc=C->scope[C->depth]; C->reg=C->scopereg[C->depth]; } }
+static void bc_pushloop(Bc*C){ if(C->nloops>=16){C->failed=1;return;} C->loops[C->nloops].nbrk=0; C->nloops++; }
+static void bc_poploop(Bc*C,int exitat){ C->nloops--; for(int i=0;i<C->loops[C->nloops].nbrk;i++) bc_patch(C,C->loops[C->nloops].brk[i],exitat); }
+
+static int bc_local(Bc*C,const char*name){ for(int i=C->nloc-1;i>=0;i--) if(!strcmp(C->loc[i].name,name)) return C->loc[i].reg; return -1; }
+static int bc_is_upvalue(Bc*C,const char*name){
+  Str tmp; tmp.len=strlen(name); tmp.p=(char*)name;
+  Value k; k.tag=T_STR; k.u.s=&tmp;
+  for(Env*e=C->fn->env;e;e=e->parent){ if(e==C->S->globals)break; if(tfind(e->vars,k))return 1; }
+  return 0;
+}
+/* conservative pre-scan: these constructs keep the function on the tree-walker */
+static int bc_has_nested(Node*n){
+  if(!n)return 0;
+  switch(n->kind){ case K_FUNC:case K_FUNCDECL:case K_VARARG:case K_LABEL:case K_GOTO:return 1; default:break; }
+  if(bc_has_nested(n->a)||bc_has_nested(n->b)||bc_has_nested(n->c)||bc_has_nested(n->body))return 1;
+  for(int i=0;i<n->nlist;i++)if(bc_has_nested(n->list[i]))return 1;
+  for(int i=0;i<n->nlist2;i++)if(bc_has_nested(n->list2[i]))return 1;
+  return 0;
+}
+static int bc_ismulti(Node*e){ return e&&e->kind==K_CALL; } /* METHODCALL yields one value; VARARG pre-bailed */
+
+static void bc_expr(Bc*C,Node*e,int dst);
+/* mode: 1 = multret (c=0, results counted by mrc), 0 = single result (c=2),
+ * 2 = discard (c=1, like Lua's CALL with 0 results) */
+static void bc_call_compile(Bc*C,Node*e,int base,int mode){
+  if(C->failed)return;
+  int cres = mode==1?0 : mode==2?1 : 2;
+  if(e->line>0)C->curline=e->line;
+  if(e->kind==K_METHODCALL){
+    bc_expr(C,e->a,base);                                  /* obj */
+    int mk=bc_kstr(C,e->method);
+    bc_emit(C,BC_GETFIELD,base+1,base,0,mk);               /* f */
+    bc_emit(C,BC_MOVE,base+2,base,0,0);                    /* self = argv[0] */
+    bc_raise(C,base+3);
+    Node**A=e->list;int n=e->nlist;
+    int lastmulti=n>0&&bc_ismulti(A[n-1]);
+    for(int i=0;i<n-(lastmulti?1:0);i++){ bc_expr(C,A[i],base+3+i); bc_raise(C,base+4+i); }
+    if(lastmulti){ bc_call_compile(C,A[n-1],base+3+n-1,1); bc_raise(C,C->reg+64); }
+    bc_emit(C,BC_CALL,base+1,lastmulti?0:(n+2),cres,0);
+    return;
+  }
+  /* K_CALL: f at base, args from base+1, last arg may expand via mrc */
+  Node**A=e->list;int n=e->nlist;
+  bc_raise(C,base+1);
+  bc_expr(C,e->a,base);          /* callee (its temps land above the arg slots) */
+  bc_raise(C,base+1);
+  int lastmulti=n>0&&bc_ismulti(A[n-1]);
+  for(int i=0;i<n-(lastmulti?1:0);i++){ bc_expr(C,A[i],base+1+i); bc_raise(C,base+2+i); }
+  if(lastmulti){ bc_call_compile(C,A[n-1],base+1+n-1,1); bc_raise(C,C->reg+64); }
+  bc_emit(C,BC_CALL,base,lastmulti?0:(n+1),cres,0);
+}
+static void bc_expr_multi(Bc*C,Node*e,int dst){
+  if(e->kind==K_CALL||e->kind==K_METHODCALL) bc_call_compile(C,e,dst,1);
+  else bc_expr(C,e,dst);
+}
+static void bc_expr(Bc*C,Node*e,int dst){
+  if(C->failed)return;
+  if(e->line>0)C->curline=e->line;
+  switch(e->kind){
+  case K_NIL: bc_emit(C,BC_LOADNIL,dst,0,0,0); break;
+  case K_TRUE: case K_FALSE: bc_emit(C,BC_LOADBOOL,dst,e->kind==K_TRUE?1:0,0,0); break;
+  case K_NUM: bc_emit(C,BC_LOADK,dst,0,0,bc_k(C,VNUM(e->num))); break;
+  case K_STR: bc_emit(C,BC_LOADK,dst,0,0,bc_k(C,VSTR(e->str))); break;
+  case K_NAME:{
+    int lr=bc_local(C,e->name);
+    if(lr>=0) bc_emit(C,BC_MOVE,dst,lr,0,0);
+    else{ if(bc_is_upvalue(C,e->name)){C->failed=1;break;}
+      int k=bc_kstr(C,e->name);
+      if(C->ngk<64)C->gk[C->ngk++]=k;
+      bc_emit(C,BC_GETGLOBAL,dst,0,0,k); }
+    break;}
+  case K_PAREN: bc_expr(C,e->a,dst); break;
+  case K_INDEX:{
+    if(e->b->kind==K_STR){ bc_expr(C,e->a,dst); int k=bc_k(C,VSTR(e->b->str)); bc_emit(C,BC_GETFIELD,dst,dst,0,k); }
+    else{ int t=bc_reg(C),kk=bc_reg(C); bc_expr(C,e->a,t); bc_expr(C,e->b,kk); bc_emit(C,BC_GETTABLE,dst,t,kk,0); }
+    break;}
+  case K_CALL: case K_METHODCALL: bc_call_compile(C,e,dst,0); break;
+  case K_TABLE:{
+    bc_emit(C,BC_NEWTABLE,dst,0,0,0);
+    int ridx=bc_reg(C); bc_emit(C,BC_LOADK,ridx,0,0,bc_k(C,VNUM(1)));
+    for(int i=0;i<e->nlist;i++){ Node*f=e->list[i];
+      if(f->isKv){ int rk=bc_reg(C),rv=bc_reg(C); bc_expr(C,f->a,rk); bc_expr(C,f->b,rv); bc_emit(C,BC_SETTABLE,dst,rk,rv,0); }
+      else if(bc_ismulti(f->a)){ int rb=bc_reg(C); bc_expr_multi(C,f->a,rb); bc_emit(C,BC_TSETMULT,dst,ridx,rb,0); }
+      else{ int rv=bc_reg(C); bc_expr(C,f->a,rv); bc_emit(C,BC_SETTABLE,dst,ridx,rv,0); bc_emit(C,BC_INC,ridx,1,0,0); } }
+    break;}
+  case K_BINOP:{ int op=e->op;
+    if(op==T_AND||op==T_OR){
+      bc_expr(C,e->a,dst);
+      bc_emit(C,op==T_AND?BC_TESTN:BC_TEST,dst,0,0,0);
+      int j=bc_jmp(C);
+      bc_expr(C,e->b,dst);
+      bc_patch(C,j,C->ncode);
+      break; }
+    int ra=bc_reg(C),rb=bc_reg(C);
+    bc_expr(C,e->a,ra); bc_expr(C,e->b,rb);
+    int o = op=='+'?BC_ADD: op=='-'?BC_SUB: op=='*'?BC_MUL: op=='/'?BC_DIV: op=='%'?BC_MOD: op=='^'?BC_POW: op==T_IDIV?BC_IDIV:
+            op=='|'?BC_BAND: op=='&'?BC_BOR: op=='~'?BC_BXOR: op==T_SHL?BC_SHL: op==T_SHR?BC_SHR:
+            op==T_CONCAT?BC_CONCAT: op==T_EQ?BC_EQ: op==T_NE?BC_EQ: op=='<'?BC_LT: op==T_LE?BC_LE:
+            op=='>'?BC_LT: op==T_GE?BC_LE:-1;
+    if(o<0){C->failed=1;break;}
+    if(op=='>'||op==T_GE){int t=ra;ra=rb;rb=t;}
+    bc_emit(C,o,dst,ra,rb,0);
+    if(op==T_NE) bc_emit(C,BC_NOT,dst,dst,0,0);
+    break;}
+  case K_UNOP:{
+    int ra=bc_reg(C); bc_expr(C,e->a,ra);
+    int o=e->op=='-'?BC_UNM: e->op==T_NOT?BC_NOT: e->op=='~'?BC_BNOT: e->op=='#'?BC_LEN:-1;
+    if(o<0){C->failed=1;break;}
+    bc_emit(C,o,dst,ra,0,0); break;}
+  default: C->failed=1;
+  }
+  if(dst+1>C->reg)C->reg=dst+1;
+}
+
+static void bc_block(Bc*C,Node*blk);
+static void bc_stat(Bc*C,Node*st){
+  if(C->failed)return;
+  if(st->line>0)C->curline=st->line;
+  switch(st->kind){
+  case K_LOCAL:{
+    int nn=st->nnames,nv=st->nlist;
+    if(nn==0)break;
+    int base=C->reg;
+    for(int i=0;i<nn;i++) bc_reg(C);
+    Node**V=st->list;
+    int lastmulti=nv>0&&bc_ismulti(V[nv-1]);
+    for(int i=0;i<nv-(lastmulti?1:0);i++) bc_expr(C,V[i],base+i);
+    if(lastmulti){ bc_expr_multi(C,V[nv-1],base+nv-1); bc_emit(C,BC_EXPAND,base,nn,0,0); }
+    else if(nv<nn) bc_emit(C,BC_LOADNIL,base+nv,nn-nv,0,0);
+    for(int i=0;i<nn;i++){ if(C->nloc<256){ C->loc[C->nloc].name=st->names[i]; C->loc[C->nloc].reg=base+i; C->nloc++; } }
+    break;}
+  case K_ASSIGN:{
+    Node**V=st->list2;int nv=st->nlist2;
+    if(nv==0)break;
+    int nt=st->nlist;
+    int base=C->reg;
+    for(int i=0;i<nv;i++) bc_reg(C);
+    int lastmulti=nv>0&&bc_ismulti(V[nv-1]);
+    for(int i=0;i<nv-(lastmulti?1:0);i++) bc_expr(C,V[i],base+i);
+    if(lastmulti){ bc_expr_multi(C,V[nv-1],base+nv-1); bc_emit(C,BC_EXPAND,base,nt,0,0); }
+    else if(nv<nt) bc_emit(C,BC_LOADNIL,base+nv,nt-nv,0,0);
+    for(int i=0;i<nt;i++){ Node*t=st->list[i];
+      if(t->kind==K_NAME){
+        int lr=bc_local(C,t->name);
+        if(lr>=0) bc_emit(C,BC_MOVE,lr,base+i,0,0);
+        else{ if(bc_is_upvalue(C,t->name)){C->failed=1;break;}
+          int k=bc_kstr(C,t->name);
+          if(C->ngk<64)C->gk[C->ngk++]=k;
+          bc_emit(C,BC_SETGLOBAL,base+i,0,0,k); } }
+      else if(t->kind==K_INDEX){
+        if(t->b->kind==K_STR){ int ro=bc_reg(C); bc_expr(C,t->a,ro); int k=bc_k(C,VSTR(t->b->str)); bc_emit(C,BC_SETFIELD,ro,base+i,0,k); }
+        else{ int ro=bc_reg(C),rk=bc_reg(C); bc_expr(C,t->a,ro); bc_expr(C,t->b,rk); bc_emit(C,BC_SETTABLE,ro,rk,base+i,0); } }
+      else{ C->failed=1;break; } }
+    break;}
+  case K_CALLSTAT:{ int b=bc_reg(C); bc_call_compile(C,st->a,b,2); break; }
+  case K_DO: bc_scope(C); bc_block(C,st->body); bc_endscope(C); break;
+  case K_IF:{
+    int rd=bc_reg(C),jover[33],njover=0;
+    bc_expr(C,st->a,rd);
+    bc_emit(C,BC_TESTN,rd,0,0,0);
+    int jelse=bc_jmp(C);
+    bc_scope(C); bc_block(C,st->body); bc_endscope(C);
+    if(st->nlist||st->b){ if(njover<33)jover[njover++]=bc_jmp(C); }
+    bc_patch(C,jelse,C->ncode);
+    for(int i=0;i<st->nlist;i++){ Node*eli=st->list[i];
+      bc_expr(C,eli->a,rd);
+      bc_emit(C,BC_TESTN,rd,0,0,0);
+      int jn=bc_jmp(C);
+      bc_scope(C); bc_block(C,eli->body); bc_endscope(C);
+      if(i<st->nlist-1||st->b){ if(njover<33)jover[njover++]=bc_jmp(C); }
+      bc_patch(C,jn,C->ncode); }
+    if(st->b){ bc_scope(C); bc_block(C,st->b); bc_endscope(C); }
+    for(int i=0;i<njover;i++) bc_patch(C,jover[i],C->ncode);
+    break;}
+  case K_WHILE:{
+    bc_pushloop(C);
+    int start=C->ncode;
+    int rd=bc_reg(C);
+    bc_expr(C,st->a,rd);
+    bc_emit(C,BC_TESTN,rd,0,0,0);
+    int jexit=bc_jmp(C);
+    bc_scope(C); bc_block(C,st->body); bc_endscope(C);
+    int jb=bc_jmp(C); bc_patch(C,jb,start);
+    bc_patch(C,jexit,C->ncode);
+    bc_poploop(C,C->ncode);
+    break;}
+  case K_REPEAT:{
+    bc_pushloop(C);
+    int start=C->ncode;
+    bc_scope(C);                       /* until-condition sees body locals */
+    bc_block(C,st->body);
+    int rc=bc_reg(C);
+    bc_expr(C,st->a,rc);
+    bc_emit(C,BC_TEST,rc,0,0,0);
+    int jb=bc_jmp(C); bc_patch(C,jb,start);
+    bc_endscope(C);
+    bc_poploop(C,C->ncode);
+    break;}
+  case K_NFOR:{
+    int a=C->reg;
+    for(int i=0;i<4;i++) bc_reg(C);
+    bc_expr(C,st->a,a); bc_expr(C,st->b,a+1);
+    if(st->c) bc_expr(C,st->c,a+2); else bc_emit(C,BC_LOADK,a+2,0,0,bc_k(C,VNUM(1)));
+    bc_pushloop(C);
+    int fp=bc_emit(C,BC_FORPREP,a,0,0,0);
+    bc_scope(C);
+    if(C->nloc<256){ C->loc[C->nloc].name=st->name; C->loc[C->nloc].reg=a; C->nloc++; }
+    bc_block(C,st->body);
+    bc_endscope(C);
+    int fl=bc_emit(C,BC_FORLOOP,a,0,0,0);
+    bc_patch(C,fp,fl+1);
+    bc_patch(C,fl,fp+1);
+    bc_poploop(C,fl+1);
+    break;}
+  case K_GFOR:{
+    Node**E=st->list;int ne=st->nlist;
+    if(ne<1){C->failed=1;break;}
+    int a=C->reg;
+    for(int i=0;i<3+st->nnames;i++) bc_reg(C);
+    int lastmulti=bc_ismulti(E[ne-1]);
+    for(int i=0;i<ne-(lastmulti?1:0);i++) bc_expr(C,E[i],a+i);
+    if(lastmulti) bc_expr_multi(C,E[ne-1],a+ne-1);
+    else if(ne<3) bc_emit(C,BC_LOADNIL,a+ne,3-ne,0,0);
+    bc_pushloop(C);
+    int gp=bc_emit(C,BC_GFORPREP,a,0,0,0);
+    bc_scope(C);
+    for(int i=0;i<st->nnames;i++){ if(C->nloc<256){ C->loc[C->nloc].name=st->names[i]; C->loc[C->nloc].reg=a+3+i; C->nloc++; } }
+    bc_block(C,st->body);
+    bc_endscope(C);
+    int gl=bc_emit(C,BC_GFORLOOP,a,0,st->nnames,0);
+    bc_patch(C,gp,gl);
+    bc_patch(C,gl,gp+1);
+    bc_poploop(C,gl+1);
+    break;}
+  case K_RET:{
+    Node**V=st->list;int n=st->nlist;
+    if(n==0){ bc_emit(C,BC_RETURN,0,1,0,0); break; }
+    int base=C->reg;
+    for(int i=0;i<n;i++) bc_reg(C);
+    int lastmulti=bc_ismulti(V[n-1]);
+    for(int i=0;i<n-(lastmulti?1:0);i++) bc_expr(C,V[i],base+i);
+    if(lastmulti) bc_expr_multi(C,V[n-1],base+n-1);
+    bc_emit(C,BC_RETURN,base,lastmulti?0:(n+1),0,0);
+    break;}
+  case K_BREAK:{ if(!C->nloops){C->failed=1;break;} struct{int brk[32];int nbrk;}*L=(void*)&C->loops[C->nloops-1]; if(L->nbrk<32)L->brk[L->nbrk++]=bc_jmp(C); break; }
+  default: C->failed=1;
+  }
+}
+static void bc_block(Bc*C,Node*blk){ if(blk)for(int i=0;i<blk->nlist;i++) bc_stat(C,blk->list[i]); }
+
+static Proto* bc_build(State*S,Func*fn){
+  if(!fn||!fn->body||fn->vararg) return NULL;
+  if(bc_has_nested(fn->body)) return NULL;
+  Bc C; memset(&C,0,sizeof(C)); C.S=S; C.fn=fn;
+  if(fn->body->line>0)C.curline=fn->body->line;
+  Proto*p=xalloc(S,sizeof(Proto)); memset(p,0,sizeof(*p));
+  bc_scope(&C);
+  /* params own registers [0,nparam): seed them as the outermost locals */
+  for(int i=0;i<fn->nparam && C.nloc<256;i++){ C.loc[C.nloc].name=fn->params[i]; C.loc[C.nloc].reg=i; C.nloc++; }
+  C.reg=fn->nparam;
+  bc_block(&C,fn->body);
+  bc_endscope(&C);
+  if(!C.failed && (C.ncode==0 || C.code[C.ncode-1].op!=BC_RETURN)) bc_emit(&C,BC_RETURN,0,1,0,0);
+  if(!C.failed && C.reg>BC_MAXREG) C.failed=1;
+  if(C.failed || !C.ncode){ free(C.code);free(C.lines);free(C.k); return NULL; }
+  p->code=xalloc(S,(size_t)C.ncode*sizeof(BIns)); memcpy(p->code,C.code,(size_t)C.ncode*sizeof(BIns));
+  p->lines=xalloc(S,(size_t)C.ncode*sizeof(int)); memcpy(p->lines,C.lines,(size_t)C.ncode*sizeof(int));
+  p->ncode=C.ncode;
+  p->k=xalloc(S,(size_t)(C.nk?C.nk:1)*sizeof(Value)); if(C.nk)memcpy(p->k,C.k,(size_t)C.nk*sizeof(Value));
+  p->nk=C.nk;
+  p->gk=xalloc(S,(size_t)(C.ngk?C.ngk:1)*sizeof(int)); if(C.ngk)memcpy(p->gk,C.gk,(size_t)C.ngk*sizeof(int));
+  p->ngk=C.ngk;
+  p->nparam=fn->nparam;
+  p->maxstack=C.maxreg+1;
+  p->defline=fn->line;
+  free(C.code); free(C.lines); free(C.k);
+  return p;
+}
+/* per-call guard: a name compiled as global must not have been captured by a
+ * local declared later in an enclosing tree-walk scope (dynamic scoping) */
+static bool bc_globals_still_global(State*S,Func*fn,Proto*p){
+  for(int i=0;i<p->ngk;i++){
+    Value k=p->k[p->gk[i]];
+    for(Env*e=fn->env;e;e=e->parent){ if(e==S->globals)break; if(tfind(e->vars,k))return false; }
+  }
+  return true;
+}
+
+#define BVR(i) (S->vstack[base+(i)])
+static Value vm_call(State*S,Proto*p,Closure*cl,int argc,Value*argv){
+  int base=S->vtop;
+  int need=base+p->maxstack+2;
+  if(S->vstack_sz<need){ int ns=S->vstack_sz?S->vstack_sz*2:256; while(ns<need)ns*=2; S->vstack=realloc(S->vstack,(size_t)ns*sizeof(Value)); S->vstack_sz=ns; }
+  S->vtop=base+p->maxstack;
+  for(int i=0;i<p->maxstack;i++) BVR(i)= i<p->nparam ? (i<argc?argv[i]:VNIL) : VNIL;
+  char nm[48];
+  if(p->defline>0) snprintf(nm,sizeof(nm),"fn@%d",p->defline); else snprintf(nm,sizeof(nm),"fn");
+  if(S->nstack>0) dbg_touch_top(S,S->curLine);
+  dbg_push_frame(S,nm,S->curLine,p->defline);
+  if(cl&&cl->f&&cl->f->env) S->cur_env=cl->f->env;
+  int pc=0,mrc=0;
+  Value ret=VNIL;
+  while(1){
+    BIns in=p->code[pc];
+    if(S->cancel_flag) lx_rt_error(S,"cancelled by user");
+    if(S->step_limit>0 && ++S->steps>S->step_limit) lx_rt_error(S,"execution step limit exceeded (possible infinite loop)");
+    { int pl=p->lines[pc]; if(pl>0) S->curLine=pl; }
+    switch(in.op){
+    case BC_LOADK: BVR(in.a)=p->k[in.imm]; break;
+    case BC_LOADNIL: for(int i=0;i<in.b;i++) BVR(in.a+i)=VNIL; break;
+    case BC_LOADBOOL: BVR(in.a)=VBOOL(in.b?true:false); break;
+    case BC_MOVE: BVR(in.a)=BVR(in.b); break;
+    case BC_GETGLOBAL: BVR(in.a)=tget(S->globals->vars,p->k[in.imm]); break;
+    case BC_SETGLOBAL: tset(S,S->globals->vars,p->k[in.imm],BVR(in.a)); break;
+    case BC_GETTABLE: BVR(in.a)=indexVal(S,BVR(in.b),BVR(in.c)); break;
+    case BC_SETTABLE: newIndex(S,BVR(in.a),BVR(in.b),BVR(in.c)); break;
+    case BC_GETFIELD: BVR(in.a)=indexVal(S,BVR(in.b),p->k[in.imm]); break;
+    case BC_SETFIELD: newIndex(S,BVR(in.a),p->k[in.imm],BVR(in.b)); break;
+    case BC_ADD: case BC_SUB: case BC_MUL: case BC_DIV: case BC_MOD: case BC_POW: case BC_IDIV:{
+      double x=toNum(S,BVR(in.b)),y=toNum(S,BVR(in.c)),v=0;
+      switch(in.op){case BC_ADD:v=x+y;break;case BC_SUB:v=x-y;break;case BC_MUL:v=x*y;break;case BC_DIV:v=x/y;break;
+        case BC_MOD:v=x-floor(x/y)*y;break;case BC_POW:v=pow(x,y);break;case BC_IDIV:v=floor(x/y);break;}
+      BVR(in.a)=VNUM(v); break;}
+    case BC_BAND: case BC_BOR: case BC_BXOR: case BC_SHL: case BC_SHR:{
+      int64_t x=(int64_t)toNum(S,BVR(in.b)),y=(int64_t)toNum(S,BVR(in.c)),v=0;
+      switch(in.op){case BC_BAND:v=x&y;break;case BC_BOR:v=x|y;break;case BC_BXOR:v=x^y;break;
+        case BC_SHL:v=x<<(y&63);break;case BC_SHR:v=x>>(y&63);break;}
+      BVR(in.a)=VNUM((double)v); break;}
+    case BC_UNM: BVR(in.a)=VNUM(-toNum(S,BVR(in.b))); break;
+    case BC_BNOT: BVR(in.a)=VNUM((double)(~(int64_t)toNum(S,BVR(in.b)))); break;
+    case BC_NOT:{ Value v=BVR(in.b); BVR(in.a)=VBOOL(!toBool(v)); break; }
+    case BC_LEN:{ Value a=BVR(in.b); Value r;
+      if(a.tag==T_STR)r=VNUM((double)a.u.s->len);
+      else if(a.tag==T_TAB){
+        if(a.u.t->meta){Value m=tget(a.u.t->meta,VSTR(newStr(S,"__len",5)));r=m.tag!=T_NIL?callValue(S,m,1,&a):VNUM((double)tlen(a.u.t));}
+        else r=VNUM((double)tlen(a.u.t)); }
+      else lx_rt_error(S,"attempt to get length of a %s value",lx_typename(a));
+      BVR(in.a)=r; break;}
+    case BC_CONCAT:{
+      Str*sa=toStrx(S,BVR(in.b)),*sb=toStrx(S,BVR(in.c));
+      char*buf=xalloc(S,sa->len+sb->len+1);
+      memcpy(buf,sa->p,sa->len); memcpy(buf+sa->len,sb->p,sb->len);
+      BVR(in.a)=VSTR(newStr(S,buf,sa->len+sb->len)); break;}
+    case BC_EQ: BVR(in.a)=VBOOL(valEq(BVR(in.b),BVR(in.c))); break;
+    case BC_LT: BVR(in.a)=VBOOL(toNum(S,BVR(in.b))<toNum(S,BVR(in.c))); break;
+    case BC_LE: BVR(in.a)=VBOOL(toNum(S,BVR(in.b))<=toNum(S,BVR(in.c))); break;
+    case BC_TEST: if(!toBool(BVR(in.a))){pc+=2;continue;} break;
+    case BC_TESTN: if(toBool(BVR(in.a))){pc+=2;continue;} break;
+    case BC_JMP: pc+=in.imm+1; continue;
+    case BC_CALL:{
+      Value f=BVR(in.a);
+      int na=in.b?in.b-1:mrc;
+      if(na>250)lx_rt_error(S,"too many arguments");
+      Value tmp[256];
+      for(int i=0;i<na;i++) tmp[i]=BVR(in.a+1+i);
+      callValue(S,f,na,tmp);
+      int n=S->nret;
+      if(in.c){ int want=in.c-1; for(int i=0;i<want;i++) BVR(in.a+i)= i<n?S->retbuf[i]:VNIL; mrc=want; }
+      else { for(int i=0;i<n;i++) BVR(in.a+i)=S->retbuf[i]; mrc=n; }
+      break;}
+    case BC_EXPAND:{ int want=in.b; if(mrc<want) for(int i=mrc;i<want;i++) BVR(in.a+i)=VNIL; mrc=want; break; }
+    case BC_NEWTABLE: BVR(in.a)=VTAB(newTable(S)); break;
+    case BC_TSETMULT:{ Value tv=BVR(in.a);
+      if(tv.tag!=T_TAB)lx_rt_error(S,"attempt to index a %s value",lx_typename(tv));
+      Table*t=tv.u.t;
+      for(int j=0;j<mrc;j++) tset(S,t,BVR(in.b),BVR(in.c+j));
+      BVR(in.b)=VNUM(BVR(in.b).u.num+1);
+      break;}
+    case BC_INC: BVR(in.a)=VNUM(BVR(in.a).u.num+in.b); break;
+    case BC_FORPREP:{
+      double step=BVR(in.a+2).u.num;
+      BVR(in.a+3)=BVR(in.a);
+      bool inrange = step>0 ? BVR(in.a).u.num<=BVR(in.a+1).u.num : BVR(in.a).u.num>=BVR(in.a+1).u.num;
+      if(inrange){ BVR(in.a)=BVR(in.a+3); pc++; continue; }
+      pc+=in.imm+1; continue; }
+    case BC_FORLOOP:{
+      double i=BVR(in.a+3).u.num+BVR(in.a+2).u.num, lim=BVR(in.a+1).u.num, st=BVR(in.a+2).u.num;
+      BVR(in.a+3)=VNUM(i);
+      bool cont = st>0 ? i<=lim : i>=lim;
+      if(cont){ BVR(in.a)=VNUM(i); pc+=in.imm+1; continue; }
+      break;}
+    case BC_GFORPREP: pc+=in.imm+1; continue;
+    case BC_GFORLOOP:{
+      Value args[2]={BVR(in.a+1),BVR(in.a+2)};
+      callValue(S,BVR(in.a),2,args);
+      int n=S->nret;
+      if(n==0||S->retbuf[0].tag==T_NIL) break;          /* exit loop */
+      int nn=in.c;
+      BVR(in.a+2)=S->retbuf[0];
+      int nv=n>nn?nn:n;
+      for(int i=0;i<nv;i++) BVR(in.a+3+i)=S->retbuf[i];
+      for(int i=nv;i<nn;i++) BVR(in.a+3+i)=VNIL;
+      pc+=in.imm+1; continue; }
+    case BC_RETURN:{
+      int n2=in.b?in.b-1:mrc;
+      if(n2>64)n2=64;
+      for(int i=0;i<n2;i++) S->retbuf[i]=BVR(in.a+i);
+      S->nret=n2;
+      ret=n2?S->retbuf[0]:VNIL;
+      S->vtop=base;
+      dbg_pop_frame(S);
+      return ret;}
+    default: lx_rt_error(S,"internal error: bad opcode %d",(int)in.op);
+    }
+    pc++;
+  }
+}
+#undef BVR
+
+/* ---- disassembler (CLI --bc-dump / tests) ---- */
+static void bc_collect_funcs(Node*n,Node**out,int*no,int max){
+  if(!n||*no>=max)return;
+  if(n->kind==K_FUNC) out[(*no)++]=n;
+  bc_collect_funcs(n->a,out,no,max); bc_collect_funcs(n->b,out,no,max);
+  bc_collect_funcs(n->c,out,no,max); bc_collect_funcs(n->body,out,no,max);
+  for(int i=0;i<n->nlist;i++) bc_collect_funcs(n->list[i],out,no,max);
+  for(int i=0;i<n->nlist2;i++) bc_collect_funcs(n->list2[i],out,no,max);
+}
+int lx_bc_disassemble(lx_State*S,const char*src,char*errbuf,int errlen){
+  if(setjmp(S->err)){ if(errbuf)snprintf(errbuf,errlen,"%s",S->errmsg); return -1; }
+  Node*chunk=parse(S,src,strlen(src));
+  Node*funcs[128]; int nf=0; bc_collect_funcs(chunk,funcs,&nf,128);
+  for(int i=0;i<nf;i++){
+    printf("function #%d (line %d)\n",i,funcs[i]->line);
+    Func df; memset(&df,0,sizeof(df));
+    df.nparam=funcs[i]->nnames; df.params=funcs[i]->names; df.vararg=funcs[i]->vararg;
+    df.body=funcs[i]->body; df.env=S->globals; df.line=funcs[i]->line;
+    Proto*p=bc_build(S,&df);
+    if(!p){ printf("  <not compilable by bytecode v0>\n"); continue; }
+    printf("  params=%d maxstack=%d consts=%d insns=%d\n",p->nparam,p->maxstack,p->nk,p->ncode);
+    for(int j=0;j<p->nk;j++){ char b[80]; Value v=p->k[j];
+      if(v.tag==T_NUM)snprintf(b,sizeof(b),"%.14g",v.u.num);
+      else if(v.tag==T_STR)snprintf(b,sizeof(b),"\"%.*s\"",(int)v.u.s->len,v.u.s->p);
+      else snprintf(b,sizeof(b),"?");
+      printf("    K%d = %s\n",j,b); }
+    for(int j=0;j<p->ncode;j++)
+      printf("  %4d  %-9s a=%-3d b=%-3d c=%-3d imm=%-6d ; line %d\n",j,bc_opname(p->code[j].op),p->code[j].a,p->code[j].b,p->code[j].c,p->code[j].imm,p->lines[j]);
+  }
+  return nf;
+}
+void lx_bc_stats(lx_State*S,long*calls,long*fallbacks){
+  if(calls)*calls=S?S->bc_calls:0;
+  if(fallbacks)*fallbacks=S?S->bc_fallbacks:0;
+}
+
 /* ---------- stdlib ---------- */
 static CFn* mkCFn(State*S,const char*name,Value(*fn)(State*,int,Value*)){CFn*c=xalloc(S,sizeof(CFn));c->fn=fn;c->name=name;return c;}
 /* type guards: stdlib functions used to dereference argv[].u.* unconditionally,
@@ -718,10 +1246,10 @@ static Value st_raweq(State*S,int argc,Value*argv){ S->nret=1; S->retbuf[0]=VBOO
 static Value st_assert(State*S,int argc,Value*argv){ if(!toBool(argv[0]))lx_rt_error(S,argc>1&&argv[1].tag==T_STR?argv[1].u.s->p:"assertion failed!"); for(int i=0;i<argc&&i<64;i++)S->retbuf[i]=argv[i]; S->nret=argc; return argc?argv[0]:VNIL; }
 static Value st_error(State*S,int argc,Value*argv){ Str*st=toStrx(S,argv[0]); lx_rt_error(S,"%.*s",(int)st->len,st->p); return VNIL; }
 static Value st_pcall(State*S,int argc,Value*argv){ Value f=argv[0]; jmp_buf outer; memcpy(&outer,&S->err,sizeof(outer));
-  int depth=S->nstack;
+  int depth=S->nstack; int vdepth=S->vtop;
   if(setjmp(S->err)==0){ Value r=callValue(S,f,argc-1,argv+1); int n=S->nret; Value tmp[64]; tmp[0]=r; for(int i=1;i<n&&i<64;i++)tmp[i]=S->retbuf[i];
-    memcpy(&S->err,&outer,sizeof(outer)); S->nstack=depth; S->retbuf[0]=VBOOL(1); for(int i=0;i<n&&i<63;i++)S->retbuf[1+i]=tmp[i]; S->nret=n+1; return S->retbuf[0]; }
-  memcpy(&S->err,&outer,sizeof(outer)); S->nstack=depth; S->retbuf[0]=VBOOL(0); S->retbuf[1]=VSTR(newStr(S,S->errmsg,strlen(S->errmsg))); S->nret=2; return S->retbuf[0]; }
+    memcpy(&S->err,&outer,sizeof(outer)); S->nstack=depth; S->vtop=vdepth; S->retbuf[0]=VBOOL(1); for(int i=0;i<n&&i<63;i++)S->retbuf[1+i]=tmp[i]; S->nret=n+1; return S->retbuf[0]; }
+  memcpy(&S->err,&outer,sizeof(outer)); S->nstack=depth; S->vtop=vdepth; S->retbuf[0]=VBOOL(0); S->retbuf[1]=VSTR(newStr(S,S->errmsg,strlen(S->errmsg))); S->nret=2; return S->retbuf[0]; }
 static Value st_select(State*S,int argc,Value*argv){ if(argv[0].tag==T_STR&&argv[0].u.s->len==1&&argv[0].u.s->p[0]=='#'){S->nret=1;S->retbuf[0]=VNUM(argc-1);return S->retbuf[0];} int n=num2int(S,argv[0]); if(n<0)n=argc+n; else if(n==0)lx_rt_error(S,"bad argument #1 to 'select'"); S->nret=argc-n; for(int i=0;i+n<argc;i++)S->retbuf[i]=argv[n+i]; return S->nret?S->retbuf[0]:VNIL; }
 static Value st_unpack(State*S,int argc,Value*argv){ Table*t=argTab(S,argv[0],"table.unpack"); int i=argc>1?num2int(S,argv[1]):1; int j=argc>2?num2int(S,argv[2]):tlen(t); if(i<=j && (long)j-(long)i+1>64)lx_rt_error(S,"too many results to unpack"); S->nret=0; for(;i<=j;i++)S->retbuf[S->nret++]=tget(t,VNUM(i)); return S->nret?S->retbuf[0]:VNIL; }
 static Value st_slen(State*S,int argc,Value*argv){S->nret=1;S->retbuf[0]=VNUM((double)argStr(S,argv[0],"string.len")->len);return S->retbuf[0];}
@@ -1026,7 +1554,7 @@ static void openLibs(State*S){
 
 /* ---------- API ---------- */
 State* lx_new(void){ State*S=calloc(1,sizeof(State)); S->globals=xalloc(S,sizeof(Env)); S->globals->vars=newTable(S); S->globals->parent=NULL; S->step_limit=0; pthread_mutex_init(&S->dbg_mu,NULL); pthread_cond_init(&S->dbg_cv,NULL); S->dbg_inited=1; io_init(S); openLibs(S); return S; }
-void lx_close(State*S){ if(!S)return; S->cancel_flag=1; if(S->dbg_inited){ pthread_mutex_lock(&S->dbg_mu); S->dbg_cmd=3; S->dbg_paused=0; pthread_cond_broadcast(&S->dbg_cv); pthread_mutex_unlock(&S->dbg_mu); pthread_mutex_destroy(&S->dbg_mu); pthread_cond_destroy(&S->dbg_cv); } if(S->io_inited){ pthread_mutex_lock(&S->io_mu); pthread_cond_broadcast(&S->io_cv); pthread_mutex_unlock(&S->io_mu); pthread_mutex_destroy(&S->io_mu); pthread_cond_destroy(&S->io_cv); } for(int i=0;i<S->npages;i++)free(S->pages[i].p); free(S->pages); free(S->out); free(S->json); free(S->dbg_locals); free(S->dbg_stack); free(S->dbg_eval_buf); free(S->stdin_q); free(S); }
+void lx_close(State*S){ if(!S)return; S->cancel_flag=1; if(getenv("LUAX_BC_STATS"))fprintf(stderr,"bc: %ld compiled calls, %ld fallbacks\n",S->bc_calls,S->bc_fallbacks); if(S->dbg_inited){ pthread_mutex_lock(&S->dbg_mu); S->dbg_cmd=3; S->dbg_paused=0; pthread_cond_broadcast(&S->dbg_cv); pthread_mutex_unlock(&S->dbg_mu); pthread_mutex_destroy(&S->dbg_mu); pthread_cond_destroy(&S->dbg_cv); } if(S->io_inited){ pthread_mutex_lock(&S->io_mu); pthread_cond_broadcast(&S->io_cv); pthread_mutex_unlock(&S->io_mu); pthread_mutex_destroy(&S->io_mu); pthread_cond_destroy(&S->io_cv); } for(int i=0;i<S->npages;i++)free(S->pages[i].p); free(S->pages); free(S->vstack); free(S->out); free(S->json); free(S->dbg_locals); free(S->dbg_stack); free(S->dbg_eval_buf); free(S->stdin_q); free(S); }
 int lx_dostring(State*S,const char*src,char*errbuf,int errlen){
   if(setjmp(S->err)){ if(errbuf)snprintf(errbuf,errlen,"%s",S->errmsg); return 1; }
   Node*chunk=parse(S,src,strlen(src));
@@ -1043,6 +1571,7 @@ int lx_dofile(State*S,const char*path,char*errbuf,int errlen){
 /* reset per-run scratch (print buffer, json buffer, handlers, step counter) */
 static void lx_reset_run(State*S){
   S->cancel_flag=0;
+  S->vtop=0;
   S->outused=0; if(S->out)S->out[0]=0;
   S->jsonused=0; if(S->json)S->json[0]=0;
   S->nhandlers=0; S->steps=0; S->has_view=false; S->app_view=VNIL;
