@@ -1,5 +1,10 @@
 # Multi-file modules + UI widgets
 
+> 组件属性、事件 payload 与重渲染契约的权威定义在 [ENGINE.md](ENGINE.md);
+> 本页只保留 require 解析规则的速览。
+
+# Multi-file modules + UI widgets
+
 ## require()
 - `require("ui")` → built-in UI library
 - `require("lib.util")` → `src/lib/util.lua` or `src/lib/util/init.lua`
