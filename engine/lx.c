@@ -15,6 +15,7 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <pthread.h>
 #include <time.h>
 
@@ -70,6 +71,8 @@ struct State {
   Value handlers[LX_MAX_HANDLERS]; int nhandlers;
   /* runaway-execution guard */
   long steps; long step_limit;
+  /* math.random state (splitmix64, per-State; lazily seeded from time) */
+  unsigned long long rng; int rng_seeded;
   /* bytecode VM (Phase 1b): value stack shared by compiled frames + stats */
   Value* vstack; int vstack_sz; int vtop;
   long bc_calls; long bc_fallbacks;
@@ -362,6 +365,11 @@ static Value indexVal(State*S,Value t,Value k){
    * chain. Lua itself raises "loop in gettable" on cycles. */
   for(int depth=0;depth<1024;depth++){
     if(t.tag==T_TAB){Value v=tget(t.u.t,k);if(v.tag!=T_NIL)return v;if(t.u.t->meta){Value mt=tget(t.u.t->meta,VSTR(newStr(S,"__index",7)));if(mt.tag==T_TAB){t=mt;continue;}if(mt.tag!=T_NIL){Value args[2]={t,k};return callValue(S,mt,2,args);}}return VNIL;}
+    if(t.tag==T_STR){ /* method sugar: ("x"):upper() — strings index the string lib */
+      Value st=tget(S->globals->vars,VSTR(newStr(S,"string",6)));
+      if(st.tag==T_TAB){Value v=tget(st.u.t,k);if(v.tag!=T_NIL)return v;}
+      return VNIL;
+    }
     lx_rt_error(S,"attempt to index a %s value",lx_typename(t));
   }
   lx_rt_error(S,"loop in gettable (metatable __index chain too deep)");
@@ -802,16 +810,22 @@ static void bc_call_compile(Bc*C,Node*e,int base,int mode){
   int cres = mode==1?0 : mode==2?1 : 2;
   if(e->line>0)C->curline=e->line;
   if(e->kind==K_METHODCALL){
-    bc_expr(C,e->a,base);                                  /* obj */
+    /* Layout: f at base (so the CALL result lands at base, where consumers
+     * read it), obj/self at base+1, args from base+2. The old layout put f
+     * at base+1 and the result followed it, so a consumer reading the call
+     * result at base got the OBJECT instead of the call's return value —
+     * reachable whenever a method call's result is consumed inside a
+     * compiled function body. */
+    bc_raise(C,base+2);
+    bc_expr(C,e->a,base+1);                                /* obj = self at base+1 */
     int mk=bc_kstr(C,e->method);
-    bc_emit(C,BC_GETFIELD,base+1,base,0,mk);               /* f */
-    bc_emit(C,BC_MOVE,base+2,base,0,0);                    /* self = argv[0] */
+    bc_emit(C,BC_GETFIELD,base,base+1,0,mk);               /* f at base */
     bc_raise(C,base+3);
     Node**A=e->list;int n=e->nlist;
     int lastmulti=n>0&&bc_ismulti(A[n-1]);
-    for(int i=0;i<n-(lastmulti?1:0);i++){ bc_expr(C,A[i],base+3+i); bc_raise(C,base+4+i); }
-    if(lastmulti){ bc_call_compile(C,A[n-1],base+3+n-1,1); bc_raise(C,C->reg+64); }
-    bc_emit(C,BC_CALL,base+1,lastmulti?0:(n+2),cres,0);
+    for(int i=0;i<n-(lastmulti?1:0);i++){ bc_expr(C,A[i],base+2+i); bc_raise(C,base+3+i); }
+    if(lastmulti){ bc_call_compile(C,A[n-1],base+2+n-1,1); bc_raise(C,C->reg+64); }
+    bc_emit(C,BC_CALL,base,lastmulti?0:(n+2),cres,0);
     return;
   }
   /* K_CALL: f at base, args from base+1, last arg may expand via mrc */
@@ -1260,6 +1274,431 @@ static Value st_srep(State*S,int argc,Value*argv){Str*s=argStr(S,argv[0],"string
 static Value st_tinsert(State*S,int argc,Value*argv){Table*t=argTab(S,argv[0],"table.insert");if(argc==2){int n=tlen(t);tset(S,t,VNUM(n+1),argv[1]);}else{int p=num2int(S,argv[1]);int n=tlen(t);for(int i=n;i>=p;i--)tset(S,t,VNUM(i+1),tget(t,VNUM(i)));tset(S,t,VNUM(p),argv[2]);}S->nret=0;return VNIL;}
 static Value st_tremove(State*S,int argc,Value*argv){Table*t=argTab(S,argv[0],"table.remove");int n=tlen(t);int p=argc>1?num2int(S,argv[1]):n;if(p<1)p=1;if(p>n){S->nret=1;S->retbuf[0]=VNIL;return VNIL;}Value v=tget(t,VNUM(p));for(int i=p;i<n;i++)tset(S,t,VNUM(i),tget(t,VNUM(i+1)));tset(S,t,VNUM(n),VNIL);S->nret=1;S->retbuf[0]=v;return v;}
 static Value st_tconcat(State*S,int argc,Value*argv){Table*t=argTab(S,argv[0],"table.concat");Str*sep=argc>1&&argv[1].tag==T_STR?argv[1].u.s:NULL;int i=argc>2?num2int(S,argv[2]):1;int j=argc>3?num2int(S,argv[3]):tlen(t);char*buf=NULL;size_t m=0,cap=0;for(;i<=j;i++){Value v=tget(t,VNUM(i));if(v.tag!=T_STR&&v.tag!=T_NUM)lx_rt_error(S,"invalid value (table.concat)");Str*s=toStrx(S,v);if(m+s->len>cap){cap=cap?cap*2:64;while(m+s->len>cap)cap*=2;buf=realloc(buf,cap);}memcpy(buf+m,s->p,s->len);m+=s->len;if(i<j&&sep){if(m+sep->len>cap){cap=cap?cap*2:64;while(m+sep->len>cap)cap*=2;buf=realloc(buf,cap);}memcpy(buf+m,sep->p,sep->len);m+=sep->len;}}S->nret=1;S->retbuf[0]=m?VSTR(newStr(S,buf,m)):VSTR(newStr(S,"",0));if(buf)free(buf);return S->retbuf[0];}
+
+/* ---------- pattern matching (Lua 5.1 semantics, original implementation) ----------
+ * Byte-oriented, like Lua 5.1: classes and '.' match single bytes (a UTF-8
+ * character is multiple bytes). The subject is length-delimited (may contain
+ * NULs); the pattern is treated as NUL-terminated, so patterns cannot contain
+ * embedded NULs. Captures: len<0 marks a sentinel (-1 position capture "()",
+ * -2 unfinished) while a successful capture has init/len into the subject. */
+#define LX_MAXCAPS 32
+typedef struct { const char* init; ptrdiff_t len; } PCap;
+typedef struct { State* S; const char* src; const char* send; int level; PCap cap[LX_MAXCAPS]; int depth; } PMS;
+static void pms_init(PMS*ms,State*S,Str*s){ ms->S=S; ms->src=s->p; ms->send=s->p+s->len; ms->level=0; ms->depth=0; }
+static const char* p_classend(PMS*ms,const char*p){
+  if(*p=='%'){ if(!p[1])lx_rt_error(ms->S,"malformed pattern (ends with '%%')"); return p+2; }
+  if(*p=='['){
+    p++; if(*p=='^')p++;
+    do{ if(!*p)lx_rt_error(ms->S,"malformed pattern (missing ']')");
+        if(*p=='%'){ if(!p[1])lx_rt_error(ms->S,"malformed pattern (ends with '%%')"); p+=2; } else p++;
+    }while(*p!=']');
+    return p+1;
+  }
+  if(!*p)lx_rt_error(ms->S,"malformed pattern (empty)");
+  return p+1;
+}
+static int p_class(int c,int cl){
+  int res;
+  switch(tolower(cl)){
+    case 'a':res=isalpha(c);break; case 'c':res=iscntrl(c);break; case 'd':res=isdigit(c);break;
+    case 'g':res=isgraph(c);break; case 'l':res=islower(c);break; case 'p':res=ispunct(c);break;
+    case 's':res=isspace(c);break; case 'u':res=isupper(c);break; case 'w':res=isalnum(c);break;
+    case 'x':res=isxdigit(c);break; case 'z':res=(c==0);break;
+    default:return (cl==c);
+  }
+  if(isupper(cl))res=!res;
+  return res;
+}
+static int p_bracket(int c,const char*p,const char*ec){ /* p at '[', ec past ']' */
+  int sig=1;
+  if(*(p+1)=='^'){sig=0;p++;}
+  while(++p<ec){
+    if(*p=='%'){ p++; if(p_class(c,(unsigned char)*p))return sig; }
+    else if(*(p+1)=='-'&&p+2<ec){ p+=2; if((unsigned char)*(p-2)<=c&&c<=(unsigned char)*p)return sig; }
+    else if((unsigned char)*p==c)return sig;
+  }
+  return !sig;
+}
+static int p_single(PMS*ms,const char*s,const char*p,const char*ep){
+  if(s>=ms->send)return 0;
+  int c=(unsigned char)*s;
+  switch(*p){
+    case '.': return 1;
+    case '%': return p_class(c,(unsigned char)p[1]);
+    case '[': return p_bracket(c,p,ep);
+    default: return (unsigned char)*p==c;
+  }
+}
+static const char* p_match(PMS*ms,const char*s,const char*p);
+static const char* p_max(PMS*ms,const char*s,const char*p,const char*ep);
+static const char* p_min(PMS*ms,const char*s,const char*p,const char*ep);
+static const char* p_dflt(PMS*ms,const char*s,const char*p){
+  const char*ep=p_classend(ms,p);
+  if(!p_single(ms,s,p,ep)){
+    if(*ep=='*'||*ep=='?'||*ep=='-') return p_match(ms,s,ep+1);
+    return NULL;
+  }
+  switch(*ep){
+    case '?':{ const char*r=p_match(ms,s+1,ep+1); if(r)return r; return p_match(ms,s,ep+1); }
+    case '+': return p_max(ms,s+1,p,ep);
+    case '*': return p_max(ms,s,p,ep);
+    case '-': return p_min(ms,s,p,ep);
+    default: return p_match(ms,s+1,ep);
+  }
+}
+static const char* p_startcap(PMS*ms,const char*s,const char*p,int pos){
+  if(ms->level>=LX_MAXCAPS)lx_rt_error(ms->S,"too many captures");
+  ms->cap[ms->level].init=s; ms->cap[ms->level].len=pos?-1:-2; ms->level++;
+  const char*res=p_match(ms,s,p);
+  if(!res)ms->level--;
+  return res;
+}
+static const char* p_endcap(PMS*ms,const char*s,const char*p){
+  int idx=-1;
+  for(int i=ms->level-1;i>=0;i--) if(ms->cap[i].len<0){ idx=i; break; }
+  if(idx<0||ms->cap[idx].len==-1)lx_rt_error(ms->S,"invalid pattern capture");
+  ms->cap[idx].len=s-ms->cap[idx].init;
+  const char*res=p_match(ms,s,p);
+  if(!res)ms->cap[idx].len=-2;
+  return res;
+}
+static const char* p_balance(PMS*ms,const char*s,const char*p){
+  if(p[0]==0||p[1]==0)lx_rt_error(ms->S,"malformed pattern (missing arguments to '%%b')");
+  if(s>=ms->send||*s!=*p)return NULL;
+  int b=*p,e=p[1],cont=1;
+  for(const char*q=s+1;q<ms->send;q++){
+    if(*q==e){ if(--cont==0)return p_match(ms,q+1,p+2); }
+    else if(*q==b)cont++;
+  }
+  return NULL;
+}
+static const char* p_frontier(PMS*ms,const char*s,const char*p){
+  if(*p!='[')lx_rt_error(ms->S,"missing '[' after '%%f' in pattern");
+  const char*ep=p_classend(ms,p);
+  char prev=(s==ms->src)?'\0':*(s-1);
+  int cur=(s<ms->send)&&p_bracket((unsigned char)*s,p,ep);
+  int prv=p_bracket((unsigned char)prev,p,ep);
+  if(!prv&&cur)return p_match(ms,s,ep);
+  return NULL;
+}
+static const char* p_match(PMS*ms,const char*s,const char*p){
+  if(ms->depth++>1000)lx_rt_error(ms->S,"pattern too complex");
+  const char*res=NULL;
+  switch(*p){
+    case 0: res=s; break;
+    case '(': res=(p[1]==')')?p_startcap(ms,s,p+2,1):p_startcap(ms,s,p+1,0); break;
+    case ')': res=p_endcap(ms,s,p+1); break;
+    case '$': res=(p[1]==0)?((s==ms->send)?s:NULL):p_dflt(ms,s,p); break;
+    case '%':
+      if(p[1]=='b'){res=p_balance(ms,s,p+2);break;}
+      if(p[1]=='f'){res=p_frontier(ms,s,p+2);break;}
+      res=p_dflt(ms,s,p); break;
+    default: res=p_dflt(ms,s,p); break;
+  }
+  ms->depth--;
+  return res;
+}
+static const char* p_max(PMS*ms,const char*s,const char*p,const char*ep){
+  const char*start=s;
+  while(p_single(ms,s,p,ep))s++;
+  while(s>=start){
+    const char*res=p_match(ms,s,ep+1);
+    if(res)return res;
+    s--;
+  }
+  return NULL;
+}
+static const char* p_min(PMS*ms,const char*s,const char*p,const char*ep){
+  for(;;){
+    const char*res=p_match(ms,s,ep+1);
+    if(res)return res;
+    if(!p_single(ms,s,p,ep))return NULL;
+    s++;
+  }
+}
+static Value p_capval(PMS*ms,int i){
+  if(ms->cap[i].len==-1)return VNUM((double)(ms->cap[i].init-ms->src+1));
+  return VSTR(newStr(ms->S,ms->cap[i].init,ms->cap[i].len));
+}
+/* string.find / match / gsub share init normalization: 1-based, negative
+ * counts from the end; returns the start pointer, or NULL when the position
+ * is past the end of the subject (no match is possible there). */
+static const char* str_from(State*S,Str*src,int argc,Value*argv,int argi){
+  int init=argc>argi?num2int(S,argv[argi]):1;
+  if(init<0)init=(int)src->len+init+1;
+  if(init<1)init=1;
+  if((size_t)(init-1)>src->len)return NULL;
+  return src->p+(init-1);
+}
+static Value st_sfind(State*S,int argc,Value*argv){
+  Str*src=argStr(S,argv[0],"string.find"); Str*pat=argStr(S,argv[1],"string.find");
+  const char*from=str_from(S,src,argc,argv,2);
+  if(from){
+    if(argc>3&&toBool(argv[3])){ /* plain-text search */
+      const char*end=src->p+src->len;
+      for(const char*q=from;q+pat->len<=end;q++){
+        if(pat->len==0||memcmp(q,pat->p,pat->len)==0){
+          S->nret=2; S->retbuf[0]=VNUM((double)(q-src->p+1)); S->retbuf[1]=VNUM((double)(q-src->p+pat->len));
+          return S->retbuf[0];
+        }
+      }
+    } else {
+      PMS ms; pms_init(&ms,S,src);
+      const char*pp=pat->p; int anchor=(*pp=='^'); if(anchor)pp++;
+      for(const char*q=from;q<=ms.send;q++){
+        ms.level=0;
+        const char*e=p_match(&ms,q,pp);
+        if(e){
+          S->nret=2+ms.level; S->retbuf[0]=VNUM((double)(q-src->p+1)); S->retbuf[1]=VNUM((double)(e-src->p));
+          for(int i=0;i<ms.level;i++)S->retbuf[2+i]=p_capval(&ms,i);
+          return S->retbuf[0];
+        }
+        if(anchor)break;
+      }
+    }
+  }
+  S->nret=1; S->retbuf[0]=VNIL; return VNIL;
+}
+static Value st_smatch(State*S,int argc,Value*argv){
+  Str*src=argStr(S,argv[0],"string.match"); Str*pat=argStr(S,argv[1],"string.match");
+  const char*from=str_from(S,src,argc,argv,2);
+  if(from){
+    PMS ms; pms_init(&ms,S,src);
+    const char*pp=pat->p; int anchor=(*pp=='^'); if(anchor)pp++;
+    for(const char*q=from;q<=ms.send;q++){
+      ms.level=0;
+      const char*e=p_match(&ms,q,pp);
+      if(e){
+        if(ms.level==0){ S->nret=1; S->retbuf[0]=VSTR(newStr(S,q,e-q)); return S->retbuf[0]; }
+        S->nret=ms.level;
+        for(int i=0;i<ms.level;i++)S->retbuf[i]=p_capval(&ms,i);
+        return S->retbuf[0];
+      }
+      if(anchor)break;
+    }
+  }
+  S->nret=1; S->retbuf[0]=VNIL; return VNIL;
+}
+static void gsub_rep(State*S,PMS*ms,Value repl,const char*mp,size_t mlen,char**buf,size_t*bsz,size_t*used){
+  if(repl.tag==T_STR){
+    Str*rs=repl.u.s;
+    for(size_t i=0;i<rs->len;i++){
+      char c=rs->p[i];
+      if(c!='%'){ buf_append(buf,bsz,used,&c,1); continue; }
+      if(++i>=rs->len)lx_rt_error(S,"invalid use of '%%' in replacement string");
+      char d=rs->p[i];
+      if(d=='%'){ buf_append(buf,bsz,used,"%",1); continue; }
+      if(d<'0'||d>'9')lx_rt_error(S,"invalid use of '%%' in replacement string");
+      int k=d-'0';
+      if(k==0){ buf_append(buf,bsz,used,mp,mlen); continue; }
+      if(k>ms->level)lx_rt_error(S,"invalid capture index %%%d in replacement string",k);
+      Value cv=p_capval(ms,k-1); Str*cs=toStrx(S,cv);
+      buf_append(buf,bsz,used,cs->p,cs->len);
+    }
+  } else if(repl.tag==T_TAB||repl.tag==T_FN||repl.tag==T_CFN){
+    Value args[LX_MAXCAPS]; int na;
+    if(ms->level==0){ args[0]=VSTR(newStr(S,mp,mlen)); na=1; }
+    else { for(int i=0;i<ms->level;i++)args[i]=p_capval(ms,i); na=ms->level; }
+    Value r=(repl.tag==T_TAB)?tget(repl.u.t,args[0]):callValue(S,repl,na,args);
+    if(r.tag==T_STR||r.tag==T_NUM){ Str*rs=toStrx(S,r); buf_append(buf,bsz,used,rs->p,rs->len); }
+    else buf_append(buf,bsz,used,mp,mlen); /* nil/false keeps the original match */
+  } else {
+    lx_rt_error(S,"bad argument #3 to 'gsub' (string/function/table expected)");
+  }
+}
+static Value st_sgsub(State*S,int argc,Value*argv){
+  Str*src=argStr(S,argv[0],"string.gsub"); Str*pat=argStr(S,argv[1],"string.gsub");
+  Value repl=argv[2];
+  if(repl.tag!=T_STR&&repl.tag!=T_TAB&&repl.tag!=T_FN&&repl.tag!=T_CFN)
+    lx_rt_error(S,"bad argument #3 to 'gsub' (string/function/table expected)");
+  long maxn=(argc>3&&argv[3].tag!=T_NIL)?num2int(S,argv[3]):-1;
+  char*buf=NULL; size_t bsz=0,bu=0; long count=0;
+  PMS ms; pms_init(&ms,S,src);
+  const char*pp=pat->p; int anchor=(*pp=='^'); if(anchor)pp++;
+  const char*sp=src->p;
+  while(sp<=ms.send&&(maxn<0||count<maxn)){
+    ms.level=0;
+    const char*e=p_match(&ms,sp,pp);
+    if(e){
+      count++;
+      gsub_rep(S,&ms,repl,sp,(size_t)(e-sp),&buf,&bsz,&bu);
+      if(anchor)break;
+      if(e>sp)sp=e;
+      else { if(sp<ms.send)buf_append(&buf,&bsz,&bu,sp,1); sp++; } /* empty match: keep char, advance */
+    } else {
+      if(anchor)break;
+      if(sp<ms.send)buf_append(&buf,&bsz,&bu,sp,1);
+      sp++;
+    }
+  }
+  if(sp<=ms.send)buf_append(&buf,&bsz,&bu,sp,(size_t)(ms.send-sp));
+  S->nret=2;
+  S->retbuf[0]=bu?VSTR(newStr(S,buf,bu)):VSTR(newStr(S,"",0));
+  S->retbuf[1]=VNUM((double)count);
+  if(buf)free(buf);
+  return S->retbuf[0];
+}
+static Value st_sbyte(State*S,int argc,Value*argv){
+  Str*s=argStr(S,argv[0],"string.byte");
+  int i=argc>1?num2int(S,argv[1]):1, j=argc>2?num2int(S,argv[2]):i, len=(int)s->len;
+  if(i<0)i+=len+1; if(i<1)i=1;
+  if(j<0)j+=len+1; if(j>len)j=len;
+  if(j-i+1>64)lx_rt_error(S,"too many results to 'string.byte'");
+  S->nret=0;
+  for(;i<=j;i++)S->retbuf[S->nret++]=VNUM((double)(unsigned char)s->p[i-1]);
+  return S->nret?S->retbuf[0]:VNIL;
+}
+static Value st_schar(State*S,int argc,Value*argv){
+  char*b=xalloc(S,(size_t)argc+1);
+  for(int i=0;i<argc;i++){ int c=num2int(S,argv[i]); if(c<0||c>255)lx_rt_error(S,"bad argument #%d to 'string.char' (value out of range)",i+1); b[i]=(char)c; }
+  S->nret=1; S->retbuf[0]=VSTR(newStr(S,b,(size_t)argc)); return S->retbuf[0];
+}
+static Value st_sreverse(State*S,int argc,Value*argv){
+  Str*s=argStr(S,argv[0],"string.reverse");
+  char*b=xalloc(S,s->len?s->len:1);
+  for(size_t i=0;i<s->len;i++)b[i]=s->p[s->len-1-i];
+  S->nret=1; S->retbuf[0]=VSTR(newStr(S,b,s->len)); return S->retbuf[0];
+}
+static Value st_sformat(State*S,int argc,Value*argv){
+  Str*f=argStr(S,argv[0],"string.format");
+  char*buf=NULL; size_t bsz=0,bu=0;
+  int argi=1;
+  for(size_t i=0;i<f->len;i++){
+    if(f->p[i]!='%'){ buf_append(&buf,&bsz,&bu,f->p+i,1); continue; }
+    size_t j=i+1; char spec[64]; int sl=0; spec[sl++]='%';
+    while(j<f->len&&(f->p[j]=='-'||f->p[j]=='+'||f->p[j]==' '||f->p[j]=='#'||f->p[j]=='0')&&sl<48)spec[sl++]=f->p[j++];
+    while(j<f->len&&f->p[j]>='0'&&f->p[j]<='9'&&sl<48)spec[sl++]=f->p[j++];
+    if(j<f->len&&f->p[j]=='.'){ if(sl<48)spec[sl++]='.'; j++; while(j<f->len&&f->p[j]>='0'&&f->p[j]<='9'&&sl<48)spec[sl++]=f->p[j++]; }
+    if(j>=f->len)lx_rt_error(S,"invalid conversion '%%' to 'format'");
+    char conv=f->p[j]; spec[sl]=0;
+    if(conv=='%'){ buf_append(&buf,&bsz,&bu,"%",1); i=j; continue; }
+    if(conv=='q'){
+      if(argi>=argc)lx_rt_error(S,"bad argument #%d to 'format' (no value)",argi);
+      Str*s=toStrx(S,argv[argi++]);
+      buf_append(&buf,&bsz,&bu,"\"",1);
+      for(size_t k=0;k<s->len;k++){
+        unsigned char c=(unsigned char)s->p[k]; char e[8];
+        if(c=='"'||c=='\\'){ e[0]='\\'; e[1]=(char)c; buf_append(&buf,&bsz,&bu,e,2); }
+        else if(c=='\n'){ buf_append(&buf,&bsz,&bu,"\\n",2); }
+        else if(c=='\r'){ buf_append(&buf,&bsz,&bu,"\\r",2); }
+        else if(c<32||c==127){ int m=snprintf(e,sizeof(e),"\\%03d",(int)c); buf_append(&buf,&bsz,&bu,e,m); }
+        else buf_append(&buf,&bsz,&bu,s->p+k,1);
+      }
+      buf_append(&buf,&bsz,&bu,"\"",1);
+      i=j; continue;
+    }
+    if(conv=='s'){
+      if(argi>=argc)lx_rt_error(S,"bad argument #%d to 'format' (no value)",argi);
+      Str*s=toStrx(S,argv[argi++]);
+      size_t n=s->len;
+      const char*dot=strchr(spec,'.');
+      if(dot&&dot[1]>='0'&&dot[1]<='9'){ long p=0; const char*q=dot+1; while(*q>='0'&&*q<='9'){ p=p*10+(*q-'0'); q++; } if((size_t)p<n)n=(size_t)p; }
+      /* width / '-' handling is manual so NUL bytes in the argument survive */
+      long w=0; int k=1, left=0;
+      while(k<sl&&(spec[k]=='-'||spec[k]=='+'||spec[k]==' '||spec[k]=='#'||spec[k]=='0')){ if(spec[k]=='-')left=1; k++; }
+      for(;k<sl&&spec[k]>='0'&&spec[k]<='9';k++)w=w*10+(spec[k]-'0');
+      if(!left&&w>0&&(size_t)w>n){ char pad[(size_t)w-n>1024?1024:(size_t)w-n]; memset(pad,' ',sizeof(pad)); buf_append(&buf,&bsz,&bu,pad,sizeof(pad)); }
+      buf_append(&buf,&bsz,&bu,s->p,n);
+      if(left&&w>0&&(size_t)w>n){ char pad[(size_t)w-n>1024?1024:(size_t)w-n]; memset(pad,' ',sizeof(pad)); buf_append(&buf,&bsz,&bu,pad,sizeof(pad)); }
+      i=j; continue;
+    }
+    if(conv=='d'||conv=='i'||conv=='o'||conv=='x'||conv=='X'||conv=='c'||conv=='e'||conv=='E'||conv=='f'||conv=='g'||conv=='G'){
+      if(argi>=argc)lx_rt_error(S,"bad argument #%d to 'format' (no value)",argi);
+      char full[80]; char nb[160];
+      if(conv=='d'||conv=='i'||conv=='o'||conv=='x'||conv=='X'){
+        long long v=(long long)num2int(S,argv[argi++]);
+        snprintf(full,sizeof(full),"%sll%c",spec,conv);
+        int m=snprintf(nb,sizeof(nb),full,v);
+        buf_append(&buf,&bsz,&bu,nb,m);
+      } else if(conv=='c'){
+        int v=num2int(S,argv[argi++]);
+        snprintf(full,sizeof(full),"%sc",spec);
+        int m=snprintf(nb,sizeof(nb),full,v);
+        buf_append(&buf,&bsz,&bu,nb,m);
+      } else {
+        double v=toNum(S,argv[argi++]);
+        snprintf(full,sizeof(full),"%s%c",spec,conv);
+        int m=snprintf(nb,sizeof(nb),full,v);
+        buf_append(&buf,&bsz,&bu,nb,m);
+      }
+      i=j; continue;
+    }
+    lx_rt_error(S,"invalid conversion '%c' to 'format'",conv);
+  }
+  S->nret=1; S->retbuf[0]=bu?VSTR(newStr(S,buf,bu)):VSTR(newStr(S,"",0));
+  if(buf)free(buf);
+  return S->retbuf[0];
+}
+/* ---------- math ---------- */
+static unsigned long long rng_next(State*S){
+  if(!S->rng_seeded){ S->rng=(unsigned long long)time(NULL)^0x9E3779B97F4A7C15ULL^(unsigned long long)(uintptr_t)S; S->rng_seeded=1; }
+  S->rng+=0x9E3779B97F4A7C15ULL;
+  unsigned long long z=S->rng;
+  z=(z^(z>>30))*0xBF58476D1CE4E5B9ULL;
+  z=(z^(z>>27))*0x94D049BB133111EBULL;
+  return z^(z>>31);
+}
+static Value ma_floor(State*S,int argc,Value*argv){(void)argc;S->nret=1;S->retbuf[0]=VNUM(floor(toNum(S,argv[0])));return S->retbuf[0];}
+static Value ma_ceil(State*S,int argc,Value*argv){(void)argc;S->nret=1;S->retbuf[0]=VNUM(ceil(toNum(S,argv[0])));return S->retbuf[0];}
+static Value ma_abs(State*S,int argc,Value*argv){(void)argc;S->nret=1;S->retbuf[0]=VNUM(fabs(toNum(S,argv[0])));return S->retbuf[0];}
+static Value ma_sqrt(State*S,int argc,Value*argv){(void)argc;double x=toNum(S,argv[0]);if(x<0)lx_rt_error(S,"math domain error");S->nret=1;S->retbuf[0]=VNUM(sqrt(x));return S->retbuf[0];}
+static Value ma_max(State*S,int argc,Value*argv){ if(argc<1)lx_rt_error(S,"bad argument #1 to 'math.max' (number expected)"); double m=toNum(S,argv[0]); for(int i=1;i<argc;i++){double x=toNum(S,argv[i]); if(x>m)m=x;} S->nret=1;S->retbuf[0]=VNUM(m);return S->retbuf[0]; }
+static Value ma_min(State*S,int argc,Value*argv){ if(argc<1)lx_rt_error(S,"bad argument #1 to 'math.min' (number expected)"); double m=toNum(S,argv[0]); for(int i=1;i<argc;i++){double x=toNum(S,argv[i]); if(x<m)m=x;} S->nret=1;S->retbuf[0]=VNUM(m);return S->retbuf[0]; }
+static Value ma_random(State*S,int argc,Value*argv){
+  S->nret=1;
+  if(argc==0){ S->retbuf[0]=VNUM((double)(rng_next(S)>>11)*(1.0/9007199254740992.0)); return S->retbuf[0]; }
+  if(argc==1){ long long m=(long long)num2int(S,argv[0]); if(m<1)lx_rt_error(S,"bad argument #1 to 'math.random' (interval is empty)"); S->retbuf[0]=VNUM((double)(1+(long long)(rng_next(S)%(unsigned long long)m))); return S->retbuf[0]; }
+  long long m=(long long)num2int(S,argv[0]), n=(long long)num2int(S,argv[1]);
+  if(n<m)lx_rt_error(S,"bad argument #2 to 'math.random' (interval is empty)");
+  S->retbuf[0]=VNUM((double)(m+(long long)(rng_next(S)%(unsigned long long)(n-m+1))));
+  return S->retbuf[0];
+}
+static Value ma_randomseed(State*S,int argc,Value*argv){ S->rng=(argc>0)?(unsigned long long)(long long)num2int(S,argv[0]):(unsigned long long)time(NULL); S->rng_seeded=1; S->nret=0; return VNIL; }
+/* ---------- table.sort (bottom-up merge sort; stable; arena-allocated temp) ---------- */
+static int sort_less(State*S,Value a,Value b,Value comp){
+  if(comp.tag==T_FN||comp.tag==T_CFN){ Value args[2]={a,b}; return toBool(callValue(S,comp,2,args)); }
+  if(a.tag==T_NUM&&b.tag==T_NUM)return a.u.num<b.u.num;
+  if(a.tag==T_STR&&b.tag==T_STR){ size_t n=a.u.s->len<b.u.s->len?a.u.s->len:b.u.s->len; int c=memcmp(a.u.s->p,b.u.s->p,n); if(c)return c<0; return a.u.s->len<b.u.s->len; }
+  lx_rt_error(S,"attempt to compare %s with %s",lx_typename(a),lx_typename(b));
+  return 0;
+}
+static Value st_tsort(State*S,int argc,Value*argv){
+  Table*t=argTab(S,argv[0],"table.sort");
+  Value comp=(argc>1)?argv[1]:VNIL;
+  if(comp.tag!=T_NIL&&comp.tag!=T_FN&&comp.tag!=T_CFN)lx_rt_error(S,"bad argument #2 to 'table.sort' (function expected)");
+  int n=tlen(t);
+  if(n>=2){
+    Value*a=xalloc(S,(size_t)n*sizeof(Value)),*b=xalloc(S,(size_t)n*sizeof(Value));
+    for(int i=0;i<n;i++)a[i]=tget(t,VNUM(i+1));
+    for(int w=1;w<n;w*=2){
+      for(int lo=0;lo<n;lo+=2*w){
+        int mid=lo+w<n?lo+w:n, hi=lo+2*w<n?lo+2*w:n, i=lo, j=mid, k=lo;
+        while(i<mid&&j<hi)b[k++]=sort_less(S,a[i],a[j],comp)?a[i++]:a[j++];
+        while(i<mid)b[k++]=a[i++];
+        while(j<hi)b[k++]=a[j++];
+      }
+      Value*sw=a;a=b;b=sw;
+    }
+    for(int i=0;i<n;i++)tset(S,t,VNUM(i+1),a[i]);
+  }
+  S->nret=0; return VNIL;
+}
+/* string.gmatch is defined in Lua on top of the C string.find: the iterator
+ * closure tracks the scan position, advancing past each match (or one char
+ * after an empty match, so empty-match patterns terminate). */
+static const char* STRING_PRELUDE =
+  "string.gmatch = function(s, p)\n"
+  "  local pos = 1\n"
+  "  return function()\n"
+  "    if pos == nil then return nil end\n"
+  "    local r = { string.find(s, p, pos) }\n"
+  "    if r[1] == nil then pos = nil; return nil end\n"
+  "    local st, en = r[1], r[2]\n"
+  "    pos = (en >= st) and (en + 1) or (st + 1)\n"
+  "    if #r > 2 then return table.unpack(r, 3) end\n"
+  "    return string.sub(s, st, en)\n"
+  "  end\n"
+  "end\n";
 static void regFn(State*S,Table*t,const char*name,Value(*fn)(State*,int,Value*)){tset(S,t,VSTR(newStr(S,name,strlen(name))),VCFN(mkCFn(S,name,fn)));}
 
 /* ---------- declarative ui library ---------- */
@@ -1542,6 +1981,12 @@ static void openLibs(State*S){
   regFn(S,g,"assert",st_assert); regFn(S,g,"error",st_error); regFn(S,g,"pcall",st_pcall); regFn(S,g,"select",st_select);
   Table*tb=newTable(S); tset(S,g,VSTR(newStr(S,"table",5)),VTAB(tb)); regFn(S,tb,"insert",st_tinsert); regFn(S,tb,"remove",st_tremove); regFn(S,tb,"concat",st_tconcat); regFn(S,tb,"unpack",st_unpack);
   Table*sb=newTable(S); tset(S,g,VSTR(newStr(S,"string",6)),VTAB(sb)); regFn(S,sb,"len",st_slen); regFn(S,sb,"upper",st_supper); regFn(S,sb,"lower",st_slower); regFn(S,sb,"sub",st_ssub); regFn(S,sb,"rep",st_srep);
+  regFn(S,sb,"find",st_sfind); regFn(S,sb,"match",st_smatch); regFn(S,sb,"gsub",st_sgsub);
+  regFn(S,sb,"format",st_sformat); regFn(S,sb,"byte",st_sbyte); regFn(S,sb,"char",st_schar); regFn(S,sb,"reverse",st_sreverse);
+  Table*mt=newTable(S); tset(S,g,VSTR(newStr(S,"math",4)),VTAB(mt));
+  regFn(S,mt,"floor",ma_floor); regFn(S,mt,"ceil",ma_ceil); regFn(S,mt,"abs",ma_abs); regFn(S,mt,"sqrt",ma_sqrt);
+  regFn(S,mt,"max",ma_max); regFn(S,mt,"min",ma_min); regFn(S,mt,"random",ma_random); regFn(S,mt,"randomseed",ma_randomseed);
+  regFn(S,tb,"sort",st_tsort);
   regFn(S,g,"require",st_require); package_loaded(S);
   Table*ui=newTable(S); tset(S,g,VSTR(newStr(S,"ui",2)),VTAB(ui));
   regFn(S,ui,"app",ui_app); regFn(S,ui,"column",ui_column); regFn(S,ui,"row",ui_row);
@@ -1550,6 +1995,7 @@ static void openLibs(State*S){
   regFn(S,ui,"divider",ui_divider); regFn(S,ui,"scrollview",ui_scrollview);
   regFn(S,ui,"list",ui_list); regFn(S,ui,"listitem",ui_listitem);
   regFn(S,ui,"stack",ui_stack); regFn(S,ui,"page",ui_page); regFn(S,ui,"switch",ui_switch);
+  lx_dostring(S,STRING_PRELUDE,NULL,0); /* string.gmatch (defined in Lua over C find) */
 }
 
 /* ---------- API ---------- */
@@ -1607,13 +2053,27 @@ int lx_run(State*S,const char*src,char*errbuf,int errlen){
   return 0;
 }
 
-/* invoke a previously-registered handler by id; rebuilds the tree afterward. */
-int lx_invoke(State*S,int handler_id,char*errbuf,int errlen){
+/* invoke a previously-registered handler by id. Re-render contract:
+ *  - arg (when non-NULL) is passed to the handler as its first argument
+ *    (event payload, e.g. input text or "true"/"false" for a switch);
+ *  - if the handler RETURNS a ui tree (table tagged __ui, or a function
+ *    returning one), that value becomes the new app_view — the declarative
+ *    equivalent of returning a fresh screen from an event handler;
+ *  - otherwise the previous app_view is re-serialized (calling it first when
+ *    it is a view function), so mutating state a view-function reads still
+ *    re-renders. */
+int lx_invoke(State*S,int handler_id,const char*arg,char*errbuf,int errlen){
   if(handler_id<0||handler_id>=S->nhandlers){ if(errbuf)snprintf(errbuf,errlen,"invalid handler id %d",handler_id); return 1; }
   Value h=S->handlers[handler_id];
   S->outused=0; if(S->out)S->out[0]=0; S->steps=0;
   if(setjmp(S->err)){ if(errbuf)snprintf(errbuf,errlen,"%s",S->errmsg); return 1; }
-  callValue(S,h,0,NULL);
+  Value argv[1]; int argc=0;
+  if(arg){ argv[0]=VSTR(newStr(S,arg,strlen(arg))); argc=1; }
+  Value r=callValue(S,h,argc,argv);
+  if(r.tag==T_TAB){
+    Value uv=tget(r.u.t,VSTR(newStr(S,"__ui",4)));
+    if(uv.tag==T_STR) S->app_view=r;
+  }
   lx_build_tree(S);
   return 0;
 }

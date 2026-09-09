@@ -48,7 +48,7 @@ int main(void){
     int prev_score = -1, seen = 0;
     for(int t=0; t<40; t++){
       memset(err,0,sizeof(err));
-      rc = lx_invoke(S, id, err, sizeof(err));
+      rc = lx_invoke(S, id, NULL, err, sizeof(err));
       CHK(rc==0, "tick invoke");
       if(rc){ fprintf(stderr,"tick %d: %s\n", t, err); break; }
       j = lx_last_json(S);

@@ -132,7 +132,7 @@ Java_dev_luaxide_engine_LuaxNative_nativeRun(JNIEnv* env, jclass clazz, jlong ha
 }
 
 JNIEXPORT jobjectArray JNICALL
-Java_dev_luaxide_engine_LuaxNative_nativeInvoke(JNIEnv* env, jclass clazz, jlong handle, jint handlerId) {
+Java_dev_luaxide_engine_LuaxNative_nativeInvoke(JNIEnv* env, jclass clazz, jlong handle, jint handlerId, jstring payload) {
     lx_State* S = (lx_State*)(intptr_t)handle;
     jclass strClass = (*env)->FindClass(env, "java/lang/String");
     jobjectArray out = (*env)->NewObjectArray(env, 3, strClass, NULL);
@@ -143,8 +143,10 @@ Java_dev_luaxide_engine_LuaxNative_nativeInvoke(JNIEnv* env, jclass clazz, jlong
         (*env)->SetObjectArrayElement(env, out, 2, jstr(env, ""));
         return out;
     }
+    const char* arg = payload ? (*env)->GetStringUTFChars(env, payload, NULL) : NULL;
     char err[ERRLEN];
-    int r = lx_invoke(S, (int)handlerId, err, sizeof(err));
+    int r = lx_invoke(S, (int)handlerId, arg, err, sizeof(err));
+    if (arg) (*env)->ReleaseStringUTFChars(env, payload, arg);
     if (r) {
         nlog(ANDROID_LOG_ERROR, 4, "lx_invoke(%d) error: %s", (int)handlerId, err);
     } else {

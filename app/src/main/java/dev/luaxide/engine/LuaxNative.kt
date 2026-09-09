@@ -9,7 +9,7 @@ object LuaxNative {
     external fun nativeClose(handle: Long)
     external fun nativeSetStepLimit(handle: Long, steps: Long)
     external fun nativeRun(handle: Long, src: String): Array<String>
-    external fun nativeInvoke(handle: Long, handlerId: Int): Array<String>
+    external fun nativeInvoke(handle: Long, handlerId: Int, payload: String?): Array<String>
     external fun nativeTakeOutput(handle: Long): String
     external fun nativeClearOutput(handle: Long)
     external fun nativeRepl(handle: Long, src: String): Array<String>

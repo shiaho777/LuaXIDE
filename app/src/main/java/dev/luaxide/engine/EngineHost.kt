@@ -138,9 +138,9 @@ class EngineHost(
         return result
     }
 
-    suspend fun invoke(handlerId: Int): RunResult {
+    suspend fun invoke(handlerId: Int, payload: String? = null): RunResult {
         val result = withContext(dispatcher) {
-            execute { LuaxNative.nativeInvoke(handle, handlerId) }
+            execute { LuaxNative.nativeInvoke(handle, handlerId, payload) }
         }
         publish(result)
         return result

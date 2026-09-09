@@ -73,11 +73,11 @@ int main(void){
   CHK(has(j,"\"__handler\":0"), "handler registered");
   /* invalid handler id */
   memset(err,0,sizeof(err));
-  rc = lx_invoke(g, 99, err, sizeof(err));
+  rc = lx_invoke(g, 99, NULL, err, sizeof(err));
   CHK(rc==1 && has(err,"invalid handler id"), "invoke invalid id");
   /* valid handler: increments count and rebuilds tree */
   memset(err,0,sizeof(err));
-  rc = lx_invoke(g, 0, err, sizeof(err));
+  rc = lx_invoke(g, 0, NULL, err, sizeof(err));
   CHK(rc==0, "invoke valid rc");
   CHK(has(lx_last_json(g),"\"__handler\":0"), "invoke rebuilds tree");
   lx_close(g);
@@ -91,7 +91,7 @@ int main(void){
     err, sizeof(err));
   CHK(rc==0, "invoke-err setup");
   memset(err,0,sizeof(err));
-  rc = lx_invoke(g, 0, err, sizeof(err));
+  rc = lx_invoke(g, 0, NULL, err, sizeof(err));
   CHK(rc==1 && has(err,"boom"), "invoke handler error");
   lx_close(g);
 

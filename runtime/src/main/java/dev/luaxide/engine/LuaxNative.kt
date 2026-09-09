@@ -29,7 +29,7 @@ internal object LuaxNative {
     external fun nativeRun(handle: Long, src: String): Array<String>
 
     /** Invoke a registered event handler by id. Same String[3] layout as [nativeRun]. */
-    external fun nativeInvoke(handle: Long, handlerId: Int): Array<String>
+    external fun nativeInvoke(handle: Long, handlerId: Int, payload: String?): Array<String>
 
     /** Captured print output accumulated since the last run/invoke. */
     external fun nativeTakeOutput(handle: Long): String
