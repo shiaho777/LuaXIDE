@@ -75,7 +75,7 @@ class ProjectRepository(context: Context) {
     }
 
     private fun ensureSampleLibrary() {
-        val marker = File(root, ".samples-v4")
+        val marker = File(root, ".samples-v5")
         if (marker.exists()) return
         val examples = root.listFiles { f -> f.isDirectory }
             ?.mapNotNull { dir -> readMeta(dir.name)?.let { it to dir } }
@@ -83,6 +83,10 @@ class ProjectRepository(context: Context) {
         if (examples == null) {
             createExamplesProject()
         } else {
+            // v5 refresh: the four dynamic-UI samples were rewritten in the
+            // view-function pattern (their old static trees never re-rendered
+            // on tap) — overwrite them so already-seeded devices pick up the fix.
+            overwriteSeedFiles(examples.first.id, SAMPLES_V5_REFRESH)
             writeSeedFiles(examples.first.id, EXAMPLE_LIBRARY_FILES)
             val main = File(srcDir(examples.first.id), "main.lua")
             if (!main.isFile || main.length() < 40) {
@@ -90,7 +94,15 @@ class ProjectRepository(context: Context) {
             }
         }
         seedDefaultAssets(examples?.first?.id ?: root.listFiles { f -> f.isDirectory }?.firstOrNull()?.name)
-        marker.writeText("samples-v4")
+        marker.writeText("samples-v5")
+    }
+
+    /** Overwrite seeded files even when they exist (versioned sample fixes). */
+    private fun overwriteSeedFiles(id: String, files: Map<String, String>) {
+        val base = srcDir(id)
+        for ((rel, content) in files) {
+            atomicWrite(File(base, rel), content)
+        }
     }
 
 
@@ -526,20 +538,27 @@ local ui = require("ui")
 
 local count = 0
 
-return ui.app {
-  key = "home",
-  title = "My app",
-  ui.column {
-    key = "body",
-    spacing = 12,
-    ui.text { key = "hello", text = "Hello, LuaX!", size = 20 },
-    ui.button {
-      key = "tap",
-      text = "count",
-      onClick = function() count = count + 1; print("count " .. count) end,
+-- Canonical dynamic-UI pattern: return a view FUNCTION. The engine calls it
+-- after every event, so the new state reaches the screen on every tap.
+local function view()
+  return ui.app {
+    key = "home",
+    title = "My app",
+    ui.column {
+      key = "body",
+      spacing = 12,
+      ui.text { key = "hello", text = "Hello, LuaX!", size = 20 },
+      ui.text { key = "count", text = "taps: " .. count, size = 16 },
+      ui.button {
+        key = "tap",
+        text = "+1",
+        onClick = function() count = count + 1 end,
+      },
     },
-  },
-}
+  }
+end
+
+return view
 """.trimIndent()
 
         private val SEED_EXAMPLES_MAIN = """
@@ -591,23 +610,36 @@ return ui.app {
             "ui/counter.lua" to """
 local ui = require("ui")
 local count = 0
-return ui.app {
-  key = "counter",
-  title = "Counter",
-  ui.column {
-    key = "body",
-    spacing = 12,
-    ui.text { key = "label", text = "taps: 0", size = 18 },
-    ui.button {
-      key = "btn",
-      text = "+1",
-      onClick = function()
-        count = count + 1
-        print("count", count)
-      end,
+
+-- View-function pattern: returning view (a function) means the engine calls
+-- it again after every tap, so the counter on screen actually moves.
+local function view()
+  return ui.app {
+    key = "counter",
+    title = "Counter",
+    ui.column {
+      key = "body",
+      spacing = 12,
+      ui.text { key = "title", text = "Counter demo", size = 20 },
+      ui.text { key = "value", text = tostring(count), size = 28 },
+      ui.row {
+        key = "actions",
+        ui.button {
+          key = "inc",
+          text = "+1",
+          onClick = function() count = count + 1 end,
+        },
+        ui.button {
+          key = "reset",
+          text = "reset",
+          onClick = function() count = 0 end,
+        },
+      },
     },
-  },
-}
+  }
+end
+
+return view
 """.trimIndent(),
             "ui/layout.lua" to """
 local ui = require("ui")
@@ -803,35 +835,36 @@ print("n * 2 =", n * 2)
             "ui/counter.lua" to """
 local ui = require("ui")
 local count = 0
-return ui.app {
-  key = "counter",
-  title = "Counter",
-  ui.column {
-    key = "body",
-    spacing = 12,
-    ui.text { key = "title", text = "Counter demo", size = 20 },
-    ui.text { key = "value", text = "0", size = 28 },
-    ui.row {
-      key = "actions",
-      ui.button {
-        key = "inc",
-        text = "+1",
-        onClick = function()
-          count = count + 1
-          print("count", count)
-        end,
-      },
-      ui.button {
-        key = "reset",
-        text = "reset",
-        onClick = function()
-          count = 0
-          print("reset")
-        end,
+
+-- View-function pattern: returning view (a function) means the engine calls
+-- it again after every tap, so the counter on screen actually moves.
+local function view()
+  return ui.app {
+    key = "counter",
+    title = "Counter",
+    ui.column {
+      key = "body",
+      spacing = 12,
+      ui.text { key = "title", text = "Counter demo", size = 20 },
+      ui.text { key = "value", text = tostring(count), size = 28 },
+      ui.row {
+        key = "actions",
+        ui.button {
+          key = "inc",
+          text = "+1",
+          onClick = function() count = count + 1 end,
+        },
+        ui.button {
+          key = "reset",
+          text = "reset",
+          onClick = function() count = 0 end,
+        },
       },
     },
-  },
-}
+  }
+end
+
+return view
 """.trimIndent(),
             "ui/layout.lua" to """
 local ui = require("ui")
@@ -869,32 +902,34 @@ return ui.app {
 """.trimIndent(),
             "ui/form.lua" to """
 local ui = require("ui")
-local name = "LuaX"
-return ui.app {
-  key = "form",
-  title = "Form",
-  ui.column {
-    key = "body",
-    spacing = 12,
-    ui.text { key = "h", text = "Simple form", size = 20 },
-    ui.text { key = "n", text = "name: " .. name, size = 14 },
-    ui.button {
-      key = "hello",
-      text = "say hello",
-      onClick = function()
-        print("hello,", name)
-      end,
+local name = ""
+
+-- onSubmit receives the field's text as its argument (the event payload),
+-- so typed input actually reaches the script.
+local function view()
+  return ui.app {
+    key = "form",
+    title = "Form",
+    ui.column {
+      key = "body",
+      spacing = 12,
+      ui.text { key = "h", text = "Simple form", size = 20 },
+      ui.input {
+        key = "name",
+        label = "your name",
+        value = name,
+        onSubmit = function(text) name = text end,
+      },
+      ui.text {
+        key = "echo",
+        text = "hello, " .. (name == "" and "?" or name),
+        size = 14,
+      },
     },
-    ui.button {
-      key = "rename",
-      text = "rename → Guest",
-      onClick = function()
-        name = "Guest"
-        print("name set to Guest")
-      end,
-    },
-  },
-}
+  }
+end
+
+return view
 """.trimIndent(),
             "program/hello.lua" to """
 print("hello, luax!")
@@ -985,119 +1020,110 @@ print("require ok")
             "ui/list_stack.lua" to """
 local ui = require("ui")
 local page = "home"
-local dark = false
+local compact = false
 
-local function go(name)
-  page = name
-  print("page", page)
+-- View-function pattern + ui.stack selected: switching pages actually
+-- re-renders because view() is rebuilt after every tap.
+local function view()
+  return ui.app {
+    key = "nav-demo",
+    title = "List + pages",
+    ui.column {
+      key = "body",
+      spacing = 12,
+      ui.switch {
+        key = "theme",
+        label = "compact mode",
+        checked = compact,
+        -- onToggle receives the new state as "true" / "false"
+        onToggle = function(v) compact = (v == "true") end,
+      },
+      ui.stack {
+        key = "stack",
+        selected = page,
+        ui.page {
+          key = "home",
+          ui.text { key = "h1", text = "Home", size = 20 },
+          ui.list {
+            key = "menu",
+            spacing = 8,
+            ui.listitem {
+              key = "i1",
+              title = "Open detail",
+              subtitle = "stack navigation",
+              onClick = function() page = "detail" end,
+            },
+            ui.listitem {
+              key = "i2",
+              title = "Settings",
+              subtitle = "toggle + form",
+              onClick = function() page = "settings" end,
+            },
+          },
+        },
+        ui.page {
+          key = "detail",
+          ui.text { key = "d1", text = "Detail", size = 20 },
+          ui.text { key = "d2", text = "compact mode is " .. (compact and "on" or "off"), size = 13 },
+          ui.button {
+            key = "back1",
+            text = "Back home",
+            onClick = function() page = "home" end,
+          },
+        },
+        ui.page {
+          key = "settings",
+          ui.text { key = "s1", text = "Settings", size = 20 },
+          ui.input { key = "name", label = "display name", value = "LuaX" },
+          ui.button {
+            key = "back2",
+            text = "Back home",
+            onClick = function() page = "home" end,
+          },
+        },
+      },
+    },
+  }
 end
 
-return ui.app {
-  key = "nav-demo",
-  title = "List + pages",
-  ui.column {
-    key = "body",
-    spacing = 12,
-    ui.switch {
-      key = "theme",
-      label = "compact mode",
-      checked = dark,
-      onChange = function()
-        dark = not dark
-        print("compact", dark)
-      end,
-    },
-    ui.stack {
-      key = "stack",
-      selected = page,
-      ui.page {
-        key = "home",
-        ui.text { key = "h1", text = "Home", size = 20 },
-        ui.list {
-          key = "menu",
-          spacing = 8,
-          ui.listitem {
-            key = "i1",
-            title = "Open detail",
-            subtitle = "stack navigation",
-            onClick = function() go("detail") end,
-          },
-          ui.listitem {
-            key = "i2",
-            title = "Settings",
-            subtitle = "toggle + form",
-            onClick = function() go("settings") end,
-          },
-        },
-      },
-      ui.page {
-        key = "detail",
-        ui.text { key = "d1", text = "Detail", size = 20 },
-        ui.text { key = "d2", text = "Pushed with ui.stack selected=", size = 13 },
-        ui.button {
-          key = "back1",
-          text = "Back home",
-          onClick = function() go("home") end,
-        },
-      },
-      ui.page {
-        key = "settings",
-        ui.text { key = "s1", text = "Settings", size = 20 },
-        ui.input { key = "name", label = "display name", value = "LuaX" },
-        ui.button {
-          key = "back2",
-          text = "Back home",
-          onClick = function() go("home") end,
-        },
-      },
-    },
-  },
-}
+return view
 """.trimIndent(),
             "app/main.lua" to """
 local ui = require("ui")
 local util = require("lib.util")
 local state = require("app.state")
 
-return ui.app {
-  key = "sample-app",
-  title = "Notes",
-  ui.column {
-    key = "root",
-    spacing = 12,
-    ui.text { key = "hi", text = util.greet(state.user), size = 20 },
-    ui.text { key = "sub", text = "Multi-file app · require modules", size = 13 },
-    ui.list {
-      key = "notes",
-      spacing = 8,
-      ui.listitem {
-        key = "n1",
-        title = "First note",
-        subtitle = "from app/state.lua",
-        onClick = function()
-          state.selected = 1
-          print("selected", state.selected)
-        end,
+-- Multi-file app: state lives in app/state.lua, helpers in lib/util.lua,
+-- and the view function re-renders the selection highlight on every tap.
+local function view()
+  local function note(i, title)
+    return ui.listitem {
+      key = "n" .. i,
+      title = title,
+      subtitle = state.selected == i and "selected" or "tap to select",
+      onClick = function() state.selected = i end,
+    }
+  end
+  return ui.app {
+    key = "sample-app",
+    title = "Notes",
+    ui.column {
+      key = "root",
+      spacing = 12,
+      ui.text { key = "hi", text = util.greet(state.user), size = 20 },
+      ui.text { key = "sub", text = "Multi-file app · require modules", size = 13 },
+      ui.list {
+        key = "notes",
+        spacing = 8,
+        note(1, "First note"),
+        note(2, "Second note"),
       },
-      ui.listitem {
-        key = "n2",
-        title = "Second note",
-        subtitle = "tap to select",
-        onClick = function()
-          state.selected = 2
-          print("selected", state.selected)
-        end,
-      },
+      ui.text { key = "cnt", text = "notes: " .. #state.notes, size = 13 },
     },
-    ui.button {
-      key = "add",
-      text = "print count",
-      onClick = function()
-        print("notes", #state.notes, "selected", state.selected)
-      end,
-    },
-  },
-}
+  }
+end
+
+return view
 """.trimIndent(),
             "app/state.lua" to """
 local M = {
@@ -1159,6 +1185,11 @@ Program scripts open the terminal face.
 No device root required.
 """.trimIndent(),
         )
+
+        /** v5: samples rewritten in the view-function pattern — force-refresh on old installs. */
+        private val SAMPLES_V5_REFRESH: Map<String, String> = EXAMPLE_LIBRARY_FILES.filterKeys {
+            it == "ui/counter.lua" || it == "ui/form.lua" || it == "ui/list_stack.lua" || it == "app/main.lua"
+        }
     }
 }
 
