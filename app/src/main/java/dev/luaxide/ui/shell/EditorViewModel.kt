@@ -740,8 +740,8 @@ print("got", n)
     }
 
 
-    fun onEvent(handlerId: Int) {
-        viewModelScope.launch { publishResult(engine.invoke(handlerId)) }
+    fun onEvent(handlerId: Int, payload: String? = null) {
+        viewModelScope.launch { publishResult(engine.invoke(handlerId, payload)) }
     }
 
     /**

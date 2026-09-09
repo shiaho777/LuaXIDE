@@ -19,6 +19,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
@@ -38,9 +40,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -51,7 +56,7 @@ import dev.luaxide.engine.UiNode
 
 typealias RenderChildren = @Composable (List<UiNode>) -> Unit
 
-typealias OnEvent = (handlerId: Int) -> Unit
+typealias OnEvent = (handlerId: Int, payload: String?) -> Unit
 
 typealias Component = @Composable (node: UiNode, onEvent: OnEvent, renderChildren: RenderChildren) -> Unit
 
@@ -147,10 +152,22 @@ private fun TextComponent(node: UiNode, onEvent: OnEvent, renderChildren: Render
     val text = node.string("text", node.string("value", ""))
     val size = node.number("size", 16.0).sp
     val fontPath = node.string("font", node.string("typeface", ""))
+    val color = parseColor(node.string("color"), cs.onSurface)
+    val animate = node.bool("animate", true)
     val resolver = LocalAssetResolver.current
     val family = remember(fontPath) {
         val file = if (fontPath.isBlank()) null else resolver.resolveFile(fontPath)
         if (file != null) FontFamily(Font(file = file, weight = FontWeight.Normal)) else FontFamily.Default
+    }
+    if (!animate) {
+        // Cheap path for fast-updating text (game boards, clocks): no AnimatedContent.
+        Text(
+            text = text,
+            color = color,
+            fontSize = size,
+            fontFamily = family,
+        )
+        return
     }
     AnimatedContent(
         targetState = text,
@@ -159,11 +176,23 @@ private fun TextComponent(node: UiNode, onEvent: OnEvent, renderChildren: Render
     ) { value ->
         Text(
             text = value,
-            color = cs.onSurface,
+            color = color,
             fontSize = size,
             fontFamily = family,
             modifier = Modifier.animateContentSize(animationSpec = Motion.contentSize),
         )
+    }
+}
+
+/** Parse "#RRGGBB" or "#AARRGGBB" (also bare RRGGBB); falls back to [fallback]. */
+private fun parseColor(hex: String, fallback: Color): Color {
+    val h = hex.removePrefix("#")
+    if (h.length != 6 && h.length != 8) return fallback
+    val v = h.toLongOrNull(16) ?: return fallback
+    return if (h.length == 8) {
+        Color((v and 0xFFFFFFFFL).toInt())
+    } else {
+        Color(0xFF000000L or v)
     }
 }
 
@@ -179,7 +208,7 @@ private fun ButtonComponent(node: UiNode, onEvent: OnEvent, renderChildren: Rend
     )
     val label = node.string("text", "button")
     androidx.compose.material3.Button(
-        onClick = { handlerId?.let(onEvent) },
+        onClick = { handlerId?.let { onEvent(it, null) } },
         shape = RoundedCornerShape(16.dp),
         interactionSource = interaction,
         modifier = Modifier
@@ -239,13 +268,21 @@ private fun CardComponent(node: UiNode, onEvent: OnEvent, renderChildren: Render
 private fun InputComponent(node: UiNode, onEvent: OnEvent, renderChildren: RenderChildren) {
     val incoming = node.string("value")
     val label = node.string("label", "input")
+    val onSubmit = node.handler("onSubmit")
     var text by remember { mutableStateOf(incoming) }
     LaunchedEffect(incoming) {
         if (text != incoming) text = incoming
     }
+    val focus = LocalFocusManager.current
     OutlinedTextField(
         value = text,
         onValueChange = { text = it },
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+        keyboardActions = KeyboardActions(onDone = {
+            // Event payload contract: the field's text is passed back to the script.
+            if (onSubmit != null) onEvent(onSubmit, text)
+            focus.clearFocus()
+        }),
         label = {
             AnimatedContent(
                 targetState = label,
@@ -361,7 +398,7 @@ private fun ListItemComponent(node: UiNode, onEvent: OnEvent, renderChildren: Re
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
             .then(
-                if (click != null) Modifier.clickable { onEvent(click) } else Modifier,
+                if (click != null) Modifier.clickable { onEvent(click, null) } else Modifier,
             ),
     ) {
         Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
@@ -450,7 +487,7 @@ private fun SwitchComponent(node: UiNode, onEvent: OnEvent, renderChildren: Rend
             checked = checked,
             onCheckedChange = {
                 checked = it
-                if (onToggle != null) onEvent(onToggle)
+                if (onToggle != null) onEvent(onToggle, checked.toString())
             },
         )
     }

@@ -13,7 +13,9 @@ int  lx_dofile(lx_State*, const char* path, char* errbuf, int errbuflen);
 void lx_set_step_limit(lx_State*, long steps);
 
 int  lx_run(lx_State*, const char* src, char* errbuf, int errbuflen);
-int  lx_invoke(lx_State*, int handler_id, char* errbuf, int errbuflen);
+/* arg: optional event payload passed to the handler as its first argument
+ * (NULL = no argument). A handler returning a ui tree replaces app_view. */
+int  lx_invoke(lx_State*, int handler_id, const char* arg, char* errbuf, int errbuflen);
 
 const char* lx_last_json(lx_State*);
 const char* lx_last_output(lx_State*);

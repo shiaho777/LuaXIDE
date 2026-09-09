@@ -18,6 +18,7 @@ make -C engine test                                  # must print ALL TESTS PASS
 ```
 
 Engine changes must keep `make -C engine test` green; Kotlin changes must compile in both modules. Add a `t*` test when adding engine capability.
+8. **docs/ENGINE.md is the engine's authoritative spec** — any change to `engine/lx.c`, the duplicated `luax_jni.c` pair, component render behavior, or the event/re-render contract must update ENGINE.md in the same change (see its §7 extension checklists).
 
 ## Delivery loop (hard rules)
 

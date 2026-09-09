@@ -12,11 +12,12 @@ $(LX): $(SRC) lx.h
 
 # every C driver test binary is built from lx.c + its driver
 DRIVERS = t9-debug t10-debug t11-watch t12-err t13-log \
-          t18-repl t19-stdio t20-dbg2 t21-modules t22-ui2 t23-errors t24-snake
+          t18-repl t19-stdio t20-dbg2 t21-modules t22-ui2 t23-errors t24-snake \
+          t26-invoke-tree
 
 # scripts whose output must be identical with the bytecode VM on and off
 BC_DIFF_SCRIPTS = t1_hello t2_arith t3_control t4_funcs t5_tables \
-                  t6_strings t7_meta t14_lang t16_modules t25_bytecode
+                  t6_strings t7_meta t14_lang t16_modules t25_bytecode t27_patterns
 
 test: $(LX) $(DRIVERS)
 	@echo "=== t1 hello ==="        && ./$(LX) tests/t1_hello.lua
@@ -43,6 +44,8 @@ test: $(LX) $(DRIVERS)
 	@echo "=== t23 errors ==="      && ./t23-errors
 	@echo "=== t24 snake =="      && ./t24-snake
 	@echo "=== t25 bytecode ==="    && ./$(LX) tests/t25_bytecode.lua
+	@echo "=== t26 invoke tree ===" && ./t26-invoke-tree
+	@echo "=== t27 patterns ==="   && ./$(LX) tests/t27_patterns.lua
 	@echo "=== bc engagement ==="   && LUAX_BC_STATS=1 ./$(LX) tests/t25_bytecode.lua >/dev/null 2>.bc_stats; grep -qE "bc: [1-9][0-9]* compiled" .bc_stats || { echo "bytecode VM did not engage:"; cat .bc_stats; rm -f .bc_stats; exit 1; }; rm -f .bc_stats; echo "vm engaged"
 	@echo "=== bc differential ===" && for t in $(BC_DIFF_SCRIPTS); do ./$(LX) tests/$$t.lua 2>&1 | sed -E 's/0x[0-9a-f]+/0xADDR/g' >/tmp/.lx_bc_a; LUAX_NO_BC=1 ./$(LX) tests/$$t.lua 2>&1 | sed -E 's/0x[0-9a-f]+/0xADDR/g' >/tmp/.lx_bc_b; diff /tmp/.lx_bc_a /tmp/.lx_bc_b >/dev/null || { echo "BC DIVERGENCE in $$t:"; diff /tmp/.lx_bc_a /tmp/.lx_bc_b | head -10; rm -f /tmp/.lx_bc_a /tmp/.lx_bc_b; exit 1; }; done; rm -f /tmp/.lx_bc_a /tmp/.lx_bc_b; echo "bc-diff ok ($(words $(BC_DIFF_SCRIPTS)) scripts)"
 	@echo "=== cli ==="             && ./$(LX) -e "print('cli-ok')" | grep -q cli-ok
@@ -86,6 +89,9 @@ t23-errors: lx.c lx.h tests/t23_errors.c
 
 t24-snake: lx.c lx.h tests/t24_snake_driver.c
 	$(CC) $(CFLAGS) -o $@ lx.c tests/t24_snake_driver.c $(LDFLAGS)
+
+t26-invoke-tree: lx.c lx.h tests/t26_invoke_tree.c
+	$(CC) $(CFLAGS) -o $@ lx.c tests/t26_invoke_tree.c $(LDFLAGS)
 
 clean:
 	rm -f $(LX) $(DRIVERS)

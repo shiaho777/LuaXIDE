@@ -67,6 +67,8 @@ object ApiDocs {
                 "text" to "显示文本",
                 "size" to "字号",
                 "font" to "字体相对路径 (ttf/otf)",
+                "color" to "文字颜色 (#RRGGBB / #AARRGGBB)",
+                "animate" to "false 关闭内容动画(棋盘/时钟等高频更新)",
             ),
         ),
         ApiDoc(
@@ -102,10 +104,14 @@ object ApiDocs {
             id = "ui.input",
             category = "ui",
             name = "ui.input",
-            signature = "ui.input { label?, value? }",
-            summary = "单行输入框。",
-            example = """ui.input { label = "名字", value = "" }""",
-            props = listOf("label" to "标签", "value" to "初始值"),
+            signature = "ui.input { label?, value?, onSubmit? }",
+            summary = "单行输入框。onSubmit 在键盘确认时触发,收到输入框文本作为参数。",
+            example = """ui.input {
+  label = "名字",
+  value = "",
+  onSubmit = function(text) print("提交: " .. text) end,
+}""",
+            props = listOf("label" to "标签", "value" to "初始值", "onSubmit" to "提交回调(参数为输入文本)"),
         ),
         ApiDoc(
             id = "ui.image",
@@ -157,6 +163,7 @@ object ApiDocs {
   ui.listitem { title = "A", subtitle = "详情" },
   ui.listitem { title = "B" },
 }""",
+            props = listOf("spacing" to "子项间距"),
         ),
         ApiDoc(
             id = "ui.listitem",
@@ -169,6 +176,7 @@ object ApiDocs {
   subtitle = "副标题",
   onClick = function() print("tap") end,
 }""",
+            props = listOf("title" to "标题", "subtitle" to "副标题", "onClick" to "点击回调"),
         ),
         ApiDoc(
             id = "ui.stack",
@@ -199,16 +207,17 @@ object ApiDocs {
             id = "ui.switch",
             category = "ui",
             name = "ui.switch",
-            signature = "ui.switch { label?, checked?, onChange? }",
-            summary = "开关。",
+            signature = "ui.switch { label?, checked?, onToggle? }",
+            summary = "开关。onToggle 在切换时触发,收到新状态字符串 \"true\"/\"false\" 作为参数。",
             example = """ui.switch {
   label = "通知",
-  checked = true,
+  checked = false,
+  onToggle = function(v) print("now " .. v) end,
 }""",
             props = listOf(
                 "label" to "标签",
                 "checked" to "是否开启",
-                "onChange / onToggle" to "切换回调",
+                "onToggle / onChange" to "切换回调(参数为新状态字符串)",
             ),
         ),
         ApiDoc(

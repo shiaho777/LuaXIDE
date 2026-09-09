@@ -55,6 +55,7 @@ CI 在每个 PR 上运行同样的检查(`engine-tests` 与 `android-build` 两�
 
 ## 文档
 
+- [docs/ENGINE.md](docs/ENGINE.md) — **引擎权威规范**:语言方言、标准库清单、UI DSL 与属性表、事件 payload 与重渲染契约、测试与扩展流程(写 LuaX 程序前先读)
 - [docs/MODULES_AND_UI.md](docs/MODULES_AND_UI.md) — `require` 模块解析规则与内置 UI 组件清单
 - [docs/PROGRAM_MODE.md](docs/PROGRAM_MODE.md) — Program Mode(UI 树 → 预览,否则 → 终端)与交互终端命令
 - [docs/PROOT_AND_STDIN.md](docs/PROOT_AND_STDIN.md) — proot 用户态 rootfs、阻塞 stdin 与取消机制

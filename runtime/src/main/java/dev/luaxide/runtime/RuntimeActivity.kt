@@ -175,8 +175,8 @@ private fun RuntimeApp(bundle: AppBundle) {
                     ) {
                         RenderTree(
                             node = tree,
-                            onEvent = { handlerId ->
-                                scope.launch { result = engine.invoke(handlerId) }
+                            onEvent = { handlerId, payload ->
+                                scope.launch { result = engine.invoke(handlerId, payload) }
                             },
                         )
                     }
