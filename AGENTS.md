@@ -8,7 +8,7 @@ Android IDE for Lua: edit, run, debug, and package Lua projects into installable
 - `engine-js/` — QuickJS-based JavaScript engine facade (`qjs_x.c` mirrors the `lx.h` host contract); tests `j1`–`j6` in `engine-js/tests/`; vendored upstream QuickJS in `engine-js/quickjs/`
 - `docs/PLATFORM_ABI.md` — the language-neutral host contract both engines implement; `engine/tests/t26_invoke_tree.c` and `engine-js/tests/j6_conformance.c` assert the SAME contract on both sides
 - `app/` — the IDE (Kotlin, Jetpack Compose, package `dev.luaxide`); JNI bridge in `app/src/main/cpp/` builds `libluax.so` from `engine/lx.c`
-- `runtime/` — minimal template app; its release APK becomes `app/src/main/assets/runtime/template.apk` via the `syncRuntimeTemplate` Gradle task
+- `runtime/` — minimal template app carrying BOTH engines (libluax + libluaxjs); its release APK becomes `app/src/main/assets/runtime/template.apk` via the `syncRuntimeTemplate` Gradle task (run it after touching runtime code)
 - `docs/` — design notes: modules/UI, program mode, proot/stdin
 
 ## Build & verify

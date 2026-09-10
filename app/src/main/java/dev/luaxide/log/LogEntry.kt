@@ -11,7 +11,8 @@ enum class LogLevel(val label: String, val short: Char) {
 
 /** Where a log entry originated. */
 enum class LogSource(val label: String) {
-    LUA("lua"),       // user's print / error output
+    LUA("lua"),       // Lua script print / error output
+    JS("js"),         // JavaScript script print / error output
     ENGINE("engine"), // interpreter runtime errors, step limits
     NATIVE("native"), // NDK logcat bridge (future)
     SYSTEM("system"), // IDE-internal notices

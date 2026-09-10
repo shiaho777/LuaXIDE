@@ -80,11 +80,20 @@ Kotlin 侧统一为 [`EngineAdapter`](../app/src/main/java/dev/luaxide/engine/En
 
 **加契约能力 = 两套 conformance 同步加断言**(AGENTS.md 硬规则)。
 
-## 8. 接入新引擎 checklist
+## 8. 打包与独立运行(阶段三起)
+
+打包链路对多语言的支撑已闭环:
+
+- 模板 runtime(`:runtime` release APK → `template.apk`)内置**双引擎**(libluax.so + libluaxjs.so × 各 ABI)
+- `luaxcfg.json` 的 `entryFile` 决定语言:以 `.js` 结尾 → RuntimeActivity 选用 `JsEngineHost`,否则 `EngineHost`(见 RuntimeActivity 的 isJs 路由)
+- 打包前的冒烟校验同样按入口后缀选引擎(BuildPipeline.validateEntry)
+- 工程源码整体进 `assets/lua/`(目录名历史沿用,与语言无关)
+
+## 9. 接入新引擎 checklist
 
 1. 选定语言引擎(嵌入友好、可协作中断),写 facade 实现 §2 API 面 + §3–§6 语义;
 2. `Language.kt` 注册(supported=true 前必须过 1–4);
 3. Kotlin `EngineAdapter` 实现 + JNI 桥;
 4. **写一份 conformance 驱动测试**(照抄 j6 的断言结构),进 Makefile + `ci.yml` + 分支保护;
-5. 若涉及打包:阶段三的入口路由 + 模板 runtime 带上对应 .so;
+5. 打包接入:模块 CMake 加 .so → RuntimeActivity 路由加分支 → BuildPipeline.validateEntry 加分支 → syncRuntimeTemplate;
 6. 更新本文件 §2/§7 的表格与 ENGINE.md 互链。

@@ -2,6 +2,7 @@ package dev.luaxide.build
 
 import android.content.Context
 import dev.luaxide.engine.EngineHost
+import dev.luaxide.engine.JsEngineHost
 import dev.luaxide.log.LogLevel
 import dev.luaxide.log.LogSink
 import dev.luaxide.log.LogSource
@@ -64,7 +65,7 @@ class BuildPipeline(
                 if (config.versionCode < 1) fail(0, "version code must be >= 1")
                 if (config.appName.isBlank()) fail(0, "app name is empty")
                 if (config.abis.isEmpty()) fail(0, "select at least one ABI")
-                validateLua(src, repo.srcDirOf(projectId))
+                validateEntry(src, repo.srcDirOf(projectId), config.entryFile)
                 heartbeat()
                 setStage(0, StageStatus.DONE, "ok")
 
@@ -205,7 +206,25 @@ class BuildPipeline(
         if (!ok) fail(0, "invalid package name: $pkg")
     }
 
-    private suspend fun validateLua(src: String, srcDir: File) {
+    /** Pre-package smoke run: the entry's language picks the engine (PLATFORM_ABI). */
+    private suspend fun validateEntry(src: String, srcDir: File, entryFile: String) {
+        if (entryFile.endsWith(".js")) {
+            val engine = JsEngineHost()
+            try {
+                val result = engine.run(src)
+                if (!result.ok) {
+                    val msg = result.error ?: "validation failed"
+                    fail(0, "js validate failed: $msg")
+                }
+            } catch (e: BuildException) {
+                throw e
+            } catch (e: Exception) {
+                fail(0, "js validate error: ${e.message}")
+            } finally {
+                engine.close()
+            }
+            return
+        }
         val engine = EngineHost()
         try {
             if (srcDir.isDirectory) engine.setModuleRoot(srcDir.absolutePath)

@@ -1,8 +1,5 @@
 package dev.luaxide.engine
 
-import dev.luaxide.log.LogLevel
-import dev.luaxide.log.LogSink
-import dev.luaxide.log.LogSource
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
@@ -14,13 +11,13 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.Executors
 
 /**
- * JavaScript engine host (QuickJS). Mirrors [EngineHost]'s run/invoke contract
- * so the shell can treat Lua and JS projects uniformly. Debug/stdin/proot are
- * Lua-only for now; JS v1 covers run → preview tree + print → terminal.
+ * JavaScript engine host (QuickJS) — the :runtime packaging variant.
+ * Implements the same [EngineAdapter] contract as the runtime [EngineHost],
+ * so a packaged app runs whichever language its entry file uses (see
+ * docs/PLATFORM_ABI.md). Output surfaces through the packaged console view;
+ * debugging, the REPL and blocking stdin stay Lua-only.
  */
-class JsEngineHost(
-    private val logSink: LogSink? = null,
-) : EngineAdapter {
+class JsEngineHost : EngineAdapter {
     private val worker = Executors.newSingleThreadExecutor { r ->
         Thread(r, "luaxjs-engine").apply { isDaemon = true }
     }
@@ -47,7 +44,6 @@ class JsEngineHost(
             recreate()
             execute { JsNative.nativeRun(handle, src) }
         }
-        publish(result)
         return result
     }
 
@@ -55,7 +51,6 @@ class JsEngineHost(
         val result = withContext(dispatcher) {
             execute { JsNative.nativeInvoke(handle, handlerId, payload) }
         }
-        publish(result)
         return result
     }
 
@@ -79,21 +74,11 @@ class JsEngineHost(
         }
     }.getOrElse { t ->
         RunResult(ok = false, tree = null, output = "", error = t.message ?: "engine failure")
-    }
-
-    private fun publish(result: RunResult) {
-        logSink?.let { sink ->
-            if (result.output.isNotEmpty()) {
-                sink.logLines(LogLevel.INFO, LogSource.JS, result.output, tag = "print")
-            }
-            if (!result.ok && result.error != null) {
-                sink.log(LogLevel.ERROR, LogSource.ENGINE, result.error, tag = "run", line = result.errorLine)
-            }
-        }
-        _state.value = if (result.ok) {
-            if (result.tree != null) EngineState.Ready(result.tree) else EngineState.Idle
-        } else {
-            EngineState.Error(result.error ?: "unknown error")
+    }.also { result ->
+        _state.value = when {
+            !result.ok -> EngineState.Error(result.error ?: "unknown error")
+            result.tree != null -> EngineState.Ready(result.tree)
+            else -> EngineState.Idle
         }
     }
 
@@ -117,6 +102,7 @@ class JsEngineHost(
 
     private companion object {
         val LINE_PREFIX = Regex("""^line (\d+):""")
+
         fun parseErrorLine(message: String?): Int? =
             message?.let { LINE_PREFIX.find(it)?.groupValues?.get(1)?.toIntOrNull() }
     }

@@ -31,7 +31,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.luaxide.engine.EngineAdapter
 import dev.luaxide.engine.EngineHost
+import dev.luaxide.engine.JsEngineHost
 import dev.luaxide.engine.RunResult
 import dev.luaxide.ui.runtime.Motion
 import dev.luaxide.ui.runtime.RenderTree
@@ -111,7 +113,9 @@ private fun extractLuaTree(activity: ComponentActivity): String {
 
 @Composable
 private fun RuntimeApp(bundle: AppBundle) {
-    val engine = remember { EngineHost() }
+    // Language routing per PLATFORM_ABI: the entry file extension picks the engine.
+    val isJs = bundle.entryFile.endsWith(".js")
+    val engine = remember { if (isJs) JsEngineHost() else EngineHost() }
     var result by remember { mutableStateOf<RunResult?>(null) }
     var loading by remember { mutableStateOf(true) }
     val scope = rememberCoroutineScope()
@@ -123,7 +127,7 @@ private fun RuntimeApp(bundle: AppBundle) {
 
     LaunchedEffect(bundle.source, bundle.modRoot) {
         loading = true
-        if (bundle.modRoot.isNotEmpty()) engine.setModuleRoot(bundle.modRoot)
+        if (bundle.modRoot.isNotEmpty() && engine is EngineHost) engine.setModuleRoot(bundle.modRoot)
         result = engine.run(bundle.source)
         loading = false
     }
@@ -195,7 +199,7 @@ private fun RuntimeApp(bundle: AppBundle) {
                             CircularProgressIndicator()
                         }
                         "error" -> ErrorView(result?.error ?: "unknown error")
-                        "empty" -> ProgramTerminal(result?.output.orEmpty())
+                        "empty" -> ProgramTerminal(result?.output.orEmpty(), bundle.entryFile)
                         else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Text("starting…", color = cs.onSurfaceVariant)
                         }
@@ -219,7 +223,7 @@ private fun ErrorView(message: String) {
 
 
 @Composable
-private fun ProgramTerminal(output: String) {
+private fun ProgramTerminal(output: String, entryFile: String) {
     val bg = androidx.compose.ui.graphics.Color(0xFF0B1020)
     val fg = androidx.compose.ui.graphics.Color(0xFFD7E0F2)
     val dim = androidx.compose.ui.graphics.Color(0xFF7F8BA3)
@@ -233,7 +237,7 @@ private fun ProgramTerminal(output: String) {
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             Text("luax · terminal · no-root", color = dim, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
-            Text("› lua main.lua", color = cyan, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+            Text("› ${if (entryFile.endsWith(".js")) "node" else "lua"} $entryFile", color = cyan, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
             if (output.isBlank()) {
                 Text("(no output)", color = dim, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
             } else {
