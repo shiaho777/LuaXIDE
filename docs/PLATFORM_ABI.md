@@ -1,6 +1,6 @@
 # LuaX Platform ABI(跨语言契约权威规范)
 
-> 本文件定义**语言无关的宿主契约**:任何脚本引擎接入 LuaXIDE 平台,必须实现本文的 API 面与语义。当前两个参考实现:`engine/lx.c`(LuaX,Lua)与 `engine-js/qjs_x.c`(QuickJS,JavaScript)。**改任一引擎的契约行为,必须同次更新本文件,并保证两个实现的 conformance 测试(t26 / j6)同步通过** —— 两套测试断言的是同一份契约,任何一侧的语义偏差都会被 CI 拦截。语言方言与各自引擎内部细节见 [ENGINE.md](ENGINE.md)。
+> 本文件定义**语言无关的宿主契约**:任何脚本引擎接入 LuaXIDE 平台,必须实现本文的 API 面与语义。当前三个参考实现:`engine/lx.c`(LuaX,Lua)、`engine-js/qjs_x.c`(QuickJS,JavaScript)、`engine-py/mpy_x.c`(MicroPython,Python —— 试点,限制见 §10)。**改任一引擎的契约行为,必须同次更新本文件,并保证两个实现的 conformance 测试(t26 / j6)同步通过** —— 两套测试断言的是同一份契约,任何一侧的语义偏差都会被 CI 拦截。语言方言与各自引擎内部细节见 [ENGINE.md](ENGINE.md)。
 
 ## 1. 平台分层
 
@@ -23,14 +23,14 @@ UI 树契约:{type, props, children} JSON   ← 语言无关,渲染器只认这�
 
 每个引擎 facade 必须提供以下函数(签名可按语言习惯命名,语义必须一致):
 
-| 契约 | lx.h | qjs_x.h |
-|---|---|---|
-| 创建/销毁 | `lx_new` / `lx_close` | `qjsx_new` / `qjsx_free` |
-| 运行 | `lx_run(S, src, err, errlen)` | `qjsx_run(x, src, err, errlen)` |
-| 事件回调 | `lx_invoke(S, id, arg, err, errlen)` | `qjsx_invoke(x, id, arg, err, errlen)` |
-| 取树/输出 | `lx_last_json` / `lx_last_output` | `qjsx_last_json` / `qjsx_last_output` |
-| 取消 | `lx_cancel` / `lx_clear_cancel` | `qjsx_cancel` / `qjsx_clear_cancel` |
-| 步数上限 | `lx_set_step_limit` | `qjsx_set_step_limit` |
+| 契约 | lx.h(Lua) | qjs_x.h(JS) | mpy_x.h(Python,试点) |
+|---|---|---|---|
+| 创建/销毁 | `lx_new` / `lx_close` | `qjsx_new` / `qjsx_free` | `mpyx_new` / `mpyx_free` |
+| 运行 | `lx_run(S, src, err, errlen)` | `qjsx_run(x, src, err, errlen)` | `mpyx_run(x, src, err, errlen)` |
+| 事件回调 | `lx_invoke(S, id, arg, err, errlen)` | `qjsx_invoke(x, id, arg, err, errlen)` | `mpyx_invoke(x, id, arg, err, errlen)` |
+| 取树/输出 | `lx_last_json` / `lx_last_output` | `qjsx_last_json` / `qjsx_last_output` | `mpyx_last_json` / `mpyx_last_output` |
+| 取消 | `lx_cancel` / `lx_clear_cancel` | `qjsx_cancel` / `qjsx_clear_cancel` | `mpyx_cancel` / `mpyx_clear_cancel`(见 §10 注) |
+| 步数上限 | `lx_set_step_limit` | `qjsx_set_step_limit` | `mpyx_set_step_limit`(见 §10 注) |
 
 Kotlin 侧统一为 [`EngineAdapter`](../app/src/main/java/dev/luaxide/engine/EngineAdapter.kt)(`state / run / invoke / cancel / close`);Lua 专属能力(REPL、阻塞 stdin、调试器、rootfs)**不在 ABI 内**,留在 `EngineHost`,语言无关调用方不得触碰。
 
@@ -97,3 +97,13 @@ Kotlin 侧统一为 [`EngineAdapter`](../app/src/main/java/dev/luaxide/engine/En
 4. **写一份 conformance 驱动测试**(照抄 j6 的断言结构),进 Makefile + `ci.yml` + 分支保护;
 5. 打包接入:模块 CMake 加 .so → RuntimeActivity 路由加分支 → BuildPipeline.validateEntry 加分支 → syncRuntimeTemplate;
 6. 更新本文件 §2/§7 的表格与 ENGINE.md 互链。
+
+## 10. Python 试点(engine-py)的现状与限制
+
+`engine-py/mpy_x.c` 基于 MicroPython v1.25.0 embed port(自包含生成包),已实现 run → 树 + 输出、invoke → payload + 重渲染(view 函数优先,handler 返回树次之)、print 捕获、`global` 状态跨 invoke 存活。**桌面测试 p1 通过,CI 有门禁;但尚未接入 App**(JNI/Android 构建/语言路由未做,`Language.PYTHON.supported` 仍为 false)。
+
+已知限制(接入 App 前必须解决):
+- **取消/步数上限是存根**:MicroPython embed VM 没有暴露周期性中断钩子,`mpyx_cancel`/`step_limit` 当前不生效(符号保留,语义待接 `MICROPY_VM_HOOK` 或调度器滴答)
+- 每次 run 重执行 prelude,无 `import` 模块根路径(多文件工程未支持)
+- 单进程单引擎实例(全局 `g_active`),与 App 的多 EngineHost 生命周期需对齐
+- DSL 的 props 序列化:Python int/float/str/bool/dict/handler 支持,list 之外的自定义对象序列化为 null
