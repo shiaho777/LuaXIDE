@@ -137,6 +137,7 @@ make -C engine test          # 必须输出 ALL TESTS PASSED(引擎一切改动�
 **加一个标准库函数**:`lx.c` 写 `static Value st_xxx`(类型守卫用 `argStr`/`argTab`/`num2int`,错误一律 `lx_rt_error`)→ `openLibs` 注册 → 测试(t6/t14/t25/t27)→ 本文件第 3 节加行 → (可选)`LuaIntel.kt` 加补全。
 
 **改事件/重渲染契约**:改 `lx_invoke`/`lx_build_tree` → t26 扩用例 → `luax_jni.c` ×2 与 `EngineHost` ×2、JS 引擎(`qjs_x.c` 的 `__lx_invoke` 前奏)同步 → 本文件第 5 节重写。
+**改打包/运行时接入**:runtime CMake + RuntimeActivity 路由 + BuildPipeline 校验三处同步,详见 PLATFORM_ABI.md §8–§9。
 
 ## 8. 维护约定
 
