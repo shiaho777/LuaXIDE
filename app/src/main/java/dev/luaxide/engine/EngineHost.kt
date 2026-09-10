@@ -78,7 +78,7 @@ sealed interface EngineState {
 class EngineHost(
     private val stepLimit: Long = 50_000_000L,
     private val logSink: LogSink? = null,
-) {
+) : EngineAdapter {
     private val worker = Executors.newSingleThreadExecutor { r ->
         Thread(r, "luax-engine").apply { isDaemon = true }
     }
@@ -103,7 +103,7 @@ class EngineHost(
     @Volatile private var watchExprs: List<String> = emptyList()
 
     private val _state = MutableStateFlow<EngineState>(EngineState.Idle)
-    val state: StateFlow<EngineState> = _state.asStateFlow()
+    override val state: StateFlow<EngineState> = _state.asStateFlow()
 
     private val _debugState = MutableStateFlow<DebugState>(DebugState.Idle)
     val debugState: StateFlow<DebugState> = _debugState.asStateFlow()
@@ -122,7 +122,7 @@ class EngineHost(
         }
     }
 
-    suspend fun run(src: String): RunResult {
+    override suspend fun run(src: String): RunResult {
         _state.value = EngineState.Running
         if (debugEnabled) startDebugPoll()
         val result = withContext(dispatcher) {
@@ -138,7 +138,7 @@ class EngineHost(
         return result
     }
 
-    suspend fun invoke(handlerId: Int, payload: String? = null): RunResult {
+    override suspend fun invoke(handlerId: Int, payload: String?): RunResult {
         val result = withContext(dispatcher) {
             execute { LuaxNative.nativeInvoke(handle, handlerId, payload) }
         }
@@ -157,7 +157,7 @@ class EngineHost(
         return result
     }
 
-    fun cancel() {
+    override fun cancel() {
         val h = handle
         if (h != 0L) LuaxNative.nativeCancel(h)
         debugStop()
@@ -422,7 +422,7 @@ private inline fun execute(block: () -> Array<String>): RunResult = runCatching 
         ensureHandle()
     }
 
-    fun close() {
+    override fun close() {
         pollJob?.cancel()
         val h = handle
         if (h != 0L) {

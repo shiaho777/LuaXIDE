@@ -45,7 +45,8 @@ static const char* PRELUDE =
     "    return {type: type, props: props(p), children: kids};"
     "  }"
     "  var ui = {};"
-    "  ['app','column','row','text','button','card','input','image','spacer','list','stack']"
+    "  ['app','column','row','text','button','card','input','image','spacer',"
+    "   'divider','scrollview','list','listitem','stack','page','switch']"
     "    .forEach(function(t){ ui[t] = function(p){ var a = [t, p]; for (var i = 1; i < arguments.length; i++) a.push(arguments[i]); return node.apply(null, a); }; });"
     "  ui.node = node;"
     "  globalThis.ui = ui;"
@@ -243,7 +244,9 @@ int qjsx_run(QjsX* x, const char* src, char* err, size_t errlen) {
 int qjsx_invoke(QjsX* x, int handler_id, const char* arg, char* err, size_t errlen) {
     if (!x || !x->ctx) { if (err && errlen) snprintf(err, errlen, "engine not initialized"); return 1; }
     run_guard_reset(x);
-    sb_clear(&x->json);
+    /* no proactive clear: capture_tree replaces the json only when the handler
+     * returns a ui tree, so an undefined return keeps the previous view —
+     * the same re-render contract as lx_invoke (caught by j6 conformance) */
     JSValue g = JS_GetGlobalObject(x->ctx);
     JS_SetPropertyStr(x->ctx, g, "__lx_event_arg",
                       arg ? JS_NewString(x->ctx, arg) : JS_UNDEFINED);

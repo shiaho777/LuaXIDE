@@ -437,12 +437,12 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile
     private var lastRunLang: String = dev.luaxide.lang.Language.LUA.id
 
+    /** Language-neutral routing for the shared host contract (docs/PLATFORM_ABI.md). */
+    private fun activeEngine(): dev.luaxide.engine.EngineAdapter =
+        if (lastRunLang == dev.luaxide.lang.Language.JAVASCRIPT.id) jsEngine else engine
+
     private suspend fun invokeActive(handlerId: Int, payload: String? = null): RunResult =
-        if (lastRunLang == dev.luaxide.lang.Language.JAVASCRIPT.id) {
-            jsEngine.invoke(handlerId, payload)
-        } else {
-            engine.invoke(handlerId, payload)
-        }
+        activeEngine().invoke(handlerId, payload)
 
     private fun isTextEditablePath(path: String): Boolean {
         if (dev.luaxide.lang.Language.ofPath(path) != null) return true
@@ -1219,7 +1219,10 @@ print("got", n)
 
     fun cancelProgram() {
         prootExecutor?.cancel()
+        // stop whichever engine is executing (idle engines are unaffected:
+        // a fresh run clears a stale cancel flag on both engines)
         engine.cancel()
+        jsEngine.cancel()
         _busy.value = false
         _waitingStdin.value = false
         logs.log(LogLevel.INFO, LogSource.SYSTEM, S.STOPPED, tag = "console")
@@ -1228,6 +1231,7 @@ print("got", n)
     override fun onCleared() {
         nativeLogs.stop()
         engine.close()
+        jsEngine.close()
         super.onCleared()
     }
 }

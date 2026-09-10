@@ -58,6 +58,7 @@ CI 在每个 PR 上运行同样的检查(`engine-tests`、`engine-js-tests` 与 
 
 ## 文档
 
+- [docs/PLATFORM_ABI.md](docs/PLATFORM_ABI.md) — **跨语言契约权威规范**:宿主 API 面、invoke 与重渲染语义、取消/步数、组件奇偶性、conformance 测试映射、接入新引擎 checklist(改任一引擎的契约必读)
 - [docs/ENGINE.md](docs/ENGINE.md) — **引擎权威规范**:语言方言、标准库清单、UI DSL 与属性表、事件 payload 与重渲染契约、测试与扩展流程(写 LuaX 程序前先读)
 - [docs/MODULES_AND_UI.md](docs/MODULES_AND_UI.md) — `require` 模块解析规则与内置 UI 组件清单
 - [docs/PROGRAM_MODE.md](docs/PROGRAM_MODE.md) — Program Mode(UI 树 → 预览,否则 → 终端)与交互终端命令

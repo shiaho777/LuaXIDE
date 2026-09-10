@@ -2,6 +2,8 @@
 
 > 这是自研引擎的**唯一权威规范**:语言方言、标准库、UI DSL、事件与重渲染契约、测试与扩展流程。本文面向"用 Lua 写 LuaXIDE 程序的人"(人类或 Agent)。**改 `engine/lx.c`、`luax_jni.c`、组件渲染契约或标准库时,必须在同一次改动里更新本文件**(AGENTS.md 硬规则)。发现文档与代码不一致时,以代码为准并立刻修文档。
 
+> 本文件描述 **LuaX(Lua)引擎**的方言与实现;跨语言的宿主契约(run/invoke/取消/组件奇偶/conformance)见 [PLATFORM_ABI.md](PLATFORM_ABI.md)。
+
 ## 1. 总览
 
 - **单一源码,三个构建目标**:`engine/lx.c`(单文件,约 两千余行)编译为桌面 CLI(`make`)、`:app` 的 `libluax.so`、`:runtime` 的 `libluax.so`。两个 Android 模块各持有一份字节级一致的 `luax_jni.c`。
@@ -71,6 +73,8 @@
 ### 4.2 序列化契约(Execution is truth)
 
 引擎把返回的树序列化为 JSON:`{"type":..., "props":{...}, "children":[...]}`。函数属性序列化为 `{"__handler": N}`,函数本体存进引擎侧 handler 表(**每次重建树 id 重新分配**)。props 键序为哈希表槽序(不排序、非插入序),所以**测试断言只能用子串匹配**。handler 上限 1024 个。
+
+> 本章的 invoke/重渲染语义同时是跨语言契约的一部分,语言无关的定义见 [PLATFORM_ABI.md](PLATFORM_ABI.md)。
 
 ## 5. 事件与重渲染契约(最重要的章节)
 
