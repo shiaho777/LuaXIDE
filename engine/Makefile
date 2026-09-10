@@ -48,6 +48,7 @@ test: $(LX) $(DRIVERS)
 	@echo "=== t27 patterns ==="   && ./$(LX) tests/t27_patterns.lua
 	@echo "=== bc engagement ==="   && LUAX_BC_STATS=1 ./$(LX) tests/t25_bytecode.lua >/dev/null 2>.bc_stats; grep -qE "bc: [1-9][0-9]* compiled" .bc_stats || { echo "bytecode VM did not engage:"; cat .bc_stats; rm -f .bc_stats; exit 1; }; rm -f .bc_stats; echo "vm engaged"
 	@echo "=== bc differential ===" && for t in $(BC_DIFF_SCRIPTS); do ./$(LX) tests/$$t.lua 2>&1 | sed -E 's/0x[0-9a-f]+/0xADDR/g' >/tmp/.lx_bc_a; LUAX_NO_BC=1 ./$(LX) tests/$$t.lua 2>&1 | sed -E 's/0x[0-9a-f]+/0xADDR/g' >/tmp/.lx_bc_b; diff /tmp/.lx_bc_a /tmp/.lx_bc_b >/dev/null || { echo "BC DIVERGENCE in $$t:"; diff /tmp/.lx_bc_a /tmp/.lx_bc_b | head -10; rm -f /tmp/.lx_bc_a /tmp/.lx_bc_b; exit 1; }; done; rm -f /tmp/.lx_bc_a /tmp/.lx_bc_b; echo "bc-diff ok ($(words $(BC_DIFF_SCRIPTS)) scripts)"
+	@echo "=== doc examples ==="     && python3 tests/doc_check.py
 	@echo "=== cli ==="             && ./$(LX) -e "print('cli-ok')" | grep -q cli-ok
 	@echo "=== cli ui ==="          && ./$(LX) --ui -e "return require('ui').app{title='C'}" | grep -q '"type":"app"'
 	@echo "=== cli stdin ==="       && echo 'print(123)' | ./$(LX) | grep -q 123

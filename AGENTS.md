@@ -23,7 +23,7 @@ make -C engine-py test                               # must print ALL PY ENGINE 
 ```
 
 Engine changes must keep `make -C engine test` green; JS engine changes must keep `make -C engine-js test` green; Kotlin changes must compile in both modules. Add a `t*`/`j*` test when adding engine capability.
-8. **docs/ENGINE.md is the engine's authoritative spec** — any change to `engine/lx.c`, the duplicated `luax_jni.c` pair, component render behavior, or the event/re-render contract must update ENGINE.md in the same change (see its §7 extension checklists).
+8. **docs/LUAX.md is the language's authoritative spec** — any change to `engine/lx.c`, component render behavior, or the event/re-render contract must update LUAX.md in the same change; LUAX.md code blocks are executed by CI (`engine/tests/doc_check.py`). Engine-internal docs live in ENGINE.md (see its §4 extension checklists).
 9. **docs/PLATFORM_ABI.md is the cross-engine contract** — contract-level changes must update it AND extend the conformance assertions on BOTH engines (t26 for Lua, j6 for JS) in the same change. One-sided contract changes are forbidden.
 
 ## Delivery loop (hard rules)
