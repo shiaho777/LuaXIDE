@@ -58,6 +58,8 @@ fun LogSheet(
     store: LogStore,
     onJumpToLine: (Int) -> Unit = {},
     onExport: (format: String) -> Unit = {},
+    waitingStdin: Boolean = false,
+    onConsoleSubmit: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val cs = MaterialTheme.colorScheme
@@ -125,7 +127,7 @@ fun LogSheet(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        text = "logs",
+                        text = dev.luaxide.ui.S.CONSOLE,
                         color = cs.onSurfaceVariant,
                         fontSize = 13.sp,
                     )
@@ -164,6 +166,8 @@ fun LogSheet(
                             scope.launch { fraction.animateTo(SheetAnchors.COLLAPSED, spring(stiffness = Spring.StiffnessMediumLow)) }
                         },
                         onExport = onExport,
+                        waitingStdin = waitingStdin,
+                        onConsoleSubmit = onConsoleSubmit,
                     )
                 }
             }

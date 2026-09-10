@@ -76,6 +76,8 @@ fun LogPanel(
     store: LogStore,
     onJumpToLine: (Int) -> Unit = {},
     onExport: (format: String) -> Unit = {},
+    waitingStdin: Boolean = false,
+    onConsoleSubmit: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val cs = MaterialTheme.colorScheme
@@ -123,9 +125,9 @@ fun LogPanel(
                 }
 
                 if (entries.isEmpty()) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
                         Text(
-                            text = "no logs yet",
+                            text = dev.luaxide.ui.S.CONSOLE_EMPTY_HINT,
                             color = cs.onSurfaceVariant,
                             fontSize = 13.sp,
                         )
@@ -133,7 +135,7 @@ fun LogPanel(
                 } else {
                     LazyColumn(
                         state = listState,
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier.weight(1f),
                     ) {
                         items(entries, key = { it.seq }) { entry ->
                             LogRow(
@@ -147,6 +149,13 @@ fun LogPanel(
                         }
                     }
                 }
+
+                if (onConsoleSubmit != null) {
+                    ConsoleInputRow(
+                        waitingStdin = waitingStdin,
+                        onSubmit = onConsoleSubmit,
+                    )
+                }
             }
 
             // jump-to-latest FAB — only when scrolled away from the tail
@@ -156,7 +165,11 @@ fun LogPanel(
                 exit = scaleOut(spring(stiffness = Spring.StiffnessMediumLow)) + fadeOut(),
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .padding(16.dp),
+                    .padding(
+                        top = 16.dp, start = 16.dp,
+                        end = 16.dp,
+                        bottom = if (onConsoleSubmit != null) 68.dp else 16.dp,
+                    ),
             ) {
                 Surface(
                     color = cs.primaryContainer,
@@ -393,6 +406,88 @@ private fun LogRow(
                     fontSize = 12.sp,
                     modifier = Modifier.padding(top = 2.dp),
                 )
+            }
+        }
+    }
+}
+
+/**
+ * The console input line — the single entry point for REPL evaluation and
+ * replying to a program blocked on io.read(). Replaces the old terminal face:
+ * input lives inside the console, not in a separate preview mode.
+ */
+@Composable
+private fun ConsoleInputRow(
+    waitingStdin: Boolean,
+    onSubmit: (String) -> Unit,
+) {
+    val cs = MaterialTheme.colorScheme
+    var text by remember { mutableStateOf("") }
+
+    fun send() {
+        val line = text.trim()
+        if (line.isEmpty()) return
+        onSubmit(line)
+        text = ""
+    }
+
+    Column(Modifier.fillMaxWidth()) {
+        androidx.compose.animation.AnimatedVisibility(
+            visible = waitingStdin,
+            enter = dev.luaxide.ui.runtime.Motion.listEnter(),
+            exit = dev.luaxide.ui.runtime.Motion.listExit(),
+        ) {
+            Surface(color = cs.tertiaryContainer, modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = dev.luaxide.ui.S.CONSOLE_WAITING,
+                    color = cs.onTertiaryContainer,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                )
+            }
+        }
+        Surface(color = cs.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "›",
+                    color = if (waitingStdin) cs.tertiary else cs.onSurfaceVariant,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 16.sp,
+                )
+                Box(Modifier.width(8.dp))
+                Box(Modifier.weight(1f)) {
+                    if (text.isEmpty()) {
+                        Text(
+                            text = if (waitingStdin) dev.luaxide.ui.S.TYPE_REPLY else dev.luaxide.ui.S.TRY_LUA,
+                            color = cs.onSurfaceVariant.copy(alpha = 0.55f),
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 13.sp,
+                        )
+                    }
+                    BasicTextField(
+                        value = text,
+                        onValueChange = { text = it },
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(
+                            color = cs.onSurface,
+                            fontFamily = FontFamily.Monospace,
+                        ),
+                        cursorBrush = SolidColor(cs.primary),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                Box(Modifier.width(8.dp))
+                IconButton(onClick = ::send, modifier = Modifier.size(32.dp)) {
+                    Icon(
+                        Icons.Filled.PlayArrow,
+                        contentDescription = dev.luaxide.ui.S.SEND,
+                        tint = if (text.isBlank()) cs.onSurfaceVariant.copy(alpha = 0.4f) else cs.primary,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
             }
         }
     }

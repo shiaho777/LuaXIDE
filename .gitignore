@@ -26,6 +26,9 @@ engine/lx_cov
 engine/t[0-9]*
 engine/*.dSYM
 engine/*.o
+# JS engine compiled binaries
+engine-js/qjsx
+engine-js/*.dSYM
 # Generated test output (run `make -C engine test > engine/TEST_OUTPUT.txt` to capture)
 engine/TEST_OUTPUT.txt
 # Coverage artifacts

@@ -1,26 +1,43 @@
 package dev.luaxide.ui.shell
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import dev.luaxide.ui.runtime.Motion
+import dev.luaxide.ui.runtime.pressableClickable
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -49,6 +66,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.Color
@@ -89,7 +107,6 @@ fun MainScreen(vm: EditorViewModel = viewModel()) {
     val bifold = rememberBifoldState()
     val code by vm.code.collectAsState()
     val result by vm.result.collectAsState()
-    val programSession by vm.programSession.collectAsState()
     val waitingStdin by vm.waitingStdin.collectAsState()
     val project by vm.project.collectAsState()
     val projects by vm.projects.collectAsState()
@@ -102,6 +119,7 @@ fun MainScreen(vm: EditorViewModel = viewModel()) {
     val showDebugPanel by vm.showDebugPanel.collectAsState()
     val breakOnError by vm.breakOnError.collectAsState()
     val instantEval by vm.instantEval.collectAsState()
+    val busy by vm.busy.collectAsState()
     val toast by vm.toast.collectAsState()
     val checklist by vm.checklist.collectAsState()
     val assetPreviewPath by vm.assetPreviewPath.collectAsState()
@@ -242,14 +260,14 @@ fun MainScreen(vm: EditorViewModel = viewModel()) {
     }
     if (showNewProject) {
         NewProjectDialog(
-            onCreateUi = { vm.createProject(it); showNewProject = false },
-            onCreateProgram = { vm.createProgramProject(it); showNewProject = false },
+            onCreateUi = { name, lang -> vm.createProject(name, lang.id); showNewProject = false },
+            onCreateProgram = { name, lang -> vm.createProgramProject(name, lang.id); showNewProject = false },
             onDismiss = { showNewProject = false },
         )
     }
     newFileInDir?.let { dir ->
         NameDialog(
-            title = "${S.NEW_FILE} · ${dir.ifEmpty { "根目录" }}",
+            title = "${S.NEW_FILE} · ${dir.ifEmpty { S.ROOT_DIR }}",
             hint = S.NAME_LUA,
             onConfirm = { vm.newFileIn(dir, it); newFileInDir = null },
             onDismiss = { newFileInDir = null },
@@ -275,7 +293,7 @@ fun MainScreen(vm: EditorViewModel = viewModel()) {
     }
     deleteTarget?.let { node ->
         ConfirmDialog(
-            title = "删除 ${node.name}？",
+            title = S.deleteTitle(node.name),
             message = if (node.isDirectory) S.DELETE_CONFIRM_DIR else S.DELETE_CONFIRM_FILE,
             confirmLabel = S.DELETE,
             onConfirm = { vm.deleteNode(node.relPath); deleteTarget = null },
@@ -294,8 +312,8 @@ fun MainScreen(vm: EditorViewModel = viewModel()) {
     }
     deleteProjectTarget?.let { target ->
         ConfirmDialog(
-            title = "删除项目 ${target.name}？",
-            message = "将永久删除该项目及其全部文件。",
+            title = S.deleteTitle(target.name),
+            message = S.DELETE_PROJECT_MSG,
             confirmLabel = S.DELETE,
             onConfirm = {
                 vm.deleteProject(target)
@@ -341,14 +359,6 @@ fun MainScreen(vm: EditorViewModel = viewModel()) {
                     onImportAsset = {
                         importLauncher.launch(arrayOf("image/*", "font/*", "application/octet-stream", "*/*"))
                     },
-                    onOpenApiDocs = {
-                        scope.launch { drawerState.close() }
-                        showApiDocs = true
-                    },
-                    onOpenChecklist = {
-                        scope.launch { drawerState.close() }
-                        showChecklist = true
-                    },
                     onEnsureAssets = { vm.ensureAssetFolders() },
                 )
             }
@@ -373,15 +383,6 @@ fun MainScreen(vm: EditorViewModel = viewModel()) {
                         }
                     },
                     actions = {
-                        IconButton(onClick = { showApiDocs = true }) {
-                            Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = "API")
-                        }
-                        IconButton(onClick = { showChecklist = true }) {
-                            Icon(Icons.Filled.Verified, contentDescription = "自检")
-                        }
-                        IconButton(onClick = { showBuild = true }) {
-                            Icon(Icons.Filled.Build, contentDescription = S.BUILD)
-                        }
                         IconButton(onClick = { vm.setDebugEnabled(!debugEnabled) }) {
                             Icon(
                                 Icons.Filled.BugReport,
@@ -390,14 +391,25 @@ fun MainScreen(vm: EditorViewModel = viewModel()) {
                                 else MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                        IconButton(onClick = vm::run) {
-                            Icon(Icons.Filled.PlayArrow, contentDescription = S.RUN)
-                        }
+                        RunStopButton(
+                            busy = busy,
+                            onRun = vm::run,
+                            onStop = vm::cancelProgram,
+                        )
+                        TopBarOverflow(
+                            onApiDocs = { showApiDocs = true },
+                            onChecklist = { showChecklist = true },
+                            onBuild = { showBuild = true },
+                        )
                     },
                 )
             },
             bottomBar = {
-                Column {
+                Column(
+                    modifier = Modifier
+                        .navigationBarsPadding()
+                        .imePadding(),
+                ) {
                     AnimatedVisibility(
                         visible = debugEnabled || debugState !is DebugState.Idle,
                         enter = Motion.listEnter(),
@@ -435,6 +447,8 @@ fun MainScreen(vm: EditorViewModel = viewModel()) {
                     }
                     LogSheet(
                         store = vm.logs,
+                        waitingStdin = waitingStdin,
+                        onConsoleSubmit = vm::submitConsoleLine,
                         onJumpToLine = { line ->
                             bifold.mode = BifoldMode.CODE
                             vm.jumpToLine(line)
@@ -483,11 +497,6 @@ fun MainScreen(vm: EditorViewModel = viewModel()) {
                         PreviewFace(
                             result = result,
                             onEvent = vm::onEvent,
-                            programSession = programSession,
-                            waitingStdin = waitingStdin,
-                            onTerminalSubmit = vm::submitTerminalLine,
-                            onTerminalClear = vm::clearTerminal,
-                            onTerminalCancel = vm::cancelProgram,
                         )
                     }
                 },
@@ -508,14 +517,103 @@ private fun ProjectChip(name: String, onClick: () -> Unit) {
     }
 }
 
+/**
+ * The shell's one primary action. Runs the open file (or entry fallback) and
+ * morphs into Stop while the engine is busy, so the top bar always offers the
+ * inverse of whatever the program is doing — never two contradictory buttons.
+ */
+@Composable
+private fun RunStopButton(
+    busy: Boolean,
+    onRun: () -> Unit,
+    onStop: () -> Unit,
+) {
+    val cs = MaterialTheme.colorScheme
+    val container by animateColorAsState(
+        targetValue = if (busy) cs.errorContainer else cs.primary,
+        animationSpec = tween(220, easing = FastOutSlowInEasing),
+        label = "runContainer",
+    )
+    val content by animateColorAsState(
+        targetValue = if (busy) cs.onErrorContainer else cs.onPrimary,
+        animationSpec = tween(220, easing = FastOutSlowInEasing),
+        label = "runContent",
+    )
+    Button(
+        onClick = { if (busy) onStop() else onRun() },
+        colors = ButtonDefaults.buttonColors(
+            containerColor = container,
+            contentColor = content,
+        ),
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+        modifier = Modifier
+            .padding(start = 2.dp)
+            .height(38.dp),
+    ) {
+        androidx.compose.animation.AnimatedContent(
+            targetState = busy,
+            transitionSpec = { Motion.textSwap() },
+            label = "runStop",
+        ) { running ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    if (running) Icons.Filled.Stop else Icons.Filled.PlayArrow,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = if (running) S.STOP else S.RUN,
+                    style = MaterialTheme.typography.labelLarge,
+                )
+            }
+        }
+    }
+}
+
+/** Secondary actions, tucked behind ⋮ so the primary action stays dominant. */
+@Composable
+private fun TopBarOverflow(
+    onApiDocs: () -> Unit,
+    onChecklist: () -> Unit,
+    onBuild: () -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { open = true }) {
+            Icon(Icons.Filled.MoreVert, contentDescription = S.MORE_OPTIONS)
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(
+                text = { Text(S.API_DOCS) },
+                leadingIcon = { Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = null) },
+                onClick = { open = false; onApiDocs() },
+            )
+            DropdownMenuItem(
+                text = { Text(S.SELF_CHECK) },
+                leadingIcon = { Icon(Icons.Filled.Verified, contentDescription = null) },
+                onClick = { open = false; onChecklist() },
+            )
+            DropdownMenuItem(
+                text = { Text(S.BUILD_APK) },
+                leadingIcon = { Icon(Icons.Filled.Build, contentDescription = null) },
+                onClick = { open = false; onBuild() },
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun NewProjectDialog(
-    onCreateUi: (String) -> Unit,
-    onCreateProgram: (String) -> Unit,
+    onCreateUi: (String, dev.luaxide.lang.Language) -> Unit,
+    onCreateProgram: (String, dev.luaxide.lang.Language) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var text by remember { mutableStateOf("") }
     var kind by remember { mutableStateOf("ui") }
+    var language by remember { mutableStateOf(dev.luaxide.lang.Language.LUA) }
+    var langHint by remember { mutableStateOf(false) }
     val valid = text.trim().isNotEmpty()
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -528,13 +626,45 @@ private fun NewProjectDialog(
                     singleLine = true,
                     placeholder = { Text(S.PROJECT_NAME) },
                 )
+                Text(
+                    text = S.LANGUAGE,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelMedium,
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    dev.luaxide.lang.Language.entries.forEach { lang ->
+                        val selected = language == lang
+                        LanguageChip(
+                            language = lang,
+                            selected = selected,
+                            onClick = {
+                                if (lang.supported) {
+                                    language = lang
+                                } else {
+                                    langHint = true
+                                }
+                            },
+                        )
+                    }
+                }
+                if (langHint) {
+                    Text(
+                        text = S.LANG_COMING_HINT,
+                        color = MaterialTheme.colorScheme.tertiary,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("ui" to S.UI_APP, "program" to S.PROGRAM).forEach { (id, label) ->
                         val selected = kind == id
                         Surface(
                             color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
                             shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.clickable { kind = id },
+                            modifier = Modifier
+                                .pressableClickable { kind = id },
                         ) {
                             Text(
                                 text = label,
@@ -561,7 +691,7 @@ private fun NewProjectDialog(
                 onClick = {
                     if (!valid) return@TextButton
                     val name = text.trim()
-                    if (kind == "program") onCreateProgram(name) else onCreateUi(name)
+                    if (kind == "program") onCreateProgram(name, language) else onCreateUi(name, language)
                 },
                 enabled = valid,
             ) { Text(S.CREATE) }
@@ -570,6 +700,52 @@ private fun NewProjectDialog(
             TextButton(onClick = onDismiss) { Text(S.CANCEL) }
         },
     )
+}
+
+/** Language pill in the new-project dialog; unsupported languages show greyed. */
+@Composable
+private fun LanguageChip(
+    language: dev.luaxide.lang.Language,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val cs = MaterialTheme.colorScheme
+    val enabledLook = language.supported
+    val label = if (enabledLook) language.displayName else "${language.displayName} · ${S.COMING_SOON}"
+    Surface(
+        color = when {
+            selected -> cs.primary
+            enabledLook -> cs.surfaceVariant
+            else -> cs.surfaceVariant.copy(alpha = 0.45f)
+        },
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier.pressableClickable(onClick = onClick),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(7.dp)
+                    .clip(androidx.compose.foundation.shape.CircleShape)
+                    .background(
+                        androidx.compose.ui.graphics.Color(language.accent)
+                            .copy(alpha = if (enabledLook) 1f else 0.35f),
+                    ),
+            )
+            Text(
+                text = label,
+                color = when {
+                    selected -> cs.onPrimary
+                    enabledLook -> cs.onSurfaceVariant
+                    else -> cs.onSurfaceVariant.copy(alpha = 0.55f)
+                },
+                style = MaterialTheme.typography.labelLarge,
+            )
+        }
+    }
 }
 
 @Composable
@@ -661,10 +837,7 @@ private fun BifoldRail(state: dev.luaxide.ui.bifold.BifoldState) {
         if (!dragging) {
             indicator.animateTo(
                 selectedIndex.toFloat(),
-                animationSpec = androidx.compose.animation.core.spring(
-                    dampingRatio = androidx.compose.animation.core.Spring.DampingRatioNoBouncy,
-                    stiffness = 520f,
-                ),
+                animationSpec = Motion.indicator,
             )
         }
     }
@@ -675,10 +848,7 @@ private fun BifoldRail(state: dev.luaxide.ui.bifold.BifoldState) {
         scope.launch {
             indicator.animateTo(
                 clamped.toFloat(),
-                animationSpec = androidx.compose.animation.core.spring(
-                    dampingRatio = androidx.compose.animation.core.Spring.DampingRatioNoBouncy,
-                    stiffness = 520f,
-                ),
+                animationSpec = Motion.indicator,
             )
         }
     }
