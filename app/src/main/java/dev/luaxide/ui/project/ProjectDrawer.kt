@@ -12,7 +12,6 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -28,7 +27,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -112,8 +110,6 @@ fun ProjectDrawer(
     onNewFile: () -> Unit,
     onNewFolder: () -> Unit,
     onImportAsset: () -> Unit = {},
-    onOpenApiDocs: () -> Unit = {},
-    onOpenChecklist: () -> Unit = {},
     onEnsureAssets: () -> Unit = {},
     rootModifier: Modifier = Modifier,
 ) {
@@ -193,9 +189,11 @@ fun ProjectDrawer(
             IconButton(onClick = onNewFolder, modifier = Modifier.size(34.dp)) {
                 Icon(Icons.Filled.CreateNewFolder, contentDescription = S.NEW_FOLDER, tint = cs.primary, modifier = Modifier.size(18.dp))
             }
-            IconButton(onClick = workspace.onRefresh, modifier = Modifier.size(34.dp)) {
-                Icon(Icons.Filled.Refresh, contentDescription = S.REFRESH, tint = cs.onSurfaceVariant, modifier = Modifier.size(18.dp))
-            }
+            FilesOverflowMenu(
+                onRefresh = workspace.onRefresh,
+                onImportAsset = onImportAsset,
+                onEnsureAssets = onEnsureAssets,
+            )
         }
 
         OutlinedTextField(
@@ -268,17 +266,6 @@ fun ProjectDrawer(
                 }
             }
         }
-
-        HorizontalDivider(color = cs.outlineVariant.copy(alpha = 0.55f))
-        QuickActions(
-            onNewFile = onNewFile,
-            onNewFolder = onNewFolder,
-            onNewProject = workspace.onNewProject,
-            onImportAsset = onImportAsset,
-            onOpenApiDocs = onOpenApiDocs,
-            onOpenChecklist = onOpenChecklist,
-            onEnsureAssets = onEnsureAssets,
-        )
     }
 }
 
@@ -320,14 +307,19 @@ private fun WorkspaceHeader(
             }
             Spacer(modifier = Modifier.width(10.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = project?.name ?: S.NO_PROJECT,
-                    color = cs.onSurface,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 15.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = project?.name ?: S.NO_PROJECT,
+                        color = cs.onSurface,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 15.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    project?.let { LanguageBadge(it.language) }
+                }
                 Text(
                     text = buildString {
                         append(projects.size)
@@ -411,7 +403,7 @@ private fun WorkspaceList(
     ) {
         if (projects.isEmpty()) {
             Text(
-                "暂无项目",
+                S.NO_PROJECTS,
                 color = cs.onSurfaceVariant,
                 fontSize = 12.sp,
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
@@ -462,14 +454,19 @@ private fun WorkspaceRow(
         )
         Spacer(modifier = Modifier.width(10.dp))
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                project.name,
-                color = if (active) cs.primary else cs.onSurface,
-                fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
-                fontSize = 13.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    project.name,
+                    color = if (active) cs.primary else cs.onSurface,
+                    fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+                    fontSize = 13.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                LanguageBadge(project.language)
+            }
             Text(
                 project.entryFile,
                 color = cs.onSurfaceVariant,
@@ -486,8 +483,8 @@ private fun WorkspaceRow(
                 Icon(Icons.Filled.MoreVert, null, tint = cs.onSurfaceVariant, modifier = Modifier.size(16.dp))
             }
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                DropdownMenuItem(text = { Text("打开") }, onClick = { menu = false; onSwitch() })
-                DropdownMenuItem(text = { Text("复制") }, onClick = { menu = false; onDuplicate() })
+                DropdownMenuItem(text = { Text(S.OPEN) }, onClick = { menu = false; onSwitch() })
+                DropdownMenuItem(text = { Text(S.DUPLICATE) }, onClick = { menu = false; onDuplicate() })
                 DropdownMenuItem(
                     text = { Text(S.DELETE, color = cs.error) },
                     onClick = { menu = false; onDelete() },
@@ -611,16 +608,24 @@ private fun TreeRow(
             )
         }
 
-        if (node.isDirectory && isOpen) {
-            node.children.forEach { child ->
-                TreeRow(
-                    node = child,
-                    depth = depth + 1,
-                    openPath = openPath,
-                    entryFile = entryFile,
-                    expanded = expanded,
-                    actions = actions,
-                )
+        if (node.isDirectory) {
+            AnimatedVisibility(
+                visible = isOpen,
+                enter = Motion.listEnter(),
+                exit = Motion.listExit(),
+            ) {
+                Column {
+                    node.children.forEach { child ->
+                        TreeRow(
+                            node = child,
+                            depth = depth + 1,
+                            openPath = openPath,
+                            entryFile = entryFile,
+                            expanded = expanded,
+                            actions = actions,
+                        )
+                    }
+                }
             }
         }
     }
@@ -710,13 +715,13 @@ private fun NodeMenu(
             )
         } else {
             DropdownMenuItem(
-                text = { Text("打开") },
+                text = { Text(S.OPEN) },
                 leadingIcon = { Icon(Icons.AutoMirrored.Filled.InsertDriveFile, null) },
                 onClick = { onDismiss(); actions.onOpenFile(node.relPath) },
             )
-            if (node.kind == FileKind.LUA) {
+            if (node.kind == FileKind.CODE) {
                 DropdownMenuItem(
-                    text = { Text(if (isEntry) "入口文件" else "设为入口") },
+                    text = { Text(if (isEntry) S.ENTRY_FILE else S.SET_ENTRY) },
                     leadingIcon = {
                         Icon(
                             if (isEntry) Icons.Filled.Star else Icons.Outlined.StarOutline,
@@ -746,14 +751,14 @@ private fun FileIcon(kind: FileKind, openFolder: Boolean) {
     val cs = MaterialTheme.colorScheme
     val icon = when (kind) {
         FileKind.FOLDER -> if (openFolder) Icons.Filled.FolderOpen else Icons.Filled.Folder
-        FileKind.LUA -> Icons.AutoMirrored.Filled.InsertDriveFile
+        FileKind.CODE -> Icons.AutoMirrored.Filled.InsertDriveFile
         FileKind.IMAGE -> Icons.Filled.Image
         FileKind.FONT -> Icons.Filled.TextFields
         FileKind.OTHER -> Icons.AutoMirrored.Filled.InsertDriveFile
     }
     val tint = when (kind) {
         FileKind.FOLDER -> cs.tertiary
-        FileKind.LUA -> cs.primary
+        FileKind.CODE -> cs.primary
         FileKind.IMAGE -> cs.secondary
         FileKind.FONT -> cs.tertiary
         FileKind.OTHER -> cs.onSurfaceVariant
@@ -762,53 +767,52 @@ private fun FileIcon(kind: FileKind, openFolder: Boolean) {
 }
 
 @Composable
-private fun QuickActions(
-    onNewFile: () -> Unit,
-    onNewFolder: () -> Unit,
-    onNewProject: () -> Unit,
-    onImportAsset: () -> Unit = {},
-    onOpenApiDocs: () -> Unit = {},
-    onOpenChecklist: () -> Unit = {},
-    onEnsureAssets: () -> Unit = {},
+private fun FilesOverflowMenu(
+    onRefresh: () -> Unit,
+    onImportAsset: () -> Unit,
+    onEnsureAssets: () -> Unit,
 ) {
     val cs = MaterialTheme.colorScheme
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        ChipAction(label = "文件", icon = Icons.Filled.Add, onClick = onNewFile)
-        ChipAction(label = "文件夹", icon = Icons.Filled.CreateNewFolder, onClick = onNewFolder)
-        ChipAction(label = "项目", icon = Icons.Filled.Folder, onClick = onNewProject)
-        ChipAction(label = "导入资源", icon = Icons.Filled.Image, onClick = onImportAsset)
-        ChipAction(label = "资源夹", icon = Icons.Filled.FolderOpen, onClick = onEnsureAssets)
-        ChipAction(label = "API", icon = Icons.Filled.Search, onClick = onOpenApiDocs)
-        ChipAction(label = "自检", icon = Icons.Filled.Check, onClick = onOpenChecklist)
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { open = true }, modifier = Modifier.size(34.dp)) {
+            Icon(Icons.Filled.MoreVert, contentDescription = S.MORE_OPTIONS, tint = cs.onSurfaceVariant, modifier = Modifier.size(18.dp))
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(
+                text = { Text(S.REFRESH) },
+                leadingIcon = { Icon(Icons.Filled.Refresh, null) },
+                onClick = { open = false; onRefresh() },
+            )
+            DropdownMenuItem(
+                text = { Text(S.IMPORT_ASSET) },
+                leadingIcon = { Icon(Icons.Filled.Image, null) },
+                onClick = { open = false; onImportAsset() },
+            )
+            DropdownMenuItem(
+                text = { Text(S.ASSET_FOLDERS) },
+                leadingIcon = { Icon(Icons.Filled.FolderOpen, null) },
+                onClick = { open = false; onEnsureAssets() },
+            )
+        }
     }
 }
 
+/** Small language tag shown beside project names — the drawer-level hint of the multi-language roadmap. */
 @Composable
-private fun ChipAction(
-    label: String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    onClick: () -> Unit,
-) {
-    val cs = MaterialTheme.colorScheme
+private fun LanguageBadge(languageId: String) {
+    val lang = dev.luaxide.lang.Language.byId(languageId)
     Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(20.dp),
-        color = cs.surfaceVariant.copy(alpha = 0.55f),
+        color = Color(lang.accent).copy(alpha = 0.12f),
+        shape = RoundedCornerShape(6.dp),
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Icon(icon, null, tint = cs.primary, modifier = Modifier.size(16.dp))
-            Text(label, color = cs.onSurface, fontSize = 12.sp, fontWeight = FontWeight.Medium)
-        }
+        Text(
+            text = lang.displayName,
+            color = Color(lang.accent),
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+        )
     }
 }
 

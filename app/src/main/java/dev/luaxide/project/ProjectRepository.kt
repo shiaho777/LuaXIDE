@@ -42,21 +42,22 @@ class ProjectRepository(context: Context) {
         ids.mapNotNull { readMeta(it) }.sortedByDescending { it.updatedAt }
     }
 
-    suspend fun createProject(name: String, kind: String = "ui"): Project = withContext(Dispatchers.IO) {
-        createProjectInternal(name, kind)
+    suspend fun createProject(name: String, kind: String = "ui", language: String = "lua"): Project = withContext(Dispatchers.IO) {
+        createProjectInternal(name, kind, language)
     }
 
-    private fun createProjectInternal(name: String, kind: String = "ui"): Project {
+    private fun createProjectInternal(name: String, kind: String = "ui", language: String = "lua"): Project {
         val id = UUID.randomUUID().toString().take(8)
         srcDir(id).mkdirs()
-        val project = Project(id = id, name = name)
+        val lang = dev.luaxide.lang.Language.byId(language)
+        val project = Project(id = id, name = name, entryFile = lang.defaultEntry, language = lang.id)
         writeMeta(project)
         val isProgram = kind.equals("program", ignoreCase = true) || kind.equals("cli", ignoreCase = true)
         if (isProgram) {
-            atomicWrite(File(srcDir(id), project.entryFile), SEED_PROGRAM)
+            atomicWrite(File(srcDir(id), project.entryFile), if (lang == dev.luaxide.lang.Language.JAVASCRIPT) SEED_PROGRAM_JS else SEED_PROGRAM)
             writeSeedFiles(id, PROGRAM_STARTER_FILES)
         } else {
-            atomicWrite(File(srcDir(id), project.entryFile), SEED_MAIN)
+            atomicWrite(File(srcDir(id), project.entryFile), if (lang == dev.luaxide.lang.Language.JAVASCRIPT) SEED_MAIN_JS else SEED_MAIN)
             writeSeedFiles(id, UI_STARTER_FILES + UI_STARTER_FILES_EXTRA)
         }
         seedDefaultAssets(id)
@@ -480,6 +481,7 @@ class ProjectRepository(context: Context) {
                 id = o.optString("id", id),
                 name = o.optString("name", "untitled"),
                 entryFile = o.optString("entryFile", "main.lua"),
+                language = o.optString("language", "lua"),
                 createdAt = o.optLong("createdAt", System.currentTimeMillis()),
                 updatedAt = o.optLong("updatedAt", System.currentTimeMillis()),
                 schema = o.optInt("schema", Project.SCHEMA_VERSION),
@@ -492,6 +494,7 @@ class ProjectRepository(context: Context) {
             .put("id", project.id)
             .put("name", project.name)
             .put("entryFile", project.entryFile)
+            .put("language", project.language)
             .put("createdAt", project.createdAt)
             .put("updatedAt", project.updatedAt)
             .put("schema", project.schema)
@@ -559,6 +562,41 @@ local function view()
 end
 
 return view
+""".trimIndent()
+
+        private val SEED_MAIN_JS = """
+var count = 0;
+
+function page() {
+  return ui.app({ key: "home", title: "My app" },
+    ui.column({ key: "body", spacing: 12 },
+      ui.text({ key: "hello", text: "Hello, QuickJS!", size: 20 }),
+      ui.text({ key: "count", text: "count = " + count, size: 16 }),
+      ui.button({
+        key: "tap",
+        text: "+1",
+        onClick: function () {
+          count++;
+          print("count " + count);
+          return page();
+        }
+      })
+    )
+  );
+}
+
+return page();
+""".trimIndent()
+
+        private val SEED_PROGRAM_JS = """
+print("hello from quickjs terminal");
+
+var sum = 0;
+for (var i = 1; i <= 5; i++) {
+  sum += i;
+  print("step", i, "sum", sum);
+}
+print("done");
 """.trimIndent()
 
         private val SEED_EXAMPLES_MAIN = """

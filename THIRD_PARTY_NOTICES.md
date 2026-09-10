@@ -4,6 +4,7 @@ LuaXIDE 的引擎(`engine/lx.c`)与全部 Kotlin/Java 源码为原创。除此�
 
 | 组件 | 版本 | 许可(以实际构建来源声明为准) | 来源 / 随仓库位置 |
 |---|---|---|---|
+| quickjs-ng | 0.10.1 | MIT | [quickjs-ng/quickjs](https://github.com/quickjs-ng/quickjs),vendored 于 `engine-js/quickjs/`,编译为 `libluaxjs.so` |
 | ARSCLib | 1.4.0 | Apache-2.0 | [reandroid/ARSCLib](https://github.com/reandroid/ARSCLib),打包于 `app/libs/ARSCLib-1.4.0.jar` |
 | apksig | 随 AGP 8.7.3 | Apache-2.0 | [tools/apksig](https://android.googlesource.com/platform/tools/apksig/),Gradle 依赖 `com.android.tools.build:apksig` |
 | proot(Termux 构建) | 5.1.107.84 | GPL-2.0(Termux 包元数据) | [termux-packages/packages/proot](https://github.com/termux/termux-packages/tree/master/packages/proot),随 APK 分发于 `app/src/main/assets/proot/` |

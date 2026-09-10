@@ -31,11 +31,8 @@ import dev.luaxide.project.Project
 import dev.luaxide.program.NoRootRuntime
 import dev.luaxide.program.ProotRootfs
 import dev.luaxide.program.ProotExecutor
-import dev.luaxide.program.ProgramSession
-import dev.luaxide.program.TermLine
-import dev.luaxide.program.resolvePreviewKind
-import dev.luaxide.program.PreviewKind
 import dev.luaxide.project.ProjectRepository
+import dev.luaxide.ui.S
 import dev.luaxide.ui.editor.BreakpointRemap
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -59,13 +56,12 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     private var sandbox = NoRootRuntime.sandbox(app, "_boot")
     private var prootInstall: ProotRootfs.Install? = null
     private var prootExecutor: ProotExecutor? = null
-    private val _programSession = MutableStateFlow(ProgramSession.boot(NoRootRuntime.describe(sandbox)))
-    val programSession = _programSession.asStateFlow()
     private val _waitingStdin = MutableStateFlow(false)
     val waitingStdin = _waitingStdin.asStateFlow()
 
     val logs = LogStore(viewModelScope)
     private val engine = EngineHost(logSink = logs)
+    private val jsEngine = dev.luaxide.engine.JsEngineHost(logSink = logs)
     private val nativeLogs = NativeLogBridge(logs)
 
     private val _projects = MutableStateFlow<List<Project>>(emptyList())
@@ -337,7 +333,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             _code.debounce(250).drop(1).collect { src ->
                 saveCurrent(src)
-                if (!_debugEnabled.value && isLuaPath(_openPath.value)) {
+                if (!_debugEnabled.value && isRunnablePath(_openPath.value)) {
                     val ds = engine.debugState.value
                     if (ds !is DebugState.Running && ds !is DebugState.Paused) {
                         execute(src, sourceLabel = _openPath.value)
@@ -387,11 +383,15 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 engine.setRootfs(install.root.absolutePath)
             }
             runCatching { engine.setModuleRoot(repo.srcDirOf(p.id).absolutePath) }
-            val bootNote = buildString {
-                append(NoRootRuntime.describe(sandbox))
-                if (install != null) append(" · ").append(install.note)
-            }
-            _programSession.value = ProgramSession.boot(bootNote)
+            logs.log(
+                LogLevel.DEBUG, LogSource.SYSTEM,
+                buildString {
+                    append(NoRootRuntime.describe(sandbox))
+                    val installNote = prootInstall?.note
+                    if (installNote != null) append(" · ").append(installNote)
+                },
+                tag = "sandbox",
+            )
             _tree.value = repo.loadTree(p.id)
             breakpointsByPath.clear()
             repo.loadBreakpoints(p.id).forEach { (path, map) ->
@@ -429,10 +429,25 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     private fun isLuaPath(path: String?): Boolean =
         !path.isNullOrBlank() && path.endsWith(".lua", ignoreCase = true)
 
+    /** Any language with an engine wired in (Lua today, JS via QuickJS). */
+    private fun isRunnablePath(path: String?): Boolean =
+        !path.isNullOrBlank() && dev.luaxide.lang.Language.ofPath(path)?.supported == true
+
+    /** Language id of the last executed source — routes onEvent/tick invokes. */
+    @Volatile
+    private var lastRunLang: String = dev.luaxide.lang.Language.LUA.id
+
+    private suspend fun invokeActive(handlerId: Int, payload: String? = null): RunResult =
+        if (lastRunLang == dev.luaxide.lang.Language.JAVASCRIPT.id) {
+            jsEngine.invoke(handlerId, payload)
+        } else {
+            engine.invoke(handlerId, payload)
+        }
+
     private fun isTextEditablePath(path: String): Boolean {
+        if (dev.luaxide.lang.Language.ofPath(path) != null) return true
         val lower = path.lowercase()
-        return lower.endsWith(".lua") ||
-            lower.endsWith(".txt") ||
+        return lower.endsWith(".txt") ||
             lower.endsWith(".md") ||
             lower.endsWith(".json") ||
             lower.endsWith(".csv")
@@ -444,7 +459,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             val prev = _openPath.value
             if (prev != null && prev != relPath) {
                 val prevKind = FileKind.of(repo.absoluteSrcFileSync(proj.id, prev))
-                if (prevKind == FileKind.LUA) {
+                if (prevKind == FileKind.CODE) {
                     runCatching { repo.writeFile(proj.id, prev, _code.value) }
                 }
             }
@@ -457,7 +472,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                     _assetPreviewPath.value = relPath
                     publishBreakpoints(relPath)
                 }
-                isLuaPath(relPath) -> {
+                isRunnablePath(relPath) -> {
                     val content = repo.readFile(proj.id, relPath)
                     _code.value = content
                     _assetPreviewPath.value = null
@@ -681,18 +696,18 @@ print("got", n)
     fun run() {
         viewModelScope.launch {
             val path = _openPath.value
-            if (!isLuaPath(path)) {
-                val entry = _project.value?.entryFile ?: "main.lua"
+            if (!isRunnablePath(path)) {
                 val proj = _project.value
+                val entry = proj?.entryFile ?: "main.lua"
                 if (proj == null) {
-                    toast("当前不是 Lua 文件")
+                    toast("当前不是可运行的代码文件")
                     return@launch
                 }
                 if (!repo.exists(proj.id, entry)) {
-                    toast("当前不是 Lua 文件，且入口 $entry 不存在")
+                    toast("当前不是代码文件，且入口 $entry 不存在")
                     return@launch
                 }
-                toast("当前不是 Lua · 运行入口 $entry")
+                toast("运行入口 $entry")
                 val src = repo.readFile(proj.id, entry)
                 execute(src, sourceLabel = entry)
                 return@launch
@@ -727,7 +742,6 @@ print("got", n)
                 engine.setRootfs(install.root.absolutePath)
             }
             runCatching { engine.setModuleRoot(repo.srcDirOf(examples.id).absolutePath) }
-            _programSession.value = ProgramSession.boot(NoRootRuntime.describe(sandbox))
             _tree.value = repo.loadTree(examples.id)
             val path = if (repo.exists(examples.id, "program/stdin.lua")) "program/stdin.lua" else examples.entryFile
             val content = repo.readFile(examples.id, path)
@@ -741,7 +755,7 @@ print("got", n)
 
 
     fun onEvent(handlerId: Int, payload: String? = null) {
-        viewModelScope.launch { publishResult(engine.invoke(handlerId, payload)) }
+        viewModelScope.launch { publishResult(invokeActive(handlerId, payload)) }
     }
 
     /**
@@ -783,7 +797,7 @@ print("got", n)
             var interval = ticker.second
             while (isActive) {
                 delay(interval)
-                val r = engine.invoke(handlerId)
+                val r = invokeActive(handlerId)
                 _result.value = r
                 val next = r.tree?.let { findTicker(it) }
                 if (next == null) {
@@ -805,12 +819,15 @@ print("got", n)
             toast("name is empty")
             return
         }
-        val leaf = if ('.' in raw.substringAfterLast('/')) raw else "$raw.lua"
+        val language = dev.luaxide.lang.Language.byId(proj.language)
+        val leaf = if ('.' in raw.substringAfterLast('/')) raw
+        else "$raw.${language.extensions.first()}"
         val relPath = joinPath(dirRelPath, leaf)
         viewModelScope.launch {
             runCatching {
                 if (repo.exists(proj.id, relPath)) error("already exists: $relPath")
-                val seed = if (leaf.endsWith(".lua", ignoreCase = true)) "-- $leaf\n" else ""
+                val fileLang = dev.luaxide.lang.Language.ofPath(leaf)
+                val seed = if (fileLang != null) "${fileLang.lineComment} $leaf\n" else ""
                 repo.newFile(proj.id, relPath, seed)
                 _tree.value = repo.loadTree(proj.id)
                 openFile(relPath, run = true)
@@ -882,9 +899,11 @@ print("got", n)
                 _tree.value = newTree
                 if (proj.entryFile == relPath || proj.entryFile.startsWith("$relPath/")) {
                     val fallbackEntry = firstFile(newTree) ?: run {
-                        repo.newFile(proj.id, "main.lua", "-- main.lua\n")
+                        val lang = dev.luaxide.lang.Language.byId(proj.language)
+                        val name = lang.defaultEntry
+                        repo.newFile(proj.id, name, "${lang.lineComment} $name\n")
                         _tree.value = repo.loadTree(proj.id)
-                        "main.lua"
+                        name
                     }
                     val updated = repo.setEntryFile(proj.id, fallbackEntry)
                     _project.value = updated
@@ -906,8 +925,8 @@ print("got", n)
 
     fun setEntryFile(relPath: String) {
         val proj = _project.value ?: return
-        if (!relPath.endsWith(".lua", ignoreCase = true)) {
-            toast("entry must be a .lua file")
+        if (dev.luaxide.lang.Language.ofPath(relPath)?.supported != true) {
+            toast("入口必须是可运行的代码文件")
             return
         }
         viewModelScope.launch {
@@ -964,7 +983,7 @@ print("got", n)
     private fun joinPath(dir: String, leaf: String): String =
         if (dir.isEmpty()) leaf else "$dir/$leaf"
 
-    fun createProgramProject(name: String) {
+    fun createProgramProject(name: String, language: String = "lua") {
         val n = name.trim()
         if (n.isEmpty()) {
             toast("name is empty")
@@ -974,7 +993,7 @@ print("got", n)
             runCatching {
                 val current = _project.value
                 if (current != null) runCatching { saveCurrent(_code.value) }
-                val p = repo.createProject(n, kind = "program")
+                val p = repo.createProject(n, kind = "program", language = language)
                 _projects.value = repo.listProjects()
                 openProject(p)
                 toast("created $n (program)")
@@ -984,7 +1003,7 @@ print("got", n)
         }
     }
 
-    fun createProject(name: String) {
+    fun createProject(name: String, language: String = "lua") {
         val n = name.trim()
         if (n.isEmpty()) {
             toast("name is empty")
@@ -994,7 +1013,7 @@ print("got", n)
             runCatching {
                 val current = _project.value
                 if (current != null) runCatching { saveCurrent(_code.value) }
-                val p = repo.createProject(n)
+                val p = repo.createProject(n, language = language)
                 _projects.value = repo.listProjects()
                 openProject(p)
                 toast("created $n")
@@ -1071,11 +1090,18 @@ print("got", n)
     private suspend fun execute(src: String, sourceLabel: String? = null) {
         _busy.value = true
         _waitingStdin.value = false
-        foldSessionForRun()
         val path = sourceLabel ?: _openPath.value
-        if (!isLuaPath(path) && sourceLabel == null) {
+        if (!isRunnablePath(path) && sourceLabel == null) {
             _busy.value = false
-            toast("只能运行 .lua 文件")
+            toast("只能运行代码文件")
+            return
+        }
+        val lang = path?.let { dev.luaxide.lang.Language.ofPath(it) }
+        lastRunLang = lang?.id ?: dev.luaxide.lang.Language.LUA.id
+        if (lang?.id == dev.luaxide.lang.Language.JAVASCRIPT.id) {
+            val result = jsEngine.run(src)
+            publishResult(result)
+            _busy.value = false
             return
         }
         publishBreakpoints(_openPath.value)
@@ -1105,9 +1131,7 @@ print("got", n)
                 if (_waitingStdin.value != waiting) {
                     _waitingStdin.value = waiting
                     if (waiting) {
-                        _programSession.value = _programSession.value.append(
-                            TermLine(TermLine.Kind.Meta, "等待输入…"),
-                        ).copy(running = true)
+                        logs.log(LogLevel.INFO, LogSource.SYSTEM, S.WAITING_BELOW, tag = "console")
                     }
                 }
             }
@@ -1119,59 +1143,7 @@ print("got", n)
             _waitingStdin.value = false
         }
         publishResult(result)
-        absorbProgramResult(result, sourceLabel = (sourceLabel ?: path)?.takeIf { isLuaPath(it) } ?: path ?: "main.lua")
         _busy.value = false
-    }
-
-    private fun foldSessionForRun() {
-        val label = NoRootRuntime.describe(sandbox)
-        val prev = dropTrailingStatus(_programSession.value)
-        val had = prev.lines.any {
-            it.kind == TermLine.Kind.Output ||
-                it.kind == TermLine.Kind.Input ||
-                it.kind == TermLine.Kind.Error ||
-                it.kind == TermLine.Kind.Prompt
-        }
-        val lines = if (had) {
-            listOf(TermLine(TermLine.Kind.Meta, "── 上一轮已折叠 ──"))
-        } else {
-            emptyList()
-        }
-        _programSession.value = prev.copy(
-            lines = lines,
-            running = true,
-            lastExitOk = null,
-            sandboxLabel = label,
-        )
-    }
-
-    private fun absorbProgramResult(result: dev.luaxide.engine.RunResult, sourceLabel: String) {
-        if (resolvePreviewKind(result) != PreviewKind.Terminal &&
-            !(result.ok.not() && result.tree == null)
-        ) {
-            return
-        }
-        val label = NoRootRuntime.describe(sandbox)
-        var session = dropTrailingStatus(_programSession.value).copy(sandboxLabel = label, running = true)
-        session = session.append(TermLine(TermLine.Kind.Prompt, "lua $sourceLabel"))
-        val out = result.output
-        var wrote = false
-        if (out.isNotEmpty()) {
-            out.lineSequence().forEach { line ->
-                if (line.isNotEmpty()) {
-                    session = session.append(TermLine(TermLine.Kind.Output, line))
-                    wrote = true
-                }
-            }
-        }
-        if (!wrote && result.ok) {
-            session = session.append(TermLine(TermLine.Kind.Meta, "无输出"))
-        }
-        if (!result.ok) {
-            val err = result.error?.trim().orEmpty().ifEmpty { "unknown error" }
-            session = session.append(TermLine(TermLine.Kind.Error, err))
-        }
-        _programSession.value = session.copy(running = false, lastExitOk = result.ok)
     }
 
     private fun softenReplLine(raw: String): String {
@@ -1202,121 +1174,41 @@ print("got", n)
         return t
     }
 
-
-
-    private fun isStatusMeta(text: String): Boolean {
-        val s = text.trim().lowercase()
-        return s == "done" ||
-            s == "stopped" || s == "已停止" ||
-            s == "no output" || s == "无输出" ||
-            s == "proot ok" ||
-            s.startsWith("proot failed") ||
-            s.startsWith("[finished") ||
-            s.startsWith("[failed") ||
-            s.startsWith("[cancelled") ||
-            s.startsWith("[proot") ||
-            s == "waiting for input…" ||
-            s == "等待输入…" ||
-            s.startsWith("── 上一轮") ||
-            s == "waiting for input..."
-    }
-
-    private fun dropTrailingStatus(session: ProgramSession): ProgramSession {
-        val lines = session.lines.toMutableList()
-        while (lines.isNotEmpty()) {
-            val last = lines.last()
-            if (last.kind == TermLine.Kind.Meta && isStatusMeta(last.text)) {
-                lines.removeAt(lines.lastIndex)
-            } else {
-                break
-            }
-        }
-        return session.copy(lines = lines)
-    }
-
-    private fun appendEngineOutput(session: ProgramSession, output: String): ProgramSession {
-        var s = session
-        if (output.isEmpty()) return s
-        output.lineSequence().forEach { line ->
-            if (line.isNotEmpty()) s = s.append(TermLine(TermLine.Kind.Output, line))
-        }
-        return s
-    }
-
-    fun submitTerminalLine(raw: String) {
+    /**
+     * The console input line. One entry point for both REPL evaluation and
+     * replying to a program blocked on io.read() — the old terminal face and
+     * its ProgramSession transcript are gone; input/output both flow through
+     * the console (LogStore).
+     */
+    fun submitConsoleLine(raw: String) {
         val line = raw.trimEnd()
         if (line.isBlank() && !_waitingStdin.value) return
         viewModelScope.launch {
             when {
-                line == ".clear" -> {
-                    _programSession.value = ProgramSession.boot(NoRootRuntime.describe(sandbox)).copy(lastExitOk = null)
-                }
-                line == ".help" -> {
-                    _programSession.value = dropTrailingStatus(_programSession.value).append(
-                        TermLine(TermLine.Kind.Input, line),
-                        TermLine(
-                            TermLine.Kind.Meta,
-                            "帮助 · .run  .clear  .stop  .proot\n" +
-                                "在此输入 Lua · print(...)  =1+2  io.read() 会等待输入",
-                        ),
-                    )
-                }
+                line == ".clear" -> logs.clear()
+                line == ".help" -> logs.log(
+                    LogLevel.INFO, LogSource.SYSTEM,
+                    "帮助 · .run .clear .stop\n在此输入 Lua · print(...)  =1+2  io.read() 等待输入时直接回复",
+                    tag = "console",
+                )
                 line == ".run" -> run()
                 line == ".stop" -> cancelProgram()
-                line == ".proot" -> {
-                    val install = runCatching { ProotRootfs.ensure(getApplication()) }.getOrElse {
-                        _programSession.value = _programSession.value.append(
-                            TermLine(TermLine.Kind.Error, "proot install failed: ${it.message}"),
-                        )
-                        return@launch
-                    }
-                    prootInstall = install
-                    prootExecutor = ProotExecutor(install, sandbox)
-                    engine.setRootfs(install.root.absolutePath)
-                    _programSession.value = dropTrailingStatus(_programSession.value).append(
-                        TermLine(TermLine.Kind.Input, ".proot"),
-                        TermLine(TermLine.Kind.Meta, "checking proot…"),
-                    ).copy(running = true)
-                    val result = withContext(Dispatchers.IO) { prootExecutor!!.selfTest() }
-                    var s = _programSession.value
-                    result.output.lineSequence().forEach { o ->
-                        if (o.isNotBlank()) s = s.append(TermLine(TermLine.Kind.Output, o))
-                    }
-                    s = s.append(
-                        TermLine(
-                            if (result.ok) TermLine.Kind.Meta else TermLine.Kind.Error,
-                            if (result.ok) "proot ok"
-                            else "proot failed · exit ${result.exitCode}",
-                        ),
-                    )
-                    _programSession.value = s.copy(running = false, lastExitOk = result.ok)
-                }
                 _waitingStdin.value || _busy.value -> {
-                    _programSession.value = dropTrailingStatus(_programSession.value).append(
-                        TermLine(TermLine.Kind.Input, line),
-                    )
+                    logs.log(LogLevel.INFO, LogSource.LUA, line, tag = "stdin")
                     engine.pushStdin(line)
                 }
                 else -> {
-                    var session = dropTrailingStatus(_programSession.value).append(
-                        TermLine(TermLine.Kind.Input, line),
-                    )
-                    session = session.copy(running = true)
-                    _programSession.value = session
+                    logs.log(LogLevel.INFO, LogSource.LUA, "› $line", tag = "repl")
                     val code = if (line.contains('\n')) line else softenReplLine(line)
                     val result = engine.repl(code)
-                    var next = appendEngineOutput(_programSession.value, result.output)
-                    if (!result.ok) {
-                        next = next.append(
-                            TermLine(TermLine.Kind.Error, result.error?.trim().orEmpty().ifEmpty { "error" }),
-                        )
-                    }
-                    _programSession.value = next.copy(running = false, lastExitOk = result.ok)
-                    if (result.output.isNotEmpty() || !result.ok) {
-                        logs.logLines(
-                            if (result.ok) LogLevel.INFO else LogLevel.ERROR,
-                            LogSource.LUA,
-                            if (result.ok) result.output else (result.error ?: "error"),
+                    if (result.ok) {
+                        if (result.output.isNotEmpty()) {
+                            logs.logLines(LogLevel.INFO, LogSource.LUA, result.output, tag = "repl")
+                        }
+                    } else {
+                        logs.log(
+                            LogLevel.ERROR, LogSource.LUA,
+                            result.error?.trim().orEmpty().ifEmpty { "error" },
                             tag = "repl",
                         )
                     }
@@ -1330,13 +1222,7 @@ print("got", n)
         engine.cancel()
         _busy.value = false
         _waitingStdin.value = false
-        _programSession.value = dropTrailingStatus(_programSession.value).append(
-            TermLine(TermLine.Kind.Meta, "已停止"),
-        ).copy(running = false, lastExitOk = false)
-    }
-
-    fun clearTerminal() {
-        _programSession.value = ProgramSession.boot(NoRootRuntime.describe(sandbox))
+        logs.log(LogLevel.INFO, LogSource.SYSTEM, S.STOPPED, tag = "console")
     }
 
     override fun onCleared() {

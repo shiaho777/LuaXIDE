@@ -1,15 +1,16 @@
 package dev.luaxide.project
 
+import dev.luaxide.lang.Language
 import java.io.File
 
 /** File classification, used for tree icons and open behavior. */
 enum class FileKind {
-    LUA, IMAGE, FONT, FOLDER, OTHER;
+    CODE, IMAGE, FONT, FOLDER, OTHER;
 
     companion object {
         fun of(file: File): FileKind = when {
             file.isDirectory -> FOLDER
-            file.extension.equals("lua", ignoreCase = true) -> LUA
+            Language.ofPath(file.name) != null -> CODE
             file.extension.lowercase() in IMAGE_EXTS -> IMAGE
             file.extension.lowercase() in FONT_EXTS -> FONT
             else -> OTHER
@@ -45,6 +46,8 @@ data class Project(
     val id: String,
     val name: String,
     val entryFile: String = "main.lua",
+    /** [dev.luaxide.lang.Language.id]; persisted so multi-language projects survive reloads. */
+    val language: String = "lua",
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
     val schema: Int = SCHEMA_VERSION,

@@ -82,10 +82,7 @@ fun BifoldScaffold(
             }
             ratioAnim.animateTo(
                 target,
-                spring(
-                    dampingRatio = Spring.DampingRatioNoBouncy,
-                    stiffness = 380f,
-                ),
+                dev.luaxide.ui.runtime.Motion.paneRatio,
             )
         }
     }

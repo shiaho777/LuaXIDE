@@ -28,24 +28,21 @@ import androidx.compose.ui.unit.sp
 import dev.luaxide.engine.RunResult
 import dev.luaxide.ui.S
 import dev.luaxide.program.PreviewKind
-import dev.luaxide.program.ProgramSession
-import dev.luaxide.program.TermLine
 import dev.luaxide.program.resolvePreviewKind
 import dev.luaxide.ui.runtime.Motion
 import dev.luaxide.ui.runtime.OnEvent
 import dev.luaxide.ui.runtime.RenderTree
 import dev.luaxide.ui.runtime.nodeIdentity
-import dev.luaxide.ui.terminal.TerminalFace
 
+/**
+ * The preview face renders one thing: the engine's ui tree. Program output
+ * (print, errors, logs) belongs to the console sheet below — the old terminal
+ * face is gone, so this face never hosts text output anymore.
+ */
 @Composable
 fun PreviewFace(
     result: RunResult?,
     onEvent: OnEvent,
-    programSession: ProgramSession,
-    waitingStdin: Boolean = false,
-    onTerminalSubmit: (String) -> Unit,
-    onTerminalClear: () -> Unit,
-    onTerminalCancel: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val kind = resolvePreviewKind(result)
@@ -56,45 +53,9 @@ fun PreviewFace(
         label = "preview-kind",
     ) { k ->
         when (k) {
-            PreviewKind.Terminal -> TerminalFace(
-                session = programSession,
-                waitingStdin = waitingStdin,
-                onSubmit = onTerminalSubmit,
-                onClear = onTerminalClear,
-                onCancel = onTerminalCancel,
-            )
-            PreviewKind.Error -> {
-                if (result?.tree == null) {
-                    TerminalFace(
-                session = programSession,
-                waitingStdin = waitingStdin,
-                onSubmit = onTerminalSubmit,
-                onClear = onTerminalClear,
-                onCancel = onTerminalCancel,
-            )
-                } else {
-                    UiPreview(result = result, onEvent = onEvent)
-                }
-            }
             PreviewKind.Ui -> UiPreview(result = result, onEvent = onEvent)
-            PreviewKind.Idle -> {
-                val hasHistory = programSession.lines.any {
-                    it.kind == TermLine.Kind.Output ||
-                        it.kind == TermLine.Kind.Input ||
-                        it.kind == TermLine.Kind.Error
-                }
-                if (hasHistory) {
-                    TerminalFace(
-                session = programSession,
-                waitingStdin = waitingStdin,
-                onSubmit = onTerminalSubmit,
-                onClear = onTerminalClear,
-                onCancel = onTerminalCancel,
-            )
-                } else {
-                    IdlePreview()
-                }
-            }
+            PreviewKind.Error -> UiPreview(result = result, onEvent = onEvent)
+            PreviewKind.Idle -> IdlePreview()
         }
     }
 }
@@ -204,6 +165,12 @@ private fun UiPreview(
                             fontFamily = FontFamily.Monospace,
                             fontSize = 13.sp,
                             modifier = Modifier.padding(top = 6.dp),
+                        )
+                        Text(
+                            text = S.PREVIEW_HINT,
+                            color = cs.onErrorContainer.copy(alpha = 0.7f),
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(top = 8.dp),
                         )
                     }
                 }
