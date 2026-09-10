@@ -20,7 +20,7 @@ import java.util.concurrent.Executors
  */
 class JsEngineHost(
     private val logSink: LogSink? = null,
-) {
+) : EngineAdapter {
     private val worker = Executors.newSingleThreadExecutor { r ->
         Thread(r, "luaxjs-engine").apply { isDaemon = true }
     }
@@ -31,7 +31,7 @@ class JsEngineHost(
     private var handle: Long = 0L
 
     private val _state = MutableStateFlow<EngineState>(EngineState.Idle)
-    val state: StateFlow<EngineState> = _state.asStateFlow()
+    override val state: StateFlow<EngineState> = _state.asStateFlow()
 
     private fun ensureHandle() {
         if (handle == 0L) {
@@ -41,7 +41,7 @@ class JsEngineHost(
         }
     }
 
-    suspend fun run(src: String): RunResult {
+    override suspend fun run(src: String): RunResult {
         _state.value = EngineState.Running
         val result = withContext(dispatcher) {
             recreate()
@@ -51,7 +51,7 @@ class JsEngineHost(
         return result
     }
 
-    suspend fun invoke(handlerId: Int, payload: String? = null): RunResult {
+    override suspend fun invoke(handlerId: Int, payload: String?): RunResult {
         val result = withContext(dispatcher) {
             execute { JsNative.nativeInvoke(handle, handlerId, payload) }
         }
@@ -59,7 +59,7 @@ class JsEngineHost(
         return result
     }
 
-    fun cancel() {
+    override fun cancel() {
         val h = handle
         if (h != 0L) JsNative.nativeCancel(h)
     }
@@ -105,7 +105,7 @@ class JsEngineHost(
         ensureHandle()
     }
 
-    fun close() {
+    override fun close() {
         scope.launch {
             if (handle != 0L) {
                 JsNative.nativeClose(handle)
