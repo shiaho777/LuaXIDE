@@ -1,82 +1,105 @@
-# LuaXIDE
+# LuaX
 
-在 Android 设备上编写、运行、调试 Lua,并直接把脚本打包成独立可安装的 App —— 全程无需 root。
+一门为「在手机上写 App」而生的 Lua 方言 —— 声明式 UI、事件驱动重渲染、单文件 C 引擎,配一个能把它打包成独立 APK 的 Android IDE(LuaXIDE)。
 
 <p align="center">
   <img src="docs/screenshot.png" width="340" alt="LuaXIDE:左侧代码编辑器,右侧实时预览">
 </p>
 
-## 它能做什么
+```lua
+-- 这是 LuaX。一个完整的交互 App:
+local ui = require("ui")
+local count = 0
 
-- **写** — 语法高亮编辑器 + 组件面板,双栏自适应布局(代码 / 预览 / 同显)
-- **跑** — 自研 Lua 解释器即时执行:脚本返回 UI 树 → 可视化预览;纯 print 程序 → 内置终端
-- **调** — 断点 / 条件断点 / logpoint、单步与步出、局部变量与调用栈、监视与表达式求值
-- **终端** — 交互式 REPL(`=1+2` 语法糖、跨行全局变量)、`io.read` 阻塞输入、`.run` `.stop` `.proot` 命令
-- **打包** — 一键把当前项目打包成签名 APK 并安装(改写模板 APK,手机上不需要任何构建工具链)
+local function view()
+  return ui.app {
+    title = "Counter",
+    ui.column {
+      spacing = 12,
+      ui.text { text = "taps: " .. count, size = 28 },
+      ui.button { text = "+1", onClick = function() count = count + 1 end },
+    },
+  }
+end
 
-## 架构
-
-```text
-              engine/lx.c   (自研 Lua 解释器 + ui 库 + 调试协议)
-                 │ 同一份源码
-        ┌────────┴────────┐
-   CLI (lx)          libluax.so (JNI)
-                          │
-        ┌─────────────────┼──────────────────┐
-   :app(IDE)                     :runtime(模板 App)
-   编辑 / 调试 / 终端 / 打包        RuntimeActivity 渲染 assets/lua/main.lua
-        │                              │
-        │      release APK 复制为 template.apk
-        └──────> ApkPackager:改写包名/版本/资源 → apksig 签名 → 安装
+return view  -- 返回 view 函数:每次点击,引擎重调它,界面随之更新
 ```
 
-- **engine/** — 单文件 C 引擎 `lx.c`:树遍历解释器 + 混合字节码 VM(函数体首次调用时编译执行,不可编译的构造透明回退;数值循环约 11x 加速)。内置 `require("ui")` 声明式 UI 库(输出 JSON UI 树)、stdin 阻塞队列、协作式取消、`lx_debug_*` 调试协议。同一份源码编译为桌面 CLI(`make`)与两个 Android 模块的 `libluax.so`(CMake + `luax_jni.c`),详见 [docs/BYTECODE_VM.md](docs/BYTECODE_VM.md)。
-- **:runtime** — 极简启动器 App。其 release APK 经 `syncRuntimeTemplate` 任务复制为 `app/src/main/assets/runtime/template.apk`,作为所有打包产物的模板。
-- **:app** — IDE 本体(`dev.luaxide`)。运行/预览走 `EngineHost`;打包走 `ApkPackager`(ARSCLib 改写二进制 manifest + apksig 签名,签名密钥为设备上现场生成的 PKCS#12)。
+- **声明式 UI**:UI 树就是普通 Lua 表;`return view` 之后,事件 → 状态变化 → 重渲染全自动
+- **单文件引擎**:`engine/lx.c` 约 2200 行 C,树遍历 + 字节码 VM 混合执行(数值循环 ~11×)
+- **现代标准库**:`string.format` / 模式匹配(`find gsub match gmatch`)/ `math.*` / `table.sort`
+- **无 root**:沙箱执行;IDE 一键打包成独立签名 APK
+- **三语言平台**:LuaX 是参考语言;同一契约下还有 JavaScript(QuickJS)与 Python(MicroPython)
 
-## 无 root 政策
+## 三十秒上手
 
-LuaXIDE 永不要求 root / Magisk / su。程序运行在 `filesDir/sandbox/<projectId>/` 沙箱中;可选的 proot 为非特权用户态 rootfs(Termux 构建,随 APK 分发于 `assets/proot/`)。
+```bash
+make -C engine lx          # 编译桌面 CLI(需要 clang)
+./engine/lx your.lua       # 运行
+./engine/lx --ui your.lua  # 打印 UI 树 JSON(桌面验证交互契约)
+```
+
+或安装 LuaXIDE(Android),新建项目即得上述计数器种子;`调试`(断点/单步/监视)与 `控制台`(REPL、`io.read` 回复)都在 IDE 内。
+
+## 语言速览
+
+```lua
+-- 标准库一角
+print(string.format("%d %s %5.2f", 42, "hi", 3.14159))             -- 42 hi  3.14
+print(("2026-09-09"):match("(%d+)-(%d+)-(%d+)"))                    -- 2026 09 09
+for w in ("one two three"):gmatch("%a+") do io.write(w, ".") end   -- one.two.three.
+
+local t = {5, 2, 8, 1}
+table.sort(t)                                                       -- {1,2,5,8}
+print(math.floor(3.7), math.random(1, 6), #t)
+
+-- 词法闭包 + 元表
+local proto = { greet = function(self) return "hi " .. self.name end }
+local obj = setmetatable({ name = "luax" }, { __index = proto })
+print(obj:greet())                                                  -- hi luax
+```
+
+LuaX 是 Lua 5.1 的方言子集:闭包与元表都在,数字只有 double、表构造器展开多值、不支持 `goto`/`load`。完整差异与逐函数标准库参考见 **[docs/LUAX.md](docs/LUAX.md)**。
+
+## 文档
+
+| 你想…… | 读 |
+|---|---|
+| **写 LuaX 程序** | [docs/LUAX.md](docs/LUAX.md) —— 语言参考:方言差异、逐函数标准库、运行时语义(事件/重渲染/取消)、UI DSL、元表 |
+| 接入 / 对齐其他语言引擎 | [docs/PLATFORM_ABI.md](docs/PLATFORM_ABI.md) —— 跨语言宿主契约(Lua/JS/Python 共同遵守)与 conformance 测试映射 |
+| 维护 LuaX 引擎本体 | [docs/ENGINE.md](docs/ENGINE.md) + [docs/BYTECODE_VM.md](docs/BYTECODE_VM.md) —— 架构、测试工作流、扩展 checklist、VM 设计 |
+| 了解 IDE 行为 | [docs/PROGRAM_MODE.md](docs/PROGRAM_MODE.md)、[docs/PROOT_AND_STDIN.md](docs/PROOT_AND_STDIN.md) |
+
+> LUAX.md 里每个代码块都被 CI 实际运行过 —— 文档即测试,失效即红。
+
+## 仓库布局
+
+```
+engine/       LuaX 引擎(lx.c)—— 桌面 CLI 与两个 Android 模块共用同一源码
+engine-js/    JavaScript 引擎(QuickJS facade),同一宿主契约
+engine-py/    Python 引擎(MicroPython facade),同一宿主契约
+app/          LuaXIDE 本体(Kotlin + Compose):编辑/调试/控制台/打包
+runtime/      打包模板 App:内置三引擎,渲染脚本的 UI 树
+docs/         上表所列文档
+```
 
 ## 构建与测试
 
 ```bash
-# Lua 引擎测试套件(t1–t27,需要 clang),通过时输出 ALL TESTS PASSED
-make -C engine test
-
-# JS 引擎(QuickJS)测试套件(j1–j6),通过时输出 ALL JS ENGINE TESTS DONE
-make -C engine-js test
-
-# Python 引擎(MicroPython)测试(p1/p2),通过时输出 ALL PY ENGINE TESTS DONE
-make -C engine-py test
-
-# Android 构建(需要 Android SDK / JDK 17)
-./gradlew :app:assembleDebug :runtime:assembleDebug
-
-# 修改 runtime 后同步模板 APK 到 app assets
-./gradlew :runtime:syncRuntimeTemplate    # 或 scripts/sync-runtime-template.sh
+make -C engine test      # Lua 引擎: t1–t27 + bc-diff 差分 + 文档示例门禁 → ALL TESTS PASSED
+make -C engine-js test   # JS 引擎: j1–j6 conformance
+make -C engine-py test   # Python 引擎: p1–p2
+./gradlew :app:assembleDebug :runtime:assembleDebug   # Android(需 SDK / JDK 17)
 ```
 
-CI 在每个 PR 上运行同样的检查(`engine-tests`、`engine-js-tests`、`engine-py-tests` 与 `android-build` 四个必需检查),作为合并门禁。
-
-## 文档
-
-- [docs/PLATFORM_ABI.md](docs/PLATFORM_ABI.md) — **跨语言契约权威规范**:宿主 API 面、invoke 与重渲染语义、取消/步数、组件奇偶性、conformance 测试映射、接入新引擎 checklist(改任一引擎的契约必读)
-- [docs/ENGINE.md](docs/ENGINE.md) — **引擎权威规范**:语言方言、标准库清单、UI DSL 与属性表、事件 payload 与重渲染契约、测试与扩展流程(写 LuaX 程序前先读)
-- [docs/MODULES_AND_UI.md](docs/MODULES_AND_UI.md) — `require` 模块解析规则与内置 UI 组件清单
-- [docs/PROGRAM_MODE.md](docs/PROGRAM_MODE.md) — Program Mode(UI 树 → 预览,否则 → 终端)与交互终端命令
-- [docs/PROOT_AND_STDIN.md](docs/PROOT_AND_STDIN.md) — proot 用户态 rootfs、阻塞 stdin 与取消机制
-
-## 第三方组件
-
-引擎与 Kotlin 源码为原创;打包与执行链路使用了若干第三方组件(ARSCLib、apksig、Termux proot 等),清单、版本与许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+CI 在每个 PR 上运行以上全部(`engine-tests` / `engine-js-tests` / `engine-py-tests` / `android-build` 四个必需检查),作为合并门禁。
 
 ## 参与贡献
 
-欢迎 Issue 与 PR。流程与约定见 [CONTRIBUTING.md](CONTRIBUTING.md);编码代理请先读 [AGENTS.md](AGENTS.md)。
+欢迎 Issue 与 PR。流程与约定见 [CONTRIBUTING.md](CONTRIBUTING.md);编码代理先读 [AGENTS.md](AGENTS.md)。
 
 交付环:**Issue → PR(base=main,含 `Fixes #N`)→ CI 门禁 → merge → Issue 自动关闭**。
 
 ## License
 
-本项目以 [Apache-2.0](LICENSE) 许可发布;随仓库分发的第三方组件及其许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+本项目以 [Apache-2.0](LICENSE) 许可发布;随仓库分发的第三方组件(QuickJS、ARSCLib、apksig、Termux proot 等)清单与许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

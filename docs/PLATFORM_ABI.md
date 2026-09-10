@@ -1,6 +1,6 @@
 # LuaX Platform ABI(跨语言契约权威规范)
 
-> 本文件定义**语言无关的宿主契约**:任何脚本引擎接入 LuaXIDE 平台,必须实现本文的 API 面与语义。当前三个参考实现:`engine/lx.c`(LuaX,Lua)、`engine-js/qjs_x.c`(QuickJS,JavaScript)、`engine-py/mpy_x.c`(MicroPython,Python —— 试点,限制见 §10)。**改任一引擎的契约行为,必须同次更新本文件,并保证两个实现的 conformance 测试(t26 / j6)同步通过** —— 两套测试断言的是同一份契约,任何一侧的语义偏差都会被 CI 拦截。语言方言与各自引擎内部细节见 [ENGINE.md](ENGINE.md)。
+> 本文件定义**语言无关的宿主契约**:任何脚本引擎接入 LuaXIDE 平台,必须实现本文的 API 面与语义。当前三个参考实现:`engine/lx.c`(LuaX,Lua)、`engine-js/qjs_x.c`(QuickJS,JavaScript)、`engine-py/mpy_x.c`(MicroPython,Python —— 试点,限制见 §10)。**改任一引擎的契约行为,必须同次更新本文件,并保证两个实现的 conformance 测试(t26 / j6)同步通过** —— 两套测试断言的是同一份契约,任何一侧的语义偏差都会被 CI 拦截。语言方言见 [LUAX.md](LUAX.md)(LuaX)/各自引擎目录;LuaX 引擎内部细节见 [ENGINE.md](ENGINE.md)。
 
 ## 1. 平台分层
 
@@ -53,7 +53,7 @@ Kotlin 侧统一为 [`EngineAdapter`](../app/src/main/java/dev/luaxide/engine/En
 3. **重渲染判定**(两引擎必须一致):
    - handler 返回 ui 树 → 新树替换当前视图;
    - 返回 nil/undefined/非树 → **保留旧树**(JS 侧不得提前清空 json;Lua 侧由 `lx_build_tree` 重序列化保证);
-   - Lua 特有:app_view 为函数时先重新调用(见 ENGINE.md §5 路径 A)。
+   - Lua 特有:app_view 为函数时先重新调用(见 LUAX.md §4.2 路径 A)。
 4. handler 内部错误:返回非 0 + 错误信息(含行号时以 `line N:` 前缀),引擎保持可用。
 
 ## 5. 运行时防护
@@ -64,7 +64,7 @@ Kotlin 侧统一为 [`EngineAdapter`](../app/src/main/java/dev/luaxide/engine/En
 
 ## 6. UI 组件奇偶性
 
-**JS 侧必须暴露与 Lua 完全相同的 16 个构造器**(`app column row text button card input image spacer divider scrollview list listitem stack page switch`),生成的树节点结构一致。属性语义(别名链、默认值、事件名)以 ENGINE.md §4.1 的属性表为准 —— 那是语言无关的渲染器契约。conformance 测试逐类型断言(见 §7)。
+**JS 侧必须暴露与 Lua 完全相同的 16 个构造器**(`app column row text button card input image spacer divider scrollview list listitem stack page switch`),生成的树节点结构一致。属性语义(别名链、默认值、事件名)以 LUAX.md §5 的属性表为准 —— 那是语言无关的渲染器契约。conformance 测试逐类型断言(见 §7)。
 
 ## 7. Conformance 测试(防漂移机制)
 
@@ -96,7 +96,7 @@ Kotlin 侧统一为 [`EngineAdapter`](../app/src/main/java/dev/luaxide/engine/En
 3. Kotlin `EngineAdapter` 实现 + JNI 桥;
 4. **写一份 conformance 驱动测试**(照抄 j6 的断言结构),进 Makefile + `ci.yml` + 分支保护;
 5. 打包接入:模块 CMake 加 .so → RuntimeActivity 路由加分支 → BuildPipeline.validateEntry 加分支 → syncRuntimeTemplate;
-6. 更新本文件 §2/§7 的表格与 ENGINE.md 互链。
+6. 更新本文件 §2/§7 的表格,并与 LUAX.md/ENGINE.md 互链。
 
 ## 10. Python 引擎(engine-py)的现状与限制
 
