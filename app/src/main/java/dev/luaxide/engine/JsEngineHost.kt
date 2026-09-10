@@ -34,7 +34,11 @@ class JsEngineHost(
     val state: StateFlow<EngineState> = _state.asStateFlow()
 
     private fun ensureHandle() {
-        if (handle == 0L) handle = JsNative.nativeNew()
+        if (handle == 0L) {
+            handle = JsNative.nativeNew()
+            // same runaway-loop guard as the Lua engine's default
+            JsNative.nativeSetStepLimit(handle, 50_000_000L)
+        }
     }
 
     suspend fun run(src: String): RunResult {
@@ -56,8 +60,8 @@ class JsEngineHost(
     }
 
     fun cancel() {
-        // QuickJS runs synchronously on the worker thread; there is no
-        // interrupt hook wired yet. Kept for interface parity.
+        val h = handle
+        if (h != 0L) JsNative.nativeCancel(h)
     }
 
     private inline fun execute(block: () -> Array<String>): RunResult = runCatching {

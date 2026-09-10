@@ -41,8 +41,11 @@ LuaXIDE 永不要求 root / Magisk / su。程序运行在 `filesDir/sandbox/<pro
 ## 构建与测试
 
 ```bash
-# 引擎测试套件(t1–t24,需要 clang),通过时输出 ALL TESTS PASSED
+# Lua 引擎测试套件(t1–t27,需要 clang),通过时输出 ALL TESTS PASSED
 make -C engine test
+
+# JS 引擎(QuickJS)测试套件(j1–j5),通过时输出 ALL JS ENGINE TESTS DONE
+make -C engine-js test
 
 # Android 构建(需要 Android SDK / JDK 17)
 ./gradlew :app:assembleDebug :runtime:assembleDebug
@@ -51,7 +54,7 @@ make -C engine test
 ./gradlew :runtime:syncRuntimeTemplate    # 或 scripts/sync-runtime-template.sh
 ```
 
-CI 在每个 PR 上运行同样的检查(`engine-tests` 与 `android-build` 两个必需检查),作为合并门禁。
+CI 在每个 PR 上运行同样的检查(`engine-tests`、`engine-js-tests` 与 `android-build` 三个必需检查),作为合并门禁。
 
 ## 文档
 

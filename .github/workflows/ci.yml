@@ -21,8 +21,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build & run engine tests (t1-t24)
+      - name: Build & run engine tests (t1-t27)
         run: make -C engine test
+
+  engine-js-tests:
+    name: engine-js-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build & run QuickJS engine tests (j1-j5)
+        run: make -C engine-js test
 
   android-build:
     name: android-build

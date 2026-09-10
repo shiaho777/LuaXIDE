@@ -11,4 +11,7 @@ object JsNative {
     external fun nativeInvoke(handle: Long, handlerId: Int, payload: String?): Array<String>
     external fun nativeTakeOutput(handle: Long): String
     external fun nativeClearOutput(handle: Long)
+    external fun nativeCancel(handle: Long)
+    external fun nativeClearCancel(handle: Long)
+    external fun nativeSetStepLimit(handle: Long, steps: Long)
 }
