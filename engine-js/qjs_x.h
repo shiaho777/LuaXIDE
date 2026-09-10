@@ -38,6 +38,16 @@ const char* qjsx_last_json(QjsX* x);
 const char* qjsx_last_output(QjsX* x);
 void qjsx_clear_output(QjsX* x);
 
+/* Runaway-execution protection, mirroring lx_cancel / lx_set_step_limit:
+ * the QuickJS interrupt handler polls these on every back-edge/eval slice.
+ * qjsx_cancel stops the running script with "cancelled by user";
+ * the step limit (0 = unlimited) reports the same "execution step limit
+ * exceeded (possible infinite loop)" message as the Lua engine. Both are
+ * reset by the engine at the start of every run/invoke. */
+void qjsx_cancel(QjsX* x);
+void qjsx_clear_cancel(QjsX* x);
+void qjsx_set_step_limit(QjsX* x, long steps);
+
 #ifdef __cplusplus
 }
 #endif

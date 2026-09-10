@@ -77,6 +77,24 @@ Java_dev_luaxide_engine_JsNative_nativeInvoke(JNIEnv* env, jclass clazz, jlong h
     return out;
 }
 
+JNIEXPORT void JNICALL
+Java_dev_luaxide_engine_JsNative_nativeCancel(JNIEnv* env, jclass clazz, jlong handle) {
+    QjsX* x = (QjsX*)(intptr_t)handle;
+    if (x) qjsx_cancel(x);
+}
+
+JNIEXPORT void JNICALL
+Java_dev_luaxide_engine_JsNative_nativeClearCancel(JNIEnv* env, jclass clazz, jlong handle) {
+    QjsX* x = (QjsX*)(intptr_t)handle;
+    if (x) qjsx_clear_cancel(x);
+}
+
+JNIEXPORT void JNICALL
+Java_dev_luaxide_engine_JsNative_nativeSetStepLimit(JNIEnv* env, jclass clazz, jlong handle, jlong steps) {
+    QjsX* x = (QjsX*)(intptr_t)handle;
+    if (x) qjsx_set_step_limit(x, (long)steps);
+}
+
 JNIEXPORT jstring JNICALL
 Java_dev_luaxide_engine_JsNative_nativeTakeOutput(JNIEnv* env, jclass clazz, jlong handle) {
     QjsX* x = (QjsX*)(intptr_t)handle;

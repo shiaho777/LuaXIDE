@@ -78,6 +78,10 @@ struct QjsX {
     JSContext* ctx;
     struct StrBuf out;   /* print capture */
     struct StrBuf json;  /* last ui tree */
+    volatile int cancel_flag; /* set by qjsx_cancel, polled by the interrupt handler */
+    int interrupt_kind;  /* 0 none, 1 cancelled, 2 step limit (why the last interrupt fired) */
+    long steps;          /* interrupt polls since the last run/invoke began */
+    long step_limit;     /* 0 = unlimited */
 };
 
 static JSValue js_print(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv) {
@@ -131,7 +135,31 @@ static int stack_line(const char* stack, const char** colon_out) {
     return 0;
 }
 
+static int qjs_interrupt_cb(JSRuntime* rt, void* opaque) {
+    QjsX* x = (QjsX*)opaque;
+    (void)rt;
+    if (x->cancel_flag) { x->interrupt_kind = 1; return 1; }
+    if (x->step_limit > 0 && ++x->steps > x->step_limit) { x->interrupt_kind = 2; return 1; }
+    return 0;
+}
+
+static void run_guard_reset(QjsX* x) {
+    x->steps = 0;
+    x->interrupt_kind = 0;
+    /* mirrors lx_reset_run: a fresh run clears a stale cancel flag, but an
+     * invoke keeps it — cancelling mid-run then clicking a button must not
+     * fire that handler (lx_invoke resets steps only). */
+}
+
 static int report_exception(QjsX* x, char* err, size_t errlen) {
+    if (x->interrupt_kind) {
+        if (err && errlen)
+            snprintf(err, errlen, "%s",
+                     x->interrupt_kind == 1 ? "cancelled by user"
+                                          : "execution step limit exceeded (possible infinite loop)");
+        JS_FreeValue(x->ctx, JS_GetException(x->ctx)); /* drain the interrupt exception */
+        return 1;
+    }
     JSValue e = JS_GetException(x->ctx);
     const char* msg = JS_ToCString(x->ctx, e);
     JSValue st = JS_GetPropertyStr(x->ctx, e, "stack");
@@ -158,6 +186,7 @@ QjsX* qjsx_new(void) {
     if (!x->rt) { free(x); return NULL; }
     JS_SetMemoryLimit(x->rt, 64 * 1024 * 1024);
     JS_SetMaxStackSize(x->rt, 4 * 1024 * 1024);
+    JS_SetInterruptHandler(x->rt, qjs_interrupt_cb, x);
     x->ctx = JS_NewContext(x->rt);
     if (!x->ctx) { JS_FreeRuntime(x->rt); free(x); return NULL; }
     JS_SetContextOpaque(x->ctx, x);
@@ -201,6 +230,8 @@ static JSValue eval_wrapped(QjsX* x, const char* src) {
 
 int qjsx_run(QjsX* x, const char* src, char* err, size_t errlen) {
     if (!x || !x->ctx) { if (err && errlen) snprintf(err, errlen, "engine not initialized"); return 1; }
+    run_guard_reset(x);
+    x->cancel_flag = 0; /* lx_reset_run semantics */
     sb_clear(&x->json);
     JSValue v = eval_wrapped(x, src);
     if (JS_IsException(v)) { JS_FreeValue(x->ctx, v); return report_exception(x, err, errlen); }
@@ -211,6 +242,7 @@ int qjsx_run(QjsX* x, const char* src, char* err, size_t errlen) {
 
 int qjsx_invoke(QjsX* x, int handler_id, const char* arg, char* err, size_t errlen) {
     if (!x || !x->ctx) { if (err && errlen) snprintf(err, errlen, "engine not initialized"); return 1; }
+    run_guard_reset(x);
     sb_clear(&x->json);
     JSValue g = JS_GetGlobalObject(x->ctx);
     JS_SetPropertyStr(x->ctx, g, "__lx_event_arg",
@@ -228,3 +260,6 @@ int qjsx_invoke(QjsX* x, int handler_id, const char* arg, char* err, size_t errl
 const char* qjsx_last_json(QjsX* x) { return (x && x->json.p) ? x->json.p : ""; }
 const char* qjsx_last_output(QjsX* x) { return (x && x->out.p) ? x->out.p : ""; }
 void qjsx_clear_output(QjsX* x) { if (x) sb_clear(&x->out); }
+void qjsx_cancel(QjsX* x) { if (x) x->cancel_flag = 1; }
+void qjsx_clear_cancel(QjsX* x) { if (x) x->cancel_flag = 0; }
+void qjsx_set_step_limit(QjsX* x, long steps) { if (x) x->step_limit = steps; }
