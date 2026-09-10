@@ -62,12 +62,19 @@ void mp_hal_stdout_tx_strn_cooked(const char* str, size_t len) {
     }
 }
 
-/* cooperative cancel / step limit: polled from the REPL tick hook */
-void mp_sched_vm_pending_exceptions_hook(void) { }
-static int mpy_tick(MpyX* x) {
-    if (x->cancel_flag) { x->interrupt_kind = 1; return 1; }
-    if (x->step_limit > 0 && ++x->steps > x->step_limit) { x->interrupt_kind = 2; return 1; }
-    return 0;
+/* Cooperative cancel / step limit: py/vm.c calls MICROPY_VM_HOOK_LOOP
+ * (= mpy_x_vm_poll) on every dispatch-loop branch. Raising a pending
+ * exception makes the VM unwind cleanly; mpy_exec's nlr handler turns it
+ * into the same "cancelled by user" / "execution step limit exceeded"
+ * strings the other engines produce. */
+void mpy_x_vm_poll(void) {
+    MpyX* x = g_active;
+    if (!x) return;
+    if (x->cancel_flag) { x->interrupt_kind = 1; }
+    else if (x->step_limit > 0 && ++x->steps > x->step_limit) { x->interrupt_kind = 2; }
+    else return;
+    MP_STATE_THREAD(mp_pending_exception) =
+        mp_obj_new_exception_msg(&mp_type_KeyboardInterrupt, MP_ERROR_TEXT(""));
 }
 
 /* the VM polls this on its schedule loop (mp_sched_num_pending etc) — but the
@@ -111,7 +118,10 @@ static int mpy_exec(MpyX* x, const char* src, char* err, size_t errlen) {
         return 0;
     } else {
         mp_obj_t exc = (mp_obj_t)nlr.ret_val;
+        /* the VM hook already set interrupt_kind before raising; a stray
+         * KeyboardInterrupt raised by user code falls through as-is */
         if (x->interrupt_kind) {
+            MP_STATE_THREAD(mp_pending_exception) = MP_OBJ_NULL;
             if (err && errlen) snprintf(err, errlen, "%s",
                 x->interrupt_kind == 1 ? "cancelled by user"
                                       : "execution step limit exceeded (possible infinite loop)");
@@ -190,6 +200,7 @@ int mpyx_run(MpyX* x, const char* src, char* err, size_t errlen) {
     mpy_reset(x);
     x->cancel_flag = 0;   /* lx_reset_run semantics */
     x->steps = 0; x->interrupt_kind = 0;
+    MP_STATE_THREAD(mp_pending_exception) = MP_OBJ_NULL;
     x->out_used = 0; if (x->out) x->out[0] = 0;
     x->json_used = 0; if (x->json) x->json[0] = 0;
     char errbuf[512];
@@ -224,9 +235,12 @@ int mpyx_run(MpyX* x, const char* src, char* err, size_t errlen) {
         "        return 'true' if v else 'false'\n"
         "    if isinstance(v, str):\n"
         "        return _lx_str(v)\n"
-        "    if isinstance(v, (int, float)):\n"
+        "    if isinstance(v, int):\n"
         "        return str(v)\n"
-        "    return 'null'\n"
+        "    try:\n"
+        "        return str(float(v))\n"
+        "    except Exception:\n"
+        "        return 'null'\n"
         "_t = None\n"
         "try:\n"
         "    _v = globals().get('view')\n"
@@ -240,7 +254,7 @@ int mpyx_run(MpyX* x, const char* src, char* err, size_t errlen) {
         "    print('__LXTREE__' + _lx_ser(_t))\n";
     mpy_exec(x, cap, NULL, 0);
     /* pull the tree out of the output stream */
-    const char* marker = strstr(x->out, "__LXTREE__");
+    const char* marker = (x->out && x->out_used) ? strstr(x->out, "__LXTREE__") : NULL;
     if (marker) {
         size_t n = strlen(marker + 10);
         buf_append(&x->json, &x->json_sz, &x->json_used, marker + 10, n);
@@ -254,6 +268,8 @@ int mpyx_invoke(MpyX* x, int handler_id, const char* arg, char* err, size_t errl
     if (!x) { if (err && errlen) snprintf(err, errlen, "engine not initialized"); return 1; }
     /* invoke keeps a set cancel flag (lx semantics) but resets steps */
     x->steps = 0; x->interrupt_kind = 0;
+    MP_STATE_THREAD(mp_pending_exception) = MP_OBJ_NULL;
+    x->json_used = 0; if (x->json) x->json[0] = 0; /* the new tree replaces the old, not appends */
     x->out_used = 0; if (x->out) x->out[0] = 0;
     char code[256];
     if (arg) {
@@ -272,7 +288,7 @@ int mpyx_invoke(MpyX* x, int handler_id, const char* arg, char* err, size_t errl
         snprintf(code, sizeof(code),
             "_r = _handlers[%d]()\n"
             "if isinstance(_r, dict) and isinstance(_r.get('type'), str):\n"
-            "    _lx_tree = _r\n", handler_id);
+            "    _lx_tree = _r\n", handler_id, handler_id);
     }
     char errbuf[512];
     if (mpy_exec(x, code, errbuf, sizeof(errbuf))) {
@@ -300,7 +316,7 @@ int mpyx_invoke(MpyX* x, int handler_id, const char* arg, char* err, size_t errl
         "if isinstance(_t, dict) and isinstance(_t.get('type'), str):\n"
         "    print('__LXTREE__' + _lx_ser(_t))\n";
     mpy_exec(x, cap, NULL, 0);
-    const char* marker = strstr(x->out, "__LXTREE__");
+    const char* marker = (x->out && x->out_used) ? strstr(x->out, "__LXTREE__") : NULL;
     if (marker) {
         size_t n = strlen(marker + 10);
         buf_append(&x->json, &x->json_sz, &x->json_used, marker + 10, n);

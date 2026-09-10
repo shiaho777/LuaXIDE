@@ -41,6 +41,9 @@ int main(void){
     printf("invoke rc=%d err=%s\n", rc, rc ? err : "-");
     const char* j2 = mpyx_last_json(x);
     printf("after tap: %s\n", strstr(j2, "n=1") ? "n=1 OK" : "MISSED");
+    /* regression guard: invoke must REPLACE the json, not append — the json
+     * buffer carrying a stale prefix means the host would render the OLD tree */
+    if (strstr(j2, "n=0")) { printf("REGRESSION: stale tree prefix still in json\n"); return 1; }
     printf("json2: %.160s\n", j2);
   } else {
     printf("no handler found\n");

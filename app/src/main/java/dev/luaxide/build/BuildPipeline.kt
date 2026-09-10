@@ -3,6 +3,7 @@ package dev.luaxide.build
 import android.content.Context
 import dev.luaxide.engine.EngineHost
 import dev.luaxide.engine.JsEngineHost
+import dev.luaxide.engine.PyEngineHost
 import dev.luaxide.log.LogLevel
 import dev.luaxide.log.LogSink
 import dev.luaxide.log.LogSource
@@ -208,6 +209,23 @@ class BuildPipeline(
 
     /** Pre-package smoke run: the entry's language picks the engine (PLATFORM_ABI). */
     private suspend fun validateEntry(src: String, srcDir: File, entryFile: String) {
+        if (entryFile.endsWith(".py")) {
+            val engine = PyEngineHost()
+            try {
+                val result = engine.run(src)
+                if (!result.ok) {
+                    val msg = result.error ?: "validation failed"
+                    fail(0, "py validate failed: $msg")
+                }
+            } catch (e: BuildException) {
+                throw e
+            } catch (e: Exception) {
+                fail(0, "py validate error: ${e.message}")
+            } finally {
+                engine.close()
+            }
+            return
+        }
         if (entryFile.endsWith(".js")) {
             val engine = JsEngineHost()
             try {

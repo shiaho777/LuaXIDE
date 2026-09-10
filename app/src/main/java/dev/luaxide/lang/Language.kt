@@ -45,7 +45,7 @@ enum class Language(
         defaultEntry = "main.py",
         lineComment = "#",
         accent = 0xFF4EA3D9,
-        supported = false,
+        supported = true,
     ),
     ;
 

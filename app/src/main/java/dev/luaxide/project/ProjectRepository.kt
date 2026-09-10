@@ -54,10 +54,20 @@ class ProjectRepository(context: Context) {
         writeMeta(project)
         val isProgram = kind.equals("program", ignoreCase = true) || kind.equals("cli", ignoreCase = true)
         if (isProgram) {
-            atomicWrite(File(srcDir(id), project.entryFile), if (lang == dev.luaxide.lang.Language.JAVASCRIPT) SEED_PROGRAM_JS else SEED_PROGRAM)
+            val pseed = when (lang) {
+                dev.luaxide.lang.Language.JAVASCRIPT -> SEED_PROGRAM_JS
+                dev.luaxide.lang.Language.PYTHON -> SEED_PROGRAM_PY
+                else -> SEED_PROGRAM
+            }
+            atomicWrite(File(srcDir(id), project.entryFile), pseed)
             writeSeedFiles(id, PROGRAM_STARTER_FILES)
         } else {
-            atomicWrite(File(srcDir(id), project.entryFile), if (lang == dev.luaxide.lang.Language.JAVASCRIPT) SEED_MAIN_JS else SEED_MAIN)
+            val seed = when (lang) {
+                dev.luaxide.lang.Language.JAVASCRIPT -> SEED_MAIN_JS
+                dev.luaxide.lang.Language.PYTHON -> SEED_MAIN_PY
+                else -> SEED_MAIN
+            }
+            atomicWrite(File(srcDir(id), project.entryFile), seed)
             writeSeedFiles(id, UI_STARTER_FILES + UI_STARTER_FILES_EXTRA)
         }
         seedDefaultAssets(id)
@@ -586,6 +596,35 @@ function page() {
 }
 
 return page();
+""".trimIndent()
+
+        private val SEED_MAIN_PY = """
+count = 0
+
+# Canonical dynamic-UI pattern (same as the Lua/JS seeds): return a view()
+# function so the engine re-renders after every event.
+def bump():
+    global count
+    count += 1
+
+def view():
+    return ui.app({"title": "My app"},
+        ui.column({"spacing": 12},
+            ui.text({"text": "Hello, LuaX!", "size": 20}),
+            ui.text({"text": "taps: " + str(count), "size": 16}),
+            ui.button({"text": "+1", "onClick": bump})))
+
+return view()
+""".trimIndent()
+
+        private val SEED_PROGRAM_PY = """
+print("hello from micropython")
+
+total = 0
+for i in range(1, 6):
+    total += i
+    print("step", i, "sum", total)
+print("done")
 """.trimIndent()
 
         private val SEED_PROGRAM_JS = """

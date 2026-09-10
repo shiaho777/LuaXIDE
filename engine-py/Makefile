@@ -13,15 +13,19 @@ EMBED_SRC = $(filter-out micropython_embed/port/mphalport.c, \
             $(wildcard micropython_embed/shared/runtime/*.c) \
             $(wildcard micropython_embed/port/*.c))
 
-DRIVERS = p1-smoke
+DRIVERS = p1-smoke p2-cancel
 
 all: $(DRIVERS)
 
 p1-smoke: tests/p1_smoke.c mpy_x.c mpy_x.h $(EMBED_SRC)
 	$(CC) $(CFLAGS) -o $@ tests/p1_smoke.c mpy_x.c $(EMBED_SRC) $(LDFLAGS)
 
+p2-cancel: tests/p2_cancel.c mpy_x.c mpy_x.h $(EMBED_SRC)
+	$(CC) $(CFLAGS) -o $@ tests/p2_cancel.c mpy_x.c $(EMBED_SRC) $(LDFLAGS) -pthread
+
 test: $(DRIVERS)
 	@echo "=== p1 smoke (run -> tree -> invoke -> re-render) ===" && ./p1-smoke
+	@echo "=== p2 cancel (VM-hook step limit + mid-run cancel) ===" && ./p2-cancel
 	@echo "ALL PY ENGINE TESTS DONE"
 
 clean:

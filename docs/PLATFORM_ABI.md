@@ -98,12 +98,14 @@ Kotlin 侧统一为 [`EngineAdapter`](../app/src/main/java/dev/luaxide/engine/En
 5. 打包接入:模块 CMake 加 .so → RuntimeActivity 路由加分支 → BuildPipeline.validateEntry 加分支 → syncRuntimeTemplate;
 6. 更新本文件 §2/§7 的表格与 ENGINE.md 互链。
 
-## 10. Python 试点(engine-py)的现状与限制
+## 10. Python 引擎(engine-py)的现状与限制
 
-`engine-py/mpy_x.c` 基于 MicroPython v1.25.0 embed port(自包含生成包),已实现 run → 树 + 输出、invoke → payload + 重渲染(view 函数优先,handler 返回树次之)、print 捕获、`global` 状态跨 invoke 存活。**桌面测试 p1 通过,CI 有门禁;但尚未接入 App**(JNI/Android 构建/语言路由未做,`Language.PYTHON.supported` 仍为 false)。
+`engine-py/mpy_x.c` 基于 MicroPython v1.25.0 embed port(自包含生成包),已**接入 App**:JNI 桥 `mpy_jni.c` ×2、`PyEngineHost`(实现 EngineAdapter,IDE 与打包 runtime 双变体)、`Language.PYTHON.supported = true`、入口路由(`.py` → PyEngineHost)与打包前校验均已打通;模拟器 E2E:创建 Python 项目 → 运行渲染 → 点击 +1 重渲染(taps 0→1→2)。
 
-已知限制(接入 App 前必须解决):
-- **取消/步数上限是存根**:MicroPython embed VM 没有暴露周期性中断钩子,`mpyx_cancel`/`step_limit` 当前不生效(符号保留,语义待接 `MICROPY_VM_HOOK` 或调度器滴答)
-- 每次 run 重执行 prelude,无 `import` 模块根路径(多文件工程未支持)
-- 单进程单引擎实例(全局 `g_active`),与 App 的多 EngineHost 生命周期需对齐
-- DSL 的 props 序列化:Python int/float/str/bool/dict/handler 支持,list 之外的自定义对象序列化为 null
+实现要点(与其他引擎一致的部分):run → 树 JSON + print 捕获、invoke(id, payload) → handler + 重渲染(view() 优先)、`MICROPY_VM_HOOK_LOOP` 驱动的协作式取消与步数上限(错误文案与 Lua/JS 逐字一致,见 p2)、globals 跨 invoke 存活。
+
+**仍属限制(接入后续 Issue 处理)**:
+- 无 `import` 模块根路径(多文件工程未支持;单文件项目完整可用)
+- 单进程单引擎实例(facade 用进程级 `g_active`;宿主以单例方式使用)
+- 调试器/REPL/stdin 不适用于 Python(契约允许:这些本就是 Lua 专属扩展)
+- embed 配置为裁剪版(compiler + GC + slice + str/float builtins);缺 `re`/`json` 等标准库,需要时按 mpconfigport.h 增项并重新生成 micropython_embed/

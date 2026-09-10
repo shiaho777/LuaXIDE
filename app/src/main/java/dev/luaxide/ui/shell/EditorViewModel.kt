@@ -62,6 +62,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     val logs = LogStore(viewModelScope)
     private val engine = EngineHost(logSink = logs)
     private val jsEngine = dev.luaxide.engine.JsEngineHost(logSink = logs)
+    private val pyEngine = dev.luaxide.engine.PyEngineHost(logSink = logs)
     private val nativeLogs = NativeLogBridge(logs)
 
     private val _projects = MutableStateFlow<List<Project>>(emptyList())
@@ -438,8 +439,11 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     private var lastRunLang: String = dev.luaxide.lang.Language.LUA.id
 
     /** Language-neutral routing for the shared host contract (docs/PLATFORM_ABI.md). */
-    private fun activeEngine(): dev.luaxide.engine.EngineAdapter =
-        if (lastRunLang == dev.luaxide.lang.Language.JAVASCRIPT.id) jsEngine else engine
+    private fun activeEngine(): dev.luaxide.engine.EngineAdapter = when (lastRunLang) {
+        dev.luaxide.lang.Language.JAVASCRIPT.id -> jsEngine
+        dev.luaxide.lang.Language.PYTHON.id -> pyEngine
+        else -> engine
+    }
 
     private suspend fun invokeActive(handlerId: Int, payload: String? = null): RunResult =
         activeEngine().invoke(handlerId, payload)
@@ -1104,6 +1108,12 @@ print("got", n)
             _busy.value = false
             return
         }
+        if (lang?.id == dev.luaxide.lang.Language.PYTHON.id) {
+            val result = pyEngine.run(src)
+            publishResult(result)
+            _busy.value = false
+            return
+        }
         publishBreakpoints(_openPath.value)
         engine.setDebugEnabled(_debugEnabled.value)
         engine.setBreakOnError(_breakOnError.value)
@@ -1223,6 +1233,7 @@ print("got", n)
         // a fresh run clears a stale cancel flag on both engines)
         engine.cancel()
         jsEngine.cancel()
+        pyEngine.cancel()
         _busy.value = false
         _waitingStdin.value = false
         logs.log(LogLevel.INFO, LogSource.SYSTEM, S.STOPPED, tag = "console")
@@ -1232,6 +1243,7 @@ print("got", n)
         nativeLogs.stop()
         engine.close()
         jsEngine.close()
+        pyEngine.close()
         super.onCleared()
     }
 }
