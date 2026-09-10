@@ -31,6 +31,7 @@ engine-js/qjsx
 engine-js/*.dSYM
 # Python engine compiled binaries
 engine-py/p1-smoke
+engine-py/p2-cancel
 engine-py/*.dSYM
 # Generated test output (run `make -C engine test > engine/TEST_OUTPUT.txt` to capture)
 engine/TEST_OUTPUT.txt

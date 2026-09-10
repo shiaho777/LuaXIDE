@@ -47,7 +47,7 @@ make -C engine test
 # JS 引擎(QuickJS)测试套件(j1–j6),通过时输出 ALL JS ENGINE TESTS DONE
 make -C engine-js test
 
-# Python 引擎(MicroPython)试点测试,通过时输出 ALL PY ENGINE TESTS DONE
+# Python 引擎(MicroPython)测试(p1/p2),通过时输出 ALL PY ENGINE TESTS DONE
 make -C engine-py test
 
 # Android 构建(需要 Android SDK / JDK 17)

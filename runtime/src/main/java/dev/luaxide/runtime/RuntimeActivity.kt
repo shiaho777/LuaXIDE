@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.sp
 import dev.luaxide.engine.EngineAdapter
 import dev.luaxide.engine.EngineHost
 import dev.luaxide.engine.JsEngineHost
+import dev.luaxide.engine.PyEngineHost
 import dev.luaxide.engine.RunResult
 import dev.luaxide.ui.runtime.Motion
 import dev.luaxide.ui.runtime.RenderTree
@@ -114,8 +115,13 @@ private fun extractLuaTree(activity: ComponentActivity): String {
 @Composable
 private fun RuntimeApp(bundle: AppBundle) {
     // Language routing per PLATFORM_ABI: the entry file extension picks the engine.
-    val isJs = bundle.entryFile.endsWith(".js")
-    val engine = remember { if (isJs) JsEngineHost() else EngineHost() }
+    val engine = remember {
+        when {
+            bundle.entryFile.endsWith(".js") -> JsEngineHost()
+            bundle.entryFile.endsWith(".py") -> PyEngineHost()
+            else -> EngineHost()
+        }
+    }
     var result by remember { mutableStateOf<RunResult?>(null) }
     var loading by remember { mutableStateOf(true) }
     val scope = rememberCoroutineScope()
@@ -237,7 +243,7 @@ private fun ProgramTerminal(output: String, entryFile: String) {
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             Text("luax · terminal · no-root", color = dim, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
-            Text("› ${if (entryFile.endsWith(".js")) "node" else "lua"} $entryFile", color = cyan, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+            Text("› ${when { entryFile.endsWith(".js") -> "node"; entryFile.endsWith(".py") -> "python"; else -> "lua" }} $entryFile", color = cyan, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
             if (output.isBlank()) {
                 Text("(no output)", color = dim, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
             } else {
