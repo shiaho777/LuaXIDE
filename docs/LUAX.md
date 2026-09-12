@@ -65,12 +65,12 @@ return view   -- 返回 view 函数 = 每次点击后自动重渲染(§4)
 | `assert(v [, msg])` | `v` 为假则报错;msg 必须是字符串 |
 | `error(msg)` | 抛出运行时错误,信息带 `line N:` 前缀 |
 | `pcall(f, ...)` | 捕获运行时错误,返回 `ok, ...` |
-| `select(n, ...)` | `n>0` 返回第 n 个起;`n=-1` 返回最后一个;`"#"` 返回个数 |
+| `select(n, ...)` | `n>0` 返回第 n 个起;`n=-1` 返回最后一个;`"#"` 返回个数;n 超过参数个数返回空,负数越界报 `index out of range` |
 | `pairs(t)` / `ipairs(t)` | 遍历;`pairs` 顺序未定义,`ipairs` 止于首个 nil |
 | `next(t [, k])` | `pairs` 的迭代原语 |
 | `setmetatable(t, mt)` / `getmetatable(t)` | 元表;仅 4 个元方法有效(§6) |
 | `rawget(t, k)` / `rawset(t, k, v)` / `rawequal(a, b)` | 绕过元方法的原语 |
-| `require(mod)` | `"ui"` 内置;`"a.b"` → `<modroot>/a/b.lua` 或 `a/b/init.lua`;缓存于 `package.loaded` |
+| `require(mod)` | `"ui"` 内置;`"a.b"` → `<modroot>/a/b.lua` 或 `a/b/init.lua`;缓存于 `package.loaded`;模块名含 `..` 路径段一律拒绝(不允许逃出模块根) |
 
 ```lua
 print(type(1), type("x"), tostring(1.5), tonumber("12") + 1)  -- number string 1.5 13
@@ -164,6 +164,10 @@ print("hi,", name)
 
 - **步数上限**:宿主默认 50,000,000 步;超限报 `execution step limit exceeded (possible infinite loop)`
 - **协作式取消**:宿主可随时取消正在运行的脚本;报 `cancelled by user`。新一次 `run` 清除残留取消标志;`invoke` 不清除(§4.2)
+- **调用深度上限**:160 层嵌套调用;超限报 `stack overflow`(`pcall` 可捕获,引擎保持可用)
+- **参数上限**:单次调用至多 64 个实参(展开多值时同样计);超限报 `too many arguments`
+- **UI 树深度上限**:序列化至多 128 层嵌套;环形表报 `ui tree too deep (possible cycle)`
+- **`__index`/`__newindex` 链上限**:1024 跳;自环报 `'__index'/'__newindex' chain too long`
 - 错误格式统一为 `line N: message`;`pcall` 可捕获
 
 ### 4.2 事件与重渲染(核心契约)

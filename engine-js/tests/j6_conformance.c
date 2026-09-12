@@ -144,6 +144,68 @@ int main(void){
     CHK(has(err, "boom"), "handler error message");
   }
 
+  /* --- 6. handler error keeps the tree; output resets per invoke --- */
+  {
+    int rc = qjsx_run(x,
+        "print('run-print');"
+        "return ui.app({ title: 'errk' },"
+        "  ui.button({ text: 'x', onClick: function(){ print('evt-print'); throw new Error('boom'); } }));",
+        err, sizeof(err));
+    CHK(rc == 0, "errk run");
+    CHK(has(qjsx_last_output(x), "run-print"), "run output captured");
+    const char* j = qjsx_last_json(x);
+    CHK(has(j, "errk"), "errk initial tree");
+    int id = handler_id(j);
+    CHK(id >= 0, "errk handler");
+    rc = qjsx_invoke(x, id, NULL, err, sizeof(err));
+    CHK(rc == 1, "handler error surfaces");
+    CHK(has(err, "boom"), "handler error message");
+    CHK(has(qjsx_last_json(x), "errk"), "tree kept after handler error");
+    CHK(has(qjsx_last_output(x), "evt-print"), "invoke print captured");
+    CHK(!has(qjsx_last_output(x), "run-print"), "output resets per invoke");
+  }
+
+  /* --- 7. `return view` function idiom: mutation re-renders via the stored
+   * live view, and a view-fn error during invoke keeps the previous tree
+   * (same two assertions as t26 §3/§6 on the Lua side) --- */
+  {
+    int rc = qjsx_run(x,
+        "var n = 0; var bad = false;"
+        "function view(){"
+        "  if (bad) throw new Error('view kaput');"
+        "  return ui.app({ title: 'fnview' },"
+        "    ui.button({ text: '+', onClick: function(){ n += 1; } }),"
+        "    ui.text({ text: 'n=' + n }));"
+        "}"
+        "return view;",
+        err, sizeof(err));
+    CHK(rc == 0, "function view run");
+    CHK(has(qjsx_last_json(x), "n=0"), "function view initial render");
+    int id = handler_id(qjsx_last_json(x));
+    CHK(id >= 0, "fnview handler");
+    rc = qjsx_invoke(x, id, NULL, err, sizeof(err));
+    CHK(rc == 0, "fnview invoke");
+    CHK(has(qjsx_last_json(x), "n=1"), "undefined return re-calls view fn");
+
+    rc = qjsx_run(x,
+        "var bad2 = false;"
+        "function view2(){"
+        "  if (bad2) throw new Error('view kaput');"
+        "  return ui.app({ title: 've' },"
+        "    ui.button({ text: 'x', onClick: function(){ bad2 = true; } }));"
+        "}"
+        "return view2;",
+        err, sizeof(err));
+    CHK(rc == 0, "ve run");
+    CHK(has(qjsx_last_json(x), "\"title\":\"ve\""), "ve initial tree");
+    id = handler_id(qjsx_last_json(x));
+    CHK(id >= 0, "ve handler");
+    rc = qjsx_invoke(x, id, NULL, err, sizeof(err));
+    CHK(rc == 1, "view-fn error surfaces");
+    CHK(has(err, "view kaput"), "view-fn error message");
+    CHK(has(qjsx_last_json(x), "\"title\":\"ve\""), "tree kept after view-fn error");
+  }
+
   qjsx_free(x);
   if (fails) { fprintf(stderr, "j6-conformance: %d failure(s)\n", fails); return 1; }
   printf("j6-conformance ok\n");

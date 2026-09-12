@@ -53,13 +53,7 @@ void mp_hal_stdout_tx_strn(const char* str, size_t len) {
 /* the embed port routes print through the cooked variant; capture it too.
  * mphalport.c is excluded from our build (its cooked impl goes to printf). */
 void mp_hal_stdout_tx_strn_cooked(const char* str, size_t len) {
-    if (g_active && str) {
-        for (size_t i = 0; i < len; i++) {
-            char c = str[i];
-            if (c == '\n') buf_append(&g_active->out, &g_active->out_sz, &g_active->out_used, "\n", 1);
-            else buf_append(&g_active->out, &g_active->out_sz, &g_active->out_used, &c, 1);
-        }
-    }
+    if (g_active && str) buf_append(&g_active->out, &g_active->out_sz, &g_active->out_used, str, len);
 }
 
 /* Cooperative cancel / step limit: py/vm.c calls MICROPY_VM_HOOK_LOOP
@@ -175,29 +169,19 @@ void mpyx_cancel(MpyX* x) { if (x) x->cancel_flag = 1; }
 void mpyx_clear_cancel(MpyX* x) { if (x) x->cancel_flag = 0; }
 void mpyx_set_step_limit(MpyX* x, long steps) { if (x) x->step_limit = steps; }
 
-/* serialize globals['view'] result / explicit tree via json module */
-static void capture_tree(MpyX* x) {
-    nlr_buf_t nlr;
-    if (nlr_push(&nlr) != 0) { nlr_pop(); return; }
-    mp_obj_t v = mp_obj_new_str("try:\n"
-        "    import json as _j, sys\n"
-        "    _t = globals().get('view', lambda: None)()\n"
-        "    if isinstance(_t, dict) and isinstance(_t.get('type'), str):\n"
-        "        _lx_tree = _t\n"
-        "    else:\n"
-        "        _lx_tree = globals().get('_lx_tree')\n"
-        "    if isinstance(_lx_tree, dict) and isinstance(_lx_tree.get('type'), str):\n"
-        "        print(_j.dumps(_lx_tree))\n"
-        "except Exception:\n"
-        "    pass\n", ~0);
-    (void)v;
-    nlr_pop();
+/* find the LAST __LXTREE__ marker in the captured output — user prints
+ * containing the marker must not corrupt the tree or truncate the output
+ * (the real capture line is always printed last, after user code runs). */
+static const char* last_tree_marker(const char* out, size_t used) {
+    const char* m = NULL;
+    if (!out || !used) return NULL;
+    for (const char* p = out; (p = strstr(p, "__LXTREE__")) != NULL; p += 10) m = p;
+    return m;
 }
 
 int mpyx_run(MpyX* x, const char* src, char* err, size_t errlen) {
     if (!x) { if (err && errlen) snprintf(err, errlen, "engine not initialized"); return 1; }
-    /* fresh runtime per run (simplest GC story for the pilot) */
-    mpy_reset(x);
+    mpy_reset(x); /* one VM per engine lifetime; run() re-executes in fresh globals */
     x->cancel_flag = 0;   /* lx_reset_run semantics */
     x->steps = 0; x->interrupt_kind = 0;
     MP_STATE_THREAD(mp_pending_exception) = MP_OBJ_NULL;
@@ -220,6 +204,12 @@ int mpyx_run(MpyX* x, const char* src, char* err, size_t errlen) {
         "            out += chr(92) + ch\n"
         "        elif ch == chr(10):\n"
         "            out += chr(92) + 'n'\n"
+        "        elif ch == chr(13):\n"
+        "            out += chr(92) + 'r'\n"
+        "        elif ch == chr(9):\n"
+        "            out += chr(92) + 't'\n"
+        "        elif ord(ch) < 32:\n"
+        "            out += '\\\\u%04x' % ord(ch)\n"
         "        else:\n"
         "            out += ch\n"
         "    return chr(34) + out + chr(34)\n"
@@ -254,7 +244,7 @@ int mpyx_run(MpyX* x, const char* src, char* err, size_t errlen) {
         "    print('__LXTREE__' + _lx_ser(_t))\n";
     mpy_exec(x, cap, NULL, 0);
     /* pull the tree out of the output stream */
-    const char* marker = (x->out && x->out_used) ? strstr(x->out, "__LXTREE__") : NULL;
+    const char* marker = last_tree_marker(x->out, x->out_used);
     if (marker) {
         size_t n = strlen(marker + 10);
         buf_append(&x->json, &x->json_sz, &x->json_used, marker + 10, n);
@@ -269,29 +259,57 @@ int mpyx_invoke(MpyX* x, int handler_id, const char* arg, char* err, size_t errl
     /* invoke keeps a set cancel flag (lx semantics) but resets steps */
     x->steps = 0; x->interrupt_kind = 0;
     MP_STATE_THREAD(mp_pending_exception) = MP_OBJ_NULL;
-    x->json_used = 0; if (x->json) x->json[0] = 0; /* the new tree replaces the old, not appends */
+    /* ABI §4: a non-tree handler result or a handler error keeps the previous
+     * tree. Detach the json buffer instead of clearing it so the old tree can
+     * be restored for free when this invoke produces no new one. */
+    char* old_json = x->json; size_t old_sz = x->json_sz, old_used = x->json_used;
+    x->json = NULL; x->json_sz = 0; x->json_used = 0;
     x->out_used = 0; if (x->out) x->out[0] = 0;
-    char code[256];
+    /* build the invoke snippet dynamically — a payload can be arbitrarily
+     * long and must never be silently truncated */
+    char* code = NULL;
     if (arg) {
-        char esc[128]; size_t j = 0;
-        for (size_t i = 0; arg[i] && j < 120; i++) {
-            if (arg[i] == '\'' || arg[i] == '\\') esc[j++] = '\\';
-            esc[j++] = arg[i];
+        /* escape into a single-quoted Python literal: quotes/backslashes plus
+         * the whitespace and control bytes that would otherwise break the
+         * generated source (a raw '\n' in the payload was a syntax error) */
+        size_t arglen = strlen(arg);
+        char* esc = malloc(arglen * 4 + 1);
+        code = malloc(arglen * 4 + 192);
+        if (esc) {
+            size_t j = 0;
+            for (size_t i = 0; i < arglen; i++) {
+                unsigned char c = (unsigned char)arg[i];
+                if (c == '\'' || c == '\\') { esc[j++] = '\\'; esc[j++] = (char)c; }
+                else if (c == '\n') { esc[j++] = '\\'; esc[j++] = 'n'; }
+                else if (c == '\r') { esc[j++] = '\\'; esc[j++] = 'r'; }
+                else if (c == '\t') { esc[j++] = '\\'; esc[j++] = 't'; }
+                else if (c < 0x20 || c == 0x7f) { j += (size_t)sprintf(esc + j, "\\x%02x", c); }
+                else esc[j++] = (char)c;
+            }
+            esc[j] = 0;
+            if (code) sprintf(code,
+                "import builtins\n_r = _handlers[%d]('%s')\n"
+                "if isinstance(_r, dict) and isinstance(_r.get('type'), str):\n"
+                "    _lx_tree = _r\n", handler_id, esc);
         }
-        esc[j] = 0;
-        snprintf(code, sizeof(code),
-            "import builtins\n"
-            "_r = _handlers[%d]('%s')\n"
-            "if isinstance(_r, dict) and isinstance(_r.get('type'), str):\n"
-            "    _lx_tree = _r\n", handler_id, esc);
+        free(esc);
     } else {
-        snprintf(code, sizeof(code),
+        code = malloc(192);
+        if (code) sprintf(code,
             "_r = _handlers[%d]()\n"
             "if isinstance(_r, dict) and isinstance(_r.get('type'), str):\n"
-            "    _lx_tree = _r\n", handler_id, handler_id);
+            "    _lx_tree = _r\n", handler_id);
+    }
+    if (!code) {
+        free(x->json); x->json = old_json; x->json_sz = old_sz; x->json_used = old_used;
+        if (err && errlen) snprintf(err, errlen, "out of memory");
+        return 1;
     }
     char errbuf[512];
-    if (mpy_exec(x, code, errbuf, sizeof(errbuf))) {
+    int failed = mpy_exec(x, code, errbuf, sizeof(errbuf));
+    free(code);
+    if (failed) {
+        free(x->json); x->json = old_json; x->json_sz = old_sz; x->json_used = old_used;
         if (x->interrupt_kind && err && errlen) {
             snprintf(err, errlen, "%s",
                 x->interrupt_kind == 1 ? "cancelled by user"
@@ -316,12 +334,15 @@ int mpyx_invoke(MpyX* x, int handler_id, const char* arg, char* err, size_t errl
         "if isinstance(_t, dict) and isinstance(_t.get('type'), str):\n"
         "    print('__LXTREE__' + _lx_ser(_t))\n";
     mpy_exec(x, cap, NULL, 0);
-    const char* marker = (x->out && x->out_used) ? strstr(x->out, "__LXTREE__") : NULL;
+    const char* marker = last_tree_marker(x->out, x->out_used);
     if (marker) {
         size_t n = strlen(marker + 10);
         buf_append(&x->json, &x->json_sz, &x->json_used, marker + 10, n);
         x->out_used = marker - x->out;
         x->out[x->out_used] = 0;
     }
+    if (x->json_used == 0) { /* no new tree → restore the previous view */
+        free(x->json); x->json = old_json; x->json_sz = old_sz; x->json_used = old_used;
+    } else free(old_json);
     return 0;
 }

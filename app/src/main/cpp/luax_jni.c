@@ -114,7 +114,13 @@ Java_dev_luaxide_engine_LuaxNative_nativeRun(JNIEnv* env, jclass clazz, jlong ha
         (*env)->SetObjectArrayElement(env, out, 2, jstr(env, ""));
         return out;
     }
-    const char* csrc = (*env)->GetStringUTFChars(env, src, NULL);
+    const char* csrc = src ? (*env)->GetStringUTFChars(env, src, NULL) : NULL;
+    if (!csrc) {
+        (*env)->SetObjectArrayElement(env, out, 0, jstr(env, "1"));
+        (*env)->SetObjectArrayElement(env, out, 1, jstr(env, "out of memory reading source"));
+        (*env)->SetObjectArrayElement(env, out, 2, jstr(env, ""));
+        return out;
+    }
     char err[ERRLEN];
     int r = lx_run(S, csrc, err, sizeof(err));
     (*env)->ReleaseStringUTFChars(env, src, csrc);
@@ -144,6 +150,12 @@ Java_dev_luaxide_engine_LuaxNative_nativeInvoke(JNIEnv* env, jclass clazz, jlong
         return out;
     }
     const char* arg = payload ? (*env)->GetStringUTFChars(env, payload, NULL) : NULL;
+    if (payload && !arg) {
+        (*env)->SetObjectArrayElement(env, out, 0, jstr(env, "1"));
+        (*env)->SetObjectArrayElement(env, out, 1, jstr(env, "out of memory reading payload"));
+        (*env)->SetObjectArrayElement(env, out, 2, jstr(env, ""));
+        return out;
+    }
     char err[ERRLEN];
     int r = lx_invoke(S, (int)handlerId, arg, err, sizeof(err));
     if (arg) (*env)->ReleaseStringUTFChars(env, payload, arg);
@@ -184,7 +196,13 @@ Java_dev_luaxide_engine_LuaxNative_nativeRepl(JNIEnv* env, jclass clazz, jlong h
         (*env)->SetObjectArrayElement(env, out, 2, jstr(env, ""));
         return out;
     }
-    const char* csrc = (*env)->GetStringUTFChars(env, src, NULL);
+    const char* csrc = src ? (*env)->GetStringUTFChars(env, src, NULL) : NULL;
+    if (!csrc) {
+        (*env)->SetObjectArrayElement(env, out, 0, jstr(env, "1"));
+        (*env)->SetObjectArrayElement(env, out, 1, jstr(env, "out of memory reading source"));
+        (*env)->SetObjectArrayElement(env, out, 2, jstr(env, ""));
+        return out;
+    }
     char err[ERRLEN];
     int r = lx_repl(S, csrc, err, sizeof(err));
     (*env)->ReleaseStringUTFChars(env, src, csrc);

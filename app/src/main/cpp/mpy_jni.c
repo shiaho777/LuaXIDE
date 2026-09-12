@@ -48,10 +48,16 @@ Java_dev_luaxide_engine_PyNative_nativeRun(JNIEnv* env, jclass clazz, jlong hand
         (*env)->SetObjectArrayElement(env, out, 2, jstr(env, ""));
         return out;
     }
-    const char* csrc = (*env)->GetStringUTFChars(env, src, NULL);
+    const char* csrc = src ? (*env)->GetStringUTFChars(env, src, NULL) : NULL;
+    if (!csrc) {
+        (*env)->SetObjectArrayElement(env, out, 0, jstr(env, "1"));
+        (*env)->SetObjectArrayElement(env, out, 1, jstr(env, "out of memory reading source"));
+        (*env)->SetObjectArrayElement(env, out, 2, jstr(env, ""));
+        return out;
+    }
     char err[ERRLEN];
     int r = mpyx_run(x, csrc, err, sizeof(err));
-    if (csrc) (*env)->ReleaseStringUTFChars(env, src, csrc);
+    (*env)->ReleaseStringUTFChars(env, src, csrc);
     if (r) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, "mpyx_run error: %s", err);
 
     (*env)->SetObjectArrayElement(env, out, 0, jstr(env, r ? "1" : "0"));
@@ -71,9 +77,15 @@ Java_dev_luaxide_engine_PyNative_nativeInvoke(JNIEnv* env, jclass clazz, jlong h
         return out;
     }
     const char* arg = payload ? (*env)->GetStringUTFChars(env, payload, NULL) : NULL;
+    if (payload && !arg) {
+        (*env)->SetObjectArrayElement(env, out, 0, jstr(env, "1"));
+        (*env)->SetObjectArrayElement(env, out, 1, jstr(env, "out of memory reading payload"));
+        (*env)->SetObjectArrayElement(env, out, 2, jstr(env, ""));
+        return out;
+    }
     char err[ERRLEN];
     int r = mpyx_invoke(x, (int)handlerId, arg, err, sizeof(err));
-    if (arg) (*env)->ReleaseStringUTFChars(env, payload, arg);
+    (*env)->ReleaseStringUTFChars(env, payload, arg);
     if (r) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, "mpyx_invoke(%d) error: %s", (int)handlerId, err);
 
     (*env)->SetObjectArrayElement(env, out, 0, jstr(env, r ? "1" : "0"));

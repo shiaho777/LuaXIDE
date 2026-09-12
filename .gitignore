@@ -42,3 +42,7 @@ engine/run-coverage.log
 
 # Runtime template APK (generated, not source)
 runtime/src/main/assets/runtime/template.apk
+engine-js/j[0-9]*
+engine-js/*.dSYM
+engine-py/p[0-9]*
+engine-py/*.dSYM

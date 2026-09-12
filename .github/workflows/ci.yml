@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build & run engine tests (t1-t27)
+      - name: Build & run engine tests (t1-t28)
         run: make -C engine test
 
   engine-js-tests:
@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build & run QuickJS engine tests (j1-j5)
+      - name: Build & run QuickJS engine tests (j1-j6)
         run: make -C engine-js test
 
   engine-py-tests:
@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build & run MicroPython engine tests (p1)
+      - name: Build & run MicroPython engine tests (p1-p2)
         run: make -C engine-py test
 
   android-build:
@@ -51,6 +51,8 @@ jobs:
           java-version: '17'
       - uses: android-actions/setup-android@v3
       - uses: gradle/actions/setup-gradle@v4
+      - name: Check :app/:runtime paired files are byte-identical
+        run: ./scripts/check_sync.sh
       - name: Build debug APKs (:app and :runtime)
         run: ./gradlew :app:assembleDebug :runtime:assembleDebug --stacktrace
       - name: Sync runtime template APK into app assets

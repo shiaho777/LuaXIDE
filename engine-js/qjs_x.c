@@ -13,12 +13,21 @@ static const char* PRELUDE =
     "(function(){"
     "  var __handlers = {};"
     "  var __nextId = 0;"
+    "  globalThis.__lx_view = undefined;"
     "  globalThis.__lx_invoke = function(id){"
     "    var f = __handlers[id];"
     "    if (typeof f !== 'function') throw new Error('no handler ' + id);"
     "    var a = globalThis.__lx_event_arg;"
     "    globalThis.__lx_event_arg = undefined;"
-    "    return (a === undefined) ? f() : f(a);"
+    "    var r = (a === undefined) ? f() : f(a);"
+    /* a returned tree replaces the view (and drops any stored view fn);
+     * a returned function becomes the live view; otherwise a stored view
+     * function is re-called so plain state mutation still re-renders —
+     * mirrors app_view semantics in lx_invoke (PLATFORM_ABI §4) */
+    "    if (r && typeof r === 'object' && typeof r.type === 'string'){ globalThis.__lx_view = undefined; return r; }"
+    "    if (typeof r === 'function'){ globalThis.__lx_view = r; return r(); }"
+    "    if (typeof globalThis.__lx_view === 'function') return globalThis.__lx_view();"
+    "    return undefined;"
     "  };"
     "  function props(p){"
     "    var out = {};"
@@ -233,9 +242,27 @@ int qjsx_run(QjsX* x, const char* src, char* err, size_t errlen) {
     if (!x || !x->ctx) { if (err && errlen) snprintf(err, errlen, "engine not initialized"); return 1; }
     run_guard_reset(x);
     x->cancel_flag = 0; /* lx_reset_run semantics */
+    sb_clear(&x->out);  /* ABI §3.2: run resets the output buffer */
     sb_clear(&x->json);
+    {   /* a fresh run drops any view fn a previous script stored — a failed
+         * or tree-returning run must not leave a dead view re-callable */
+        JSValue g0 = JS_GetGlobalObject(x->ctx);
+        JS_SetPropertyStr(x->ctx, g0, "__lx_view", JS_UNDEFINED);
+        JS_FreeValue(x->ctx, g0);
+    }
     JSValue v = eval_wrapped(x, src);
     if (JS_IsException(v)) { JS_FreeValue(x->ctx, v); return report_exception(x, err, errlen); }
+    if (JS_IsFunction(x->ctx, v)) {
+        /* `return view` — the LuaX idiom: remember the function as the live
+         * view (re-called on non-tree invokes), then produce its tree now */
+        JSValue g = JS_GetGlobalObject(x->ctx);
+        JS_SetPropertyStr(x->ctx, g, "__lx_view", JS_DupValue(x->ctx, v));
+        JS_FreeValue(x->ctx, g);
+        JSValue r = JS_Call(x->ctx, v, JS_UNDEFINED, 0, NULL);
+        JS_FreeValue(x->ctx, v);
+        v = r;
+        if (JS_IsException(v)) { JS_FreeValue(x->ctx, v); return report_exception(x, err, errlen); }
+    }
     capture_tree(x, v);
     JS_FreeValue(x->ctx, v);
     return 0;
@@ -244,9 +271,12 @@ int qjsx_run(QjsX* x, const char* src, char* err, size_t errlen) {
 int qjsx_invoke(QjsX* x, int handler_id, const char* arg, char* err, size_t errlen) {
     if (!x || !x->ctx) { if (err && errlen) snprintf(err, errlen, "engine not initialized"); return 1; }
     run_guard_reset(x);
-    /* no proactive clear: capture_tree replaces the json only when the handler
-     * returns a ui tree, so an undefined return keeps the previous view —
-     * the same re-render contract as lx_invoke (caught by j6 conformance) */
+    /* lx_invoke parity: output resets per event (the host pulls last_output
+     * after each invoke — without this, prints accumulate and repeat in the
+     * console), but the tree json is NOT cleared proactively: capture_tree
+     * replaces it only when the handler returns a ui tree, so an undefined
+     * return keeps the previous view (j6 conformance asserts this). */
+    sb_clear(&x->out);
     JSValue g = JS_GetGlobalObject(x->ctx);
     JS_SetPropertyStr(x->ctx, g, "__lx_event_arg",
                       arg ? JS_NewString(x->ctx, arg) : JS_UNDEFINED);

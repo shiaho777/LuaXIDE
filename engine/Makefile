@@ -13,7 +13,7 @@ $(LX): $(SRC) lx.h
 # every C driver test binary is built from lx.c + its driver
 DRIVERS = t9-debug t10-debug t11-watch t12-err t13-log \
           t18-repl t19-stdio t20-dbg2 t21-modules t22-ui2 t23-errors t24-snake \
-          t26-invoke-tree
+          t26-invoke-tree t28-hardening
 
 # scripts whose output must be identical with the bytecode VM on and off
 BC_DIFF_SCRIPTS = t1_hello t2_arith t3_control t4_funcs t5_tables \
@@ -46,6 +46,8 @@ test: $(LX) $(DRIVERS)
 	@echo "=== t25 bytecode ==="    && ./$(LX) tests/t25_bytecode.lua
 	@echo "=== t26 invoke tree ===" && ./t26-invoke-tree
 	@echo "=== t27 patterns ==="   && ./$(LX) tests/t27_patterns.lua
+	@echo "=== t28 hardening ==="  && ./t28-hardening
+	@echo "=== fail-grep ==="       && ! ./$(LX) tests/t25_bytecode.lua | grep -q "^FAIL " && ! ./$(LX) tests/t27_patterns.lua | grep -q "^FAIL " || { echo "silent FAIL line in assert-script output"; exit 1; }
 	@echo "=== bc engagement ==="   && LUAX_BC_STATS=1 ./$(LX) tests/t25_bytecode.lua >/dev/null 2>.bc_stats; grep -qE "bc: [1-9][0-9]* compiled" .bc_stats || { echo "bytecode VM did not engage:"; cat .bc_stats; rm -f .bc_stats; exit 1; }; rm -f .bc_stats; echo "vm engaged"
 	@echo "=== bc differential ===" && for t in $(BC_DIFF_SCRIPTS); do ./$(LX) tests/$$t.lua 2>&1 | sed -E 's/0x[0-9a-f]+/0xADDR/g' >/tmp/.lx_bc_a; LUAX_NO_BC=1 ./$(LX) tests/$$t.lua 2>&1 | sed -E 's/0x[0-9a-f]+/0xADDR/g' >/tmp/.lx_bc_b; diff /tmp/.lx_bc_a /tmp/.lx_bc_b >/dev/null || { echo "BC DIVERGENCE in $$t:"; diff /tmp/.lx_bc_a /tmp/.lx_bc_b | head -10; rm -f /tmp/.lx_bc_a /tmp/.lx_bc_b; exit 1; }; done; rm -f /tmp/.lx_bc_a /tmp/.lx_bc_b; echo "bc-diff ok ($(words $(BC_DIFF_SCRIPTS)) scripts)"
 	@echo "=== doc examples ==="     && python3 tests/doc_check.py
@@ -93,6 +95,9 @@ t24-snake: lx.c lx.h tests/t24_snake_driver.c
 
 t26-invoke-tree: lx.c lx.h tests/t26_invoke_tree.c
 	$(CC) $(CFLAGS) -o $@ lx.c tests/t26_invoke_tree.c $(LDFLAGS)
+
+t28-hardening: lx.c lx.h tests/t28_hardening.c
+	$(CC) $(CFLAGS) -o $@ lx.c tests/t28_hardening.c $(LDFLAGS)
 
 clean:
 	rm -f $(LX) $(DRIVERS)
