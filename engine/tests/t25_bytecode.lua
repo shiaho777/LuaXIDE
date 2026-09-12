@@ -188,8 +188,5 @@ eq(u1 + u2 + u3, 24, "unpack")
 local mt2 = {[1] = "one", "two"}
 eq(mt2[1], "two", "positional overrides explicit key")
 
-if fails > 0 then
-  print("t25 FAILED: " .. fails .. " case(s)")
-  return 1
-end
+if fails > 0 then error("t25 FAILED: " .. fails .. " case(s)") end
 print("t25 ok")

@@ -37,9 +37,10 @@ int main(void){
   bad("label unsupported",    "::x::",            "labels");
   bad("expected ]",           "local t={}\nt[1",   "expected ']'");
 
-  /* ---- string-too-long guard (the readStr overflow fix) ---- */
-  { char* big = malloc(5000); big[0]='"'; memset(big+1,'a',4997); big[4998]='"'; big[4999]=0;
-    bad("string too long", big, "string too long");
+  /* ---- long string literals (readStr now grows dynamically — the old
+   * 4096-byte guard rejected legitimate data literals) ---- */
+  { char* big = malloc(7000); memcpy(big,"local s=\"",9); memset(big+9,'a',4997); memcpy(big+5006,"\"\nprint(#s)",11); big[5017]=0;
+    good("long string literal", big);
     free(big); }
 
   /* ---- sanity: valid snippets still parse ---- */

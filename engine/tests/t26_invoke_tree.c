@@ -122,6 +122,69 @@ int main(void){
   }
   lx_close(S);
 
+  /* --- 5: handler error keeps the previous tree; output resets per invoke --- */
+  S = lx_new();
+  lx_set_step_limit(S, 50000000L);
+  {
+    const char* src =
+      "local ui = require(\"ui\")\n"
+      "print(\"run-print\")\n"
+      "local function view()\n"
+      "  return ui.app { title = \"errk\",\n"
+      "    ui.button { key = \"e\", text = \"x\",\n"
+      "      onClick = function() print(\"evt-print\") error(\"boom\") end } }\n"
+      "end\n"
+      "return view";
+    int rc = lx_run(S, src, err, sizeof(err));
+    CHK(rc==0, "run errk script");
+    CHK(has(lx_last_output(S),"run-print"), "run output captured");
+    const char* j = lx_last_json(S);
+    CHK(has(j,"\"title\":\"errk\""), "errk initial tree");
+    int id = -1;
+    { const char* h = j?strstr(j,"__handler"):NULL; if(h){ id = atoi(strchr(h,':')+1); } }
+    CHK(id>=0, "errk handler registered");
+    rc = lx_invoke(S, id, NULL, err, sizeof(err));
+    CHK(rc==1, "handler error surfaces");
+    CHK(has(err,"boom"), "handler error message");
+    CHK(has(lx_last_json(S),"\"title\":\"errk\""), "tree kept after handler error");
+    CHK(has(lx_last_output(S),"evt-print"), "invoke print captured");
+    CHK(!has(lx_last_output(S),"run-print"), "output resets per invoke");
+  }
+  lx_close(S);
+
+  /* --- 6: a view function throwing during re-serialize keeps the tree ---
+   * (ABI §4.4: any invoke error preserves the current view; the handler
+   * itself succeeded here — the failure is inside the view re-call) */
+  S = lx_new();
+  lx_set_step_limit(S, 50000000L);
+  {
+    const char* src =
+      "local ui = require(\"ui\")\n"
+      "local bad = false\n"
+      "local function view()\n"
+      "  if bad then error(\"view kaput\") end\n"
+      "  return ui.app { title = \"ve\",\n"
+      "    ui.button { key = \"b\", text = \"x\",\n"
+      "      onClick = function() bad = true end } }\n"
+      "end\n"
+      "return view";
+    int rc = lx_run(S, src, err, sizeof(err));
+    CHK(rc==0, "run ve script");
+    const char* j = lx_last_json(S);
+    CHK(has(j,"\"title\":\"ve\""), "ve initial tree");
+    int id = -1;
+    { const char* h = j?strstr(j,"__handler"):NULL; if(h){ id = atoi(strchr(h,':')+1); } }
+    CHK(id>=0, "ve handler registered");
+    rc = lx_invoke(S, id, NULL, err, sizeof(err));
+    CHK(rc==1, "view-fn error surfaces");
+    CHK(has(err,"view kaput"), "view-fn error message");
+    CHK(has(lx_last_json(S),"\"title\":\"ve\""), "tree kept after view-fn error");
+    /* the preserved tree's handlers must still resolve (ids are positional) */
+    rc = lx_invoke(S, id, NULL, err, sizeof(err));
+    CHK(rc==1, "preserved handler still invokable");
+  }
+  lx_close(S);
+
   if(fails){ fprintf(stderr, "t26-invoke-tree: %d failure(s)\n", fails); return 1; }
   printf("t26-invoke-tree ok\n");
   return 0;

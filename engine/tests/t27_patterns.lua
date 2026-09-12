@@ -19,7 +19,10 @@ eq(c1, "key", "find cap1"); eq(c2, "value", "find cap2")
 local fs2 = string.find("abc", "b", 2)
 eq(fs2, 2, "find init")
 eq(string.find("abc", "b", 3), nil, "find init past")
-eq(string.find("abc", "", 4), nil, "find init beyond end")
+-- Lua 5.1: init == len+1 is legal and an empty pattern matches there
+-- (parens collapse find's s,e multi-return to just the start index)
+eq((string.find("abc", "", 4)), 4, "find init at end+1 empty match")
+eq(string.find("abc", "", 5), nil, "find init beyond end")
 local ps, pe = string.find("abc", "")
 eq(ps, 1, "find empty start"); eq(pe, 0, "find empty end")
 
@@ -46,15 +49,15 @@ eq(string.match("aaa", "a-"), "", "minus shortest")
 eq(string.match("aaa", "a+"), "aaa", "plus")
 eq(string.match("b", "a?"), "", "optional empty")
 eq(string.match("abc", "a.-(c)"), "c", "lazy capture")
-eq(select(1, string.match("abc", "(a.-(c))")), "abc", "nested lazy")
+eq((select(1, string.match("abc", "(a.-(c))"))), "abc", "nested lazy")
 
 -- ---- captures ----
 local d1, m1, d2 = string.match("2026-09-09", "(%d+)-(%d+)-(%d+)")
 eq(d1 .. m1 .. d2, "20260909", "date captures")
-eq(string.match("hello", "()ll()"), 3, "position captures start")
+eq((string.match("hello", "()ll()")), 3, "position captures start")
 local p1, p2 = string.match("hello", "()ll()")
 eq(p1, 3, "pos cap 1"); eq(p2, 5, "pos cap 2")
-eq(string.match("hello", "(h)(e)(l)(l)(o)"), "h", "multi capture first")
+eq((string.match("hello", "(h)(e)(l)(l)(o)")), "h", "multi capture first")
 
 -- ---- %b and %f ----
 eq(string.match("f(a(b)c)g", "%b()"), "(a(b)c)", "balanced")
@@ -149,4 +152,5 @@ musterr("sort bad comp", function() return table.sort({ 1, 2 }, 5) end)
 musterr("char out of range", function() return string.char(300) end)
 musterr("gsub bad backref", function() return string.gsub("a", "a", "%2") end)
 
-if fails == 0 then print("t27 patterns ok") end
+if fails > 0 then error("t27 FAILED: " .. fails .. " case(s)") end
+print("t27 patterns ok")

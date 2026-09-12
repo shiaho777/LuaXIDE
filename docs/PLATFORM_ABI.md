@@ -40,7 +40,7 @@ Kotlin 侧统一为 [`EngineAdapter`](../app/src/main/java/dev/luaxide/engine/En
 2. **每引擎保证**:`run` 开始时重置输出缓冲与步数计数,并清除残留取消标志(新 run 不受旧取消影响)。
 3. 脚本返回值决定首屏:
    - 返回 ui 树(Lua:带 `__ui` 标签的表;JS:`{type: string, ...}` 对象)→ 序列化为树 JSON;
-   - 返回**函数**(Lua 特有)→ 每次 invoke 前先调用它,返回值再走上面的判定;
+   - 返回**函数** → 记忆为活视图(`app_view` / `__lx_view` / `view()` 约定),立即调用产生首屏;后续 invoke 若 handler 未返回树则重调它 —— 三端语义一致;
    - 其他/无返回 → 树为 `null`(Lua)或保持上次的树(JS),宿主据此回到空态。
 4. `print`(及等价输出)被捕获进输出缓冲,由宿主经 `last_output` 拉取 —— 引擎不得直接写终端。
 
@@ -50,11 +50,11 @@ Kotlin 侧统一为 [`EngineAdapter`](../app/src/main/java/dev/luaxide/engine/En
 
 1. 树 JSON 中函数属性序列化为 `{"__handler": N}`;**每次树重建 id 重新分配**,宿主每轮重新读取。
 2. `payload` 非空时作为 handler 的第一个(且唯一的)参数传入:`input.onSubmit(text)` 收到输入框文本;`switch.onToggle(v)` 收到 `"true"`/`"false"` 字符串;其余事件无参。
-3. **重渲染判定**(两引擎必须一致):
-   - handler 返回 ui 树 → 新树替换当前视图;
-   - 返回 nil/undefined/非树 → **保留旧树**(JS 侧不得提前清空 json;Lua 侧由 `lx_build_tree` 重序列化保证);
-   - Lua 特有:app_view 为函数时先重新调用(见 LUAX.md §4.2 路径 A)。
-4. handler 内部错误:返回非 0 + 错误信息(含行号时以 `line N:` 前缀),引擎保持可用。
+3. **重渲染判定**(三引擎必须一致):
+   - handler 返回 ui 树 → 新树替换当前视图(同时丢弃已存的视图函数);
+   - handler 返回函数 → 成为新的活视图,立即调用产生新树;
+   - 返回 nil/undefined/非树 → **保留旧树**(JS 侧不得提前清空 json;Lua 侧由 `lx_build_tree` 重序列化保证);若存有视图函数则先重调它再序列化(见 LUAX.md §4.2 路径 A)。
+4. handler 内部错误:返回非 0 + 错误信息(含行号时以 `line N:` 前缀),引擎保持可用,**当前树保持不变** —— 包括 handler 成功但视图函数在重序列化期间抛错的情形(json 缓冲与 handler 表整体保留)。
 
 ## 5. 运行时防护
 
