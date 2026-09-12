@@ -1,13 +1,15 @@
 # LuaX
 
-一门为「在手机上写 App」而生的 Lua 方言 —— 声明式 UI、事件驱动重渲染、单文件 C 引擎,配一个能把它打包成独立 APK 的 Android IDE(LuaXIDE)。
+A Lua dialect built for **writing apps on your phone** — declarative UI, event-driven re-render, a single-file C engine — plus an Android IDE (LuaXIDE) that packages it into a standalone APK.
+
+[简体中文](README.zh-CN.md)
 
 <p align="center">
-  <img src="docs/screenshot.png" width="340" alt="LuaXIDE:左侧代码编辑器,右侧实时预览">
+  <img src="docs/screenshot.png" width="340" alt="LuaXIDE: code editor on the left, live preview on the right">
 </p>
 
 ```lua
--- 这是 LuaX。一个完整的交互 App:
+-- This is LuaX. A complete interactive app:
 local ui = require("ui")
 local count = 0
 
@@ -22,29 +24,29 @@ local function view()
   }
 end
 
-return view  -- 返回 view 函数:每次点击,引擎重调它,界面随之更新
+return view  -- return the view function: every tap re-calls it, UI follows state
 ```
 
-- **声明式 UI**:UI 树就是普通 Lua 表;`return view` 之后,事件 → 状态变化 → 重渲染全自动
-- **单文件引擎**:`engine/lx.c` 约 2200 行 C,树遍历 + 字节码 VM 混合执行(数值循环 ~11×)
-- **现代标准库**:`string.format` / 模式匹配(`find gsub match gmatch`)/ `math.*` / `table.sort`
-- **无 root**:沙箱执行;IDE 一键打包成独立签名 APK
-- **三语言平台**:LuaX 是参考语言;同一契约下还有 JavaScript(QuickJS)与 Python(MicroPython)
+- **Declarative UI**: the UI tree is an ordinary Lua table; after `return view`, event → state change → re-render is automatic
+- **Single-file engine**: `engine/lx.c` is ~2200 lines of C, tree-walking + bytecode VM hybrid (numeric loops ~11×)
+- **Modern stdlib**: `string.format` / pattern matching (`find gsub match gmatch`) / `math.*` / `table.sort`
+- **No root**: sandboxed execution; the IDE packages projects into standalone signed APKs
+- **Three-language platform**: LuaX is the reference language; the same contract is implemented by JavaScript (QuickJS) and Python (MicroPython)
 
-## 三十秒上手
+## Thirty seconds to running
 
 ```bash
-make -C engine lx          # 编译桌面 CLI(需要 clang)
-./engine/lx your.lua       # 运行
-./engine/lx --ui your.lua  # 打印 UI 树 JSON(桌面验证交互契约)
+make -C engine lx          # build the desktop CLI (needs clang)
+./engine/lx your.lua       # run
+./engine/lx --ui your.lua  # print the UI-tree JSON (desktop check of the interaction contract)
 ```
 
-或安装 LuaXIDE(Android),新建项目即得上述计数器种子;`调试`(断点/单步/监视)与 `控制台`(REPL、`io.read` 回复)都在 IDE 内。
+Or install LuaXIDE (Android) — a new project seeds the counter above; debugging (breakpoints / stepping / watches) and the console (REPL, `io.read` replies) live inside the IDE.
 
-## 语言速览
+## Language at a glance
 
 ```lua
--- 标准库一角
+-- a corner of the standard library
 print(string.format("%d %s %5.2f", 42, "hi", 3.14159))             -- 42 hi  3.14
 print(("2026-09-09"):match("(%d+)-(%d+)-(%d+)"))                    -- 2026 09 09
 for w in ("one two three"):gmatch("%a+") do io.write(w, ".") end   -- one.two.three.
@@ -53,53 +55,53 @@ local t = {5, 2, 8, 1}
 table.sort(t)                                                       -- {1,2,5,8}
 print(math.floor(3.7), math.random(1, 6), #t)
 
--- 词法闭包 + 元表
+-- lexical closures + metatables
 local proto = { greet = function(self) return "hi " .. self.name end }
 local obj = setmetatable({ name = "luax" }, { __index = proto })
 print(obj:greet())                                                  -- hi luax
 ```
 
-LuaX 是 Lua 5.1 的方言子集:闭包与元表都在,数字只有 double、表构造器展开多值、不支持 `goto`/`load`。完整差异与逐函数标准库参考见 **[docs/LUAX.md](docs/LUAX.md)**。
+LuaX is a dialect subset of Lua 5.1: closures and metatables are in; numbers are doubles only; table constructors expand multi-values in every positional field; `goto`/`load` are out. Full differences and the per-function stdlib reference live in **[docs/LUAX.md](docs/LUAX.md)**.
 
-## 文档
+## Documentation
 
-| 你想…… | 读 |
+| You want to… | Read |
 |---|---|
-| **写 LuaX 程序** | [docs/LUAX.md](docs/LUAX.md) —— 语言参考:方言差异、逐函数标准库、运行时语义(事件/重渲染/取消)、UI DSL、元表 |
-| 接入 / 对齐其他语言引擎 | [docs/PLATFORM_ABI.md](docs/PLATFORM_ABI.md) —— 跨语言宿主契约(Lua/JS/Python 共同遵守)与 conformance 测试映射 |
-| 维护 LuaX 引擎本体 | [docs/ENGINE.md](docs/ENGINE.md) + [docs/BYTECODE_VM.md](docs/BYTECODE_VM.md) —— 架构、测试工作流、扩展 checklist、VM 设计 |
-| 了解 IDE 行为 | [docs/PROGRAM_MODE.md](docs/PROGRAM_MODE.md)、[docs/PROOT_AND_STDIN.md](docs/PROOT_AND_STDIN.md) |
+| **Write LuaX programs** | [docs/LUAX.md](docs/LUAX.md) — language reference: dialect differences, per-function stdlib, runtime semantics (events/re-render/cancel), UI DSL, metatables |
+| Port / align another language engine | [docs/PLATFORM_ABI.md](docs/PLATFORM_ABI.md) — the language-neutral host contract (shared by Lua/JS/Python) and the conformance-test mapping |
+| Maintain the LuaX engine itself | [docs/ENGINE.md](docs/ENGINE.md) + [docs/BYTECODE_VM.md](docs/BYTECODE_VM.md) — architecture, test workflow, extension checklists, VM design |
+| Understand IDE behavior | [docs/PROGRAM_MODE.md](docs/PROGRAM_MODE.md), [docs/PROOT_AND_STDIN.md](docs/PROOT_AND_STDIN.md) |
 
-> LUAX.md 里每个代码块都被 CI 实际运行过 —— 文档即测试,失效即红。
+Every doc ships in English (default) and Chinese (`*.zh-CN.md` sibling). LUAX.md's code blocks are actually executed by CI — the documentation is the test, so it can't silently drift.
 
-## 仓库布局
+## Repository layout
 
 ```
-engine/       LuaX 引擎(lx.c)—— 桌面 CLI 与两个 Android 模块共用同一源码
-engine-js/    JavaScript 引擎(QuickJS facade),同一宿主契约
-engine-py/    Python 引擎(MicroPython facade),同一宿主契约
-app/          LuaXIDE 本体(Kotlin + Compose):编辑/调试/控制台/打包
-runtime/      打包模板 App:内置三引擎,渲染脚本的 UI 树
-docs/         上表所列文档
+engine/       LuaX engine (lx.c) — one source for the desktop CLI and both Android modules
+engine-js/    JavaScript engine (QuickJS facade), same host contract
+engine-py/    Python engine (MicroPython facade), same host contract
+app/          LuaXIDE itself (Kotlin + Compose): edit / debug / console / packaging
+runtime/      packaging template app: carries all three engines, renders script UI trees
+docs/         the documents listed above
 ```
 
-## 构建与测试
+## Build & test
 
 ```bash
-make -C engine test      # Lua 引擎: t1–t27 + bc-diff 差分 + 文档示例门禁 → ALL TESTS PASSED
-make -C engine-js test   # JS 引擎: j1–j6 conformance
-make -C engine-py test   # Python 引擎: p1–p2
-./gradlew :app:assembleDebug :runtime:assembleDebug   # Android(需 SDK / JDK 17)
+make -C engine test      # Lua engine: t1–t28 + bc-diff differential + doc-example gate → ALL TESTS PASSED
+make -C engine-js test   # JS engine: j1–j6 conformance
+make -C engine-py test   # Python engine: p1–p2
+./gradlew :app:assembleDebug :runtime:assembleDebug   # Android (needs SDK / JDK 17)
 ```
 
-CI 在每个 PR 上运行以上全部(`engine-tests` / `engine-js-tests` / `engine-py-tests` / `android-build` 四个必需检查),作为合并门禁。
+CI runs all of the above on every PR — `engine-tests` / `engine-js-tests` / `engine-py-tests` / `android-build` are the four required merge-gate checks.
 
-## 参与贡献
+## Contributing
 
-欢迎 Issue 与 PR。流程与约定见 [CONTRIBUTING.md](CONTRIBUTING.md);编码代理先读 [AGENTS.md](AGENTS.md)。
+Issues and PRs welcome. Process and conventions: [CONTRIBUTING.md](CONTRIBUTING.md); coding agents read [AGENTS.md](AGENTS.md) first.
 
-交付环:**Issue → PR(base=main,含 `Fixes #N`)→ CI 门禁 → merge → Issue 自动关闭**。
+Delivery loop: **Issue → PR (base `main`, body contains `Fixes #N`) → CI gates → merge → the Issue auto-closes**.
 
 ## License
 
-本项目以 [Apache-2.0](LICENSE) 许可发布;随仓库分发的第三方组件(QuickJS、ARSCLib、apksig、Termux proot 等)清单与许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+Released under [Apache-2.0](LICENSE). Third-party components shipped with the repo (QuickJS, ARSCLib, apksig, Termux proot, …) are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

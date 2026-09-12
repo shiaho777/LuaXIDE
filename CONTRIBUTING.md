@@ -1,38 +1,40 @@
-# 贡献指南
+# Contributing Guide
 
-感谢关注 LuaXIDE —— 一个纯 Android 端、无需 root 的 Lua IDE。开工前建议先读 [README](README.md) 了解架构。
+[简体中文](CONTRIBUTING.zh-CN.md)
 
-## 快速上手
+Thanks for your interest in LuaXIDE — a pure on-device, root-free Lua IDE for Android. Before starting, read the [README](README.md) for the architecture.
+
+## Quick start
 
 ```bash
-# 引擎测试套件(需要 clang)
+# Engine test suite (requires clang)
 make -C engine test
 
-# Android 构建(需要 JDK 17 + Android SDK)
+# Android build (requires JDK 17 + Android SDK)
 ./gradlew :app:assembleDebug :runtime:assembleDebug
 
-# 修改 runtime 后同步模板 APK
+# Sync the template APK after touching runtime
 ./gradlew :runtime:syncRuntimeTemplate
 ```
 
-真机自检:安装 debug 包后,在应用内打开"自检"面板(沙箱 / proot / stdin / 取消 / 模板 / 安装 六项),或用 `scripts/device-checklist.sh` 配合 adb 查看日志。
+On-device self-check: after installing the debug build, open the in-app "Self-check" panel (sandbox / proot / stdin / cancel / template / install — six items), or use `scripts/device-checklist.sh` with adb to inspect logs.
 
-## 交付流程(Issue → PR → CI → merge)
+## Delivery loop (Issue → PR → CI → merge)
 
-1. **先开 Issue**(或认领现有 Issue):写清问题 / 目标 / 验收标准。
-2. 从最新 `main` 切分支,命名如 `codex/主题` 或 `feat/主题`。
-3. 提交 PR 到 `main`,正文使用 PR 模板,**必须包含 `Fixes #N`**。
-4. 等待 CI 两个必需检查变绿:`engine-tests`、`android-build`(见 `.github/workflows/ci.yml`)。
-5. CI 绿后由维护者合并;合并后 Issue 自动关闭。CI 红时不合并、不提前关 Issue。
+1. **Open an Issue first** (or claim an existing one): state the problem / goal / acceptance criteria.
+2. Branch from the latest `main`, named like `codex/topic` or `feat/topic`.
+3. Open a PR against `main`, use the PR template, and **it must contain `Fixes #N`**.
+4. Wait for the required CI checks to go green: `engine-tests`, `engine-js-tests`, `engine-py-tests`, `android-build` (see `.github/workflows/ci.yml`).
+5. A maintainer merges once CI is green; the Issue closes automatically on merge. Never merge red, never close an Issue early.
 
-## 约定
+## Conventions
 
-- 提交信息说清"为什么",而不只是"改了什么"。
-- 不提交机器本地文件与密钥:`local.properties`、任何 `*.jks` / `*.p12` 密钥库、IDE 缓存、构建产物。
-- 引擎(`engine/lx.c`)改动必须保证 `make -C engine test` 全绿;新增能力请顺手补一个 t 系列测试。
-- `:app` 与 `:runtime` 各有一份 `EngineHost`:app 版带调试 API,runtime 版没有——不要把调试调用跨模块拷贝。
-- **无 root 政策不可违反**:不引入 su / Magisk / 设备 root 依赖;proot 仅限非特权用户态。
+- Commit messages explain the "why", not just the "what".
+- Never commit machine-local files or secrets: `local.properties`, any `*.jks` / `*.p12` keystore, IDE caches, build outputs.
+- Engine (`engine/lx.c`) changes must keep `make -C engine test` fully green; when adding capability, add a `t*` test alongside.
+- `:app` and `:runtime` each carry an `EngineHost`: the app variant has the debug API, the runtime variant does not — never copy debug calls across modules.
+- **The no-root policy is inviolable**: no su / Magisk / device-root dependencies; proot stays unprivileged userland only.
 
-## 报告 Bug
+## Reporting bugs
 
-开 Issue 时请附:设备型号与 Android 版本、复现用的 Lua 脚本、终端或日志面板的完整输出、期望行为与实际行为。
+When opening an Issue please include: device model and Android version, a reproducing Lua script, complete output from the terminal or log panel, and expected vs. actual behavior.
