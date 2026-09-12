@@ -1,25 +1,27 @@
-# Program Mode → 控制台(Console)模型
+# Program Mode → Console model
 
-> 2026-09 更新:交互终端已并入控制台。本文档描述当前模型。
+[简体中文](PROGRAM_MODE.zh-CN.md)
 
-## Rule(唯一输出原则)
+> 2026-09 update: the interactive terminal merged into the console. This document describes the current model.
 
-- 脚本**返回 ui 树** → 预览面板(Compose 渲染,Execution is truth)
-- `print` 输出 / 运行错误 / 系统日志 → **底部控制台**(唯一输出口)
-- REPL 求值 / `io.read()` 回复 → 控制台底部输入行
+## Rule (single-output principle)
 
-预览面板不再有 Terminal 态:`PreviewKind` 收敛为 `Ui / Error / Idle`,纯输出程序运行后预览回到空态,输出在控制台查看。
+- Script **returns a ui tree** → the preview panel (Compose render, Execution is truth)
+- `print` output / runtime errors / system logs → the **bottom console** (the only output surface)
+- REPL eval / `io.read()` replies → the input line at the console's bottom
 
-## 控制台(LogSheet / LogPanel)
+The preview panel no longer has a Terminal state: `PreviewKind` collapses to `Ui / Error / Idle`; after a pure-output program runs, the preview returns to idle and output lives in the console.
 
-- 时间戳流式列表;级别筛选(V/D/I/W/E)、正则过滤、暂停、清空、导出(.log/.json)
-- 错误行可点击跳转源码行
-- 底部常驻输入行:
-  - 平时为 REPL:`print(1+2)`、`=1+2` 语法糖、跨行全局变量
-  - 程序阻塞在 `io.read()` 时切换为回复态(tertiary 横幅提示)
-- dot 命令:`.run` `.stop` `.clear` `.help`
+## Console (LogSheet / LogPanel)
 
-## No-root policy(不变)
+- Timestamped streaming list; level filter (V/D/I/W/E), regex filter, pause, clear, export (.log/.json)
+- Error lines are clickable → jump to the source line
+- Persistent input line at the bottom:
+  - normally a REPL: `print(1+2)`, `=1+2` sugar, globals persist across lines
+  - when the program blocks in `io.read()` it switches to reply mode (tertiary banner hint)
+- dot commands: `.run` `.stop` `.clear` `.help`
+
+## No-root policy (unchanged)
 
 LuaXIDE never requires root / Magisk / su. Program runs go through `NoRootRuntime`:
 - sandbox under app private storage: `filesDir/sandbox/<projectId>/`
@@ -35,5 +37,5 @@ See `docs/PROOT_AND_STDIN.md`. Semantics unchanged:
 
 ## Package
 
-Packaged runtime renders the ui tree when the entry returns one; print output
+The packaged runtime renders the ui tree when the entry returns one; print output
 goes to the packaged app's own console view.

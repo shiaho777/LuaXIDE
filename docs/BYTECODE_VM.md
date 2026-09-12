@@ -1,71 +1,73 @@
-# 字节码 VM(Phase 1b,v0 设计与现状)
+# Bytecode VM (Phase 1b, v0 design & status)
 
-`engine/lx.c` 原本是纯树遍历解释器(Phase 1a)。现在它带有一个保守混合的字节码 VM:函数体在首次调用时尝试编译为寄存器字节码,编译成功则由栈式 VM 执行,否则透明回退到树遍历。**回退是语义安全网——VM 只加速,不改变任何可见行为。**
+[简体中文](BYTECODE_VM.zh-CN.md)
 
-## 工作方式
+`engine/lx.c` was originally a pure tree-walking interpreter (Phase 1a). It now carries a conservatively hybrid bytecode VM: function bodies attempt compilation to register bytecode on first call; on success a stack-based VM executes them, otherwise they fall back transparently to tree-walking. **Fallback is the semantic safety net — the VM only accelerates; it never changes observable behavior.**
+
+## How it works
 
 ```
 callValue(T_FN)
-  ├─ 调试关闭 && 未设 LUAX_NO_BC?
-  │    ├─ 首次调用:bc_build() 尝试编译函数体
-  │    │    ├─ 成功 → 每次调用先做全局名遮蔽校验 → vm_call() 执行字节码
-  │    │    └─ 失败 → 标记 bc_tried,永久走树遍历
-  │    └─ 已有 Proto → 校验 → vm_call()
-  └─ 否则(调试会话/已禁用)→ 树遍历路径(原逻辑不变)
+  ├─ debugger off && LUAX_NO_BC unset?
+  │    ├─ first call: bc_build() tries to compile the body
+  │    │    ├─ success → per-call global-name shadowing check → vm_call() runs bytecode
+  │    │    └─ failure → mark bc_tried, tree-walk forever
+  │    └─ Proto exists → check → vm_call()
+  └─ otherwise (debug session / disabled) → tree-walking path (original logic unchanged)
 ```
 
-## v0 编译范围(其余一律回退)
+## v0 compile coverage (everything else falls back)
 
-| 支持 | 回退 |
+| Supported | Falls back |
 |---|---|
-| 局部/赋值/多赋值、调用语句 | 嵌套函数定义(闭包捕获 Env,需要 upvalue 机制) |
-| if/elseif/else、while、repeat(until 可见体内局部)、数值 for、泛型 for | 变长参数函数(`...`) |
-| break、return(含多值展开) | 自由变量(upvalue)——编译期检测 + 调用时复验 |
-| 算术/位运算/比较/拼接、and/or 短路(保值语义) | goto/label(解析器本就拒绝) |
-| 表构造(kv 字段;位置字段按引擎语义逐个展开多值) | |
-| 方法调用 `obj:m(...)`、元表链(__index/__newindex/__len/__tostring) | |
+| locals / assignment / multi-assign, call statements | nested function definitions (closures capture Env — needs an upvalue mechanism) |
+| if/elseif/else, while, repeat (until sees in-body locals), numeric for, generic for | vararg functions (`...`) |
+| break, return (incl. multi-value expansion) | free variables (upvalues) — compile-time detection + call-time re-verification |
+| arithmetic/bitwise/comparison/concat, and/or short-circuit (value-preserving) | goto/label (the parser rejects these anyway) |
+| table constructors (kv fields; positional fields expand multi-values per engine semantics) | |
+| method calls `obj:m(...)`, metatable chains (__index/__newindex/__len/__tostring) | |
 
-### 动态作用域的兼容处理
+### Dynamic-scope compatibility
 
-本引擎按运行时 Env 链解析名字(动态作用域),不是词法作用域。因此:
+This engine resolves names through the runtime Env chain (dynamic scope), not lexical scope. Therefore:
 
-1. 编译时:`K_NAME` 先查局部寄存器;再查定义处 Env 链(排除 globals)——查到即视为 upvalue,**拒绝编译**;
-2. 运行时:被当作全局的名字记录在 `Proto->gk`,每次调用前重验"没有外层树遍历作用域在首次编译之后新声明同名局部"(见 `bc_globals_still_global`),发现遮蔽立即本次调用回退。
+1. At compile time: `K_NAME` first checks local registers, then the definition-site Env chain (excluding globals) — a hit counts as an upvalue and **refuses compilation**;
+2. At runtime: names treated as globals are recorded in `Proto->gk`; before every call we re-verify "no outer tree-walking scope declared a same-named local after first compilation" (see `bc_globals_still_global`); detected shadowing falls back for that call.
 
-## 与树遍历的语义对齐点
+## Semantic alignment with tree-walking
 
-- 数值 for 的 step<=0 走降序分支(step=0 死循环同样被步数上限截停);
-- 比较走 `toNum`(无字符串排序);`and`/`or` 返回决定操作数的原值;
-- 表构造的位置字段**每个都展开多值**(引擎既有语义,非标准 Lua);
-- 运行错误保留 `line N:` 前缀(curLine 由指令行号表驱动);
-- 取消检查与步数上限在每条指令上生效;
-- pcall / 调试求值的 longjmp 路径同步恢复 VM 栈指针(`S->vtop`)。
+- Numeric for with step<=0 takes the descending branch (step=0 infinite loops are stopped by the step limit the same way);
+- comparisons go through `toNum` (no string ordering); `and`/`or` return the deciding operand's original value;
+- table-constructor positional fields **each expand multi-values** (existing engine semantics, non-standard Lua);
+- runtime errors keep the `line N:` prefix (curLine driven by the instruction line table);
+- cancel checks and the step limit apply on every instruction;
+- pcall / debug-eval longjmp paths restore the VM stack pointer (`S->vtop`) in sync.
 
-## 观测与工具
+## Observability & tools
 
 ```bash
-make -C engine test        # 含 t25 用例、VM 参与度断言、bc-diff 差分验证
-make -C engine bench-bc    # 双模式微基准
-./engine/lx --bc-dump f.lua   # 反汇编源文件内全部可编译函数
-LUAX_BC_STATS=1 ./engine/lx x.lua   # stderr 打印 "bc: N compiled calls, M fallbacks"
-LUAX_NO_BC=1 ./engine/lx x.lua      # 整体禁用 VM(排障用)
+make -C engine test        # includes t25 cases, VM-participation assertions, bc-diff differential
+make -C engine bench-bc    # dual-mode microbenchmark
+./engine/lx --bc-dump f.lua   # disassemble every compilable function in a source file
+LUAX_BC_STATS=1 ./engine/lx x.lua   # stderr prints "bc: N compiled calls, M fallbacks"
+LUAX_NO_BC=1 ./engine/lx x.lua      # disable the VM entirely (troubleshooting)
 ```
 
-`lx_bc_stats()` / `lx_bc_disassemble()` 已从 lx.h 导出,Android 侧后续可接入面板展示。
+`lx_bc_stats()` / `lx_bc_disassemble()` are exported from lx.h; the Android side can later wire them into a panel.
 
-## 基准(engine/tests/bench_bc.lua,Apple Silicon macOS,-O2)
+## Benchmarks (engine/tests/bench_bc.lua, Apple Silicon macOS, -O2)
 
-| 用例 | 树遍历 | 字节码 VM | 加速比 |
+| Case | Tree-walking | Bytecode VM | Speedup |
 |---|---|---|---|
-| fib(23) 递归 | ~0.023s | ~0.013s | **1.8x** |
-| 数值循环 300 万次 | ~0.31s | ~0.029s | **~11x** |
-| 字符串拼接/长度 6 万次 | ~0.27s | ~0.22s | ~1.25x(C 字符串操作主导) |
-| 建表 20 万行 + pairs 累加 | ~0.105s | ~0.041s | **~2.6x** |
+| fib(23) recursive | ~0.023s | ~0.013s | **1.8x** |
+| numeric loop ×3M | ~0.31s | ~0.029s | **~11x** |
+| string concat/len ×60k | ~0.27s | ~0.22s | ~1.25x (C string ops dominate) |
+| build 200k-row table + pairs sum | ~0.105s | ~0.041s | **~2.6x** |
 
-## 后续路线(未做,按价值排序)
+## Roadmap (not done, ordered by value)
 
-1. **upvalue**:Lua 式 open/upvalue 协议,解锁"函数内嵌套函数"——覆盖面最大的一块
-2. 主 chunk 编译(需配合 upvalue,顶层局部可被闭包捕获)
-3. 常量折叠 / 跳转穿透等简单窥孔优化
-4. 指令编码压缩(当前 BIns 8 字节,可打包至 4)+ 计算型 goto
-5. 断点下沉到字节码行号表(目前调试会话整体回退树遍历,功能无损但慢)
+1. **upvalues**: a Lua-style open/upvalue protocol, unlocking "nested functions inside functions" — the largest coverage win
+2. main-chunk compilation (needs upvalues; top-level locals are capturable by closures)
+3. constant folding / jump threading and other simple peepholes
+4. instruction encoding compression (BIns is 8 bytes today, packable to 4) + computed goto
+5. breakpoints lowered onto the bytecode line table (today a debug session falls back to tree-walking wholesale — functional but slow)

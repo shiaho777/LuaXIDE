@@ -1,5 +1,7 @@
 # Proot userland + blocking stdin + cancel
 
+[简体中文](PROOT_AND_STDIN.zh-CN.md)
+
 ## No-root policy
 - Never uses `su`, Magisk, or device root.
 - Proot is unprivileged userland only.
