@@ -23,14 +23,17 @@
 ```bash
 make -C engine test          # must print ALL TESTS PASSED; includes:
                              #   t1–t28 functional/contract tests, bc-diff differential (11 scripts),
+                             #   bc-fuzz (seeded generated programs, VM on/off output diff),
                              #   doc-check (every LUAX.md code block actually run), CLI smoke
 ./engine/lx --ui foo.lua      # prints ---OUTPUT--- / ---TREE---
 ./engine/lx --bc-dump f.lua   # disassembly; LUAX_NO_BC=1 disables the VM; LUAX_BC_STATS=1 shows participation
+make -C engine bc-fuzz FUZZ_N=200 FUZZ_SEED=7   # deeper divergence sweeps; a failing program is kept in FUZZ_DIR
 ```
 
 Conventions:
 
 - **New engine capability requires a new `t*` test** (AGENTS.md hard rule); new stdlib functions: positive assertions go in t6/t14/t25, negative cases (bad argument) go in t14's `musterr` list
+- VM/tree-walk semantics fixes get regression asserts in t25 (multi-value expansion, loop control flow); bc-fuzz sweeps broader expression space — when it catches a divergence, the kept program plus seed is the repro
 - invoke/UI contract work needs a C driver (see `t26_invoke_tree.c`: run → find handler id → invoke → assert JSON changes)
 - Pure library functions are VM-agnostic — differential coverage is free; changes to execution semantics (name resolution / call conventions) must pass the differential
 - **Editing a LUAX.md example = editing a test**: doc-check runs every block

@@ -761,6 +761,7 @@ static struct Flow exec(State*S,Env*env,Node*st){
       if(step>0){ for(double i=s;i<=en;i+=step){ STEP(); Env*ne=newEnv(S,env); envDeclareFn(S,ne,st->name,VNUM(i)); struct Flow fl=F_NORMAL; bool brk=false; for(int j=0;j<st->body->nlist;j++){fl=exec(S,ne,st->body->list[j]);if(fl.kind==1)return fl;if(fl.kind==2){brk=true;break;}} if(brk)break; } }
       else { for(double i=s;i>=en;i+=step){ STEP(); Env*ne=newEnv(S,env); envDeclareFn(S,ne,st->name,VNUM(i)); struct Flow fl=F_NORMAL; bool brk=false; for(int j=0;j<st->body->nlist;j++){fl=exec(S,ne,st->body->list[j]);if(fl.kind==1)return fl;if(fl.kind==2){brk=true;break;}} if(brk)break; } } break; }
   case K_GFOR:{ Value fs[8]; int nf=0; if(st->nlist) mvList(S,env,st->list,st->nlist,fs,8,&nf); if(nf<1)break;
+      for(int i=nf;i<3;i++)fs[i]=VNIL; /* pad iterator triple — keeps parity with the VM's EXPAND pad */
       Value it=fs[0],state=fs[1],ctrl=fs[2];
       while(1){ STEP(); Value args[2]={state,ctrl}; Value r=callValue(S,it,2,args); int n=S->nret; if(n==0||(n>=1&&r.tag==T_NIL))break; ctrl=r;
         Value vals[8]; vals[0]=r; for(int i=1;i<n&&i<8;i++)vals[i]=S->retbuf[i]; int nv=n>0?n:1;
@@ -883,10 +884,12 @@ static void bc_call_compile(Bc*C,Node*e,int base,int mode){
     int lastmulti=n>0&&bc_ismulti(A[n-1]);
     for(int i=0;i<n-(lastmulti?1:0);i++){ bc_expr(C,A[i],base+2+i); bc_raise(C,base+3+i); }
     if(lastmulti){ bc_call_compile(C,A[n-1],base+2+n-1,1); bc_raise(C,C->reg+64); }
-    bc_emit(C,BC_CALL,base,lastmulti?0:(n+2),cres,0);
+    bc_emit(C,BC_CALL,base,(n-(lastmulti?1:0))+2,cres,lastmulti);
     return;
   }
-  /* K_CALL: f at base, args from base+1, last arg may expand via mrc */
+  /* K_CALL: f at base, args from base+1, last arg may expand via mrc.
+   * imm marks "last arg expands": na = (b-1) fixed + (imm? mrc : 0) —
+   * encoding the fixed count keeps f(x, g()) from silently dropping x. */
   Node**A=e->list;int n=e->nlist;
   bc_raise(C,base+1);
   bc_expr(C,e->a,base);          /* callee (its temps land above the arg slots) */
@@ -894,7 +897,7 @@ static void bc_call_compile(Bc*C,Node*e,int base,int mode){
   int lastmulti=n>0&&bc_ismulti(A[n-1]);
   for(int i=0;i<n-(lastmulti?1:0);i++){ bc_expr(C,A[i],base+1+i); bc_raise(C,base+2+i); }
   if(lastmulti){ bc_call_compile(C,A[n-1],base+1+n-1,1); bc_raise(C,C->reg+64); }
-  bc_emit(C,BC_CALL,base,lastmulti?0:(n+1),cres,0);
+  bc_emit(C,BC_CALL,base,(n-(lastmulti?1:0))+1,cres,lastmulti);
 }
 static void bc_expr_multi(Bc*C,Node*e,int dst){
   if(e->kind==K_CALL||e->kind==K_METHODCALL) bc_call_compile(C,e,dst,1);
@@ -972,7 +975,7 @@ static void bc_stat(Bc*C,Node*st){
     Node**V=st->list;
     int lastmulti=nv>0&&bc_ismulti(V[nv-1]);
     for(int i=0;i<nv-(lastmulti?1:0);i++) bc_expr(C,V[i],base+i);
-    if(lastmulti){ bc_expr_multi(C,V[nv-1],base+nv-1); bc_emit(C,BC_EXPAND,base,nn,0,0); }
+    if(lastmulti){ bc_expr_multi(C,V[nv-1],base+nv-1); bc_emit(C,BC_EXPAND,base+nv-1,nn-(nv-1),0,0); }
     else if(nv<nn) bc_emit(C,BC_LOADNIL,base+nv,nn-nv,0,0);
     for(int i=0;i<nn;i++){ if(C->nloc<256){ C->loc[C->nloc].name=st->names[i]; C->loc[C->nloc].reg=base+i; C->nloc++; } }
     break;}
@@ -984,7 +987,7 @@ static void bc_stat(Bc*C,Node*st){
     for(int i=0;i<nv;i++) bc_reg(C);
     int lastmulti=nv>0&&bc_ismulti(V[nv-1]);
     for(int i=0;i<nv-(lastmulti?1:0);i++) bc_expr(C,V[i],base+i);
-    if(lastmulti){ bc_expr_multi(C,V[nv-1],base+nv-1); bc_emit(C,BC_EXPAND,base,nt,0,0); }
+    if(lastmulti){ bc_expr_multi(C,V[nv-1],base+nv-1); bc_emit(C,BC_EXPAND,base+nv-1,nt-(nv-1),0,0); }
     else if(nv<nt) bc_emit(C,BC_LOADNIL,base+nv,nt-nv,0,0);
     for(int i=0;i<nt;i++){ Node*t=st->list[i];
       if(t->kind==K_NAME){
@@ -1038,7 +1041,7 @@ static void bc_stat(Bc*C,Node*st){
     bc_block(C,st->body);
     int rc=bc_reg(C);
     bc_expr(C,st->a,rc);
-    bc_emit(C,BC_TEST,rc,0,0,0);
+    bc_emit(C,BC_TESTN,rc,0,0,0);   /* repeat..until: exit when condition is TRUE */
     int jb=bc_jmp(C); bc_patch(C,jb,start);
     bc_endscope(C);
     bc_poploop(C,C->ncode);
@@ -1066,7 +1069,7 @@ static void bc_stat(Bc*C,Node*st){
     for(int i=0;i<3+st->nnames;i++) bc_reg(C);
     int lastmulti=bc_ismulti(E[ne-1]);
     for(int i=0;i<ne-(lastmulti?1:0);i++) bc_expr(C,E[i],a+i);
-    if(lastmulti) bc_expr_multi(C,E[ne-1],a+ne-1);
+    if(lastmulti){ bc_expr_multi(C,E[ne-1],a+ne-1); int want=3-(ne-1); if(want>0) bc_emit(C,BC_EXPAND,a+ne-1,want,0,0); }
     else if(ne<3) bc_emit(C,BC_LOADNIL,a+ne,3-ne,0,0);
     bc_pushloop(C);
     int gp=bc_emit(C,BC_GFORPREP,a,0,0,0);
@@ -1087,7 +1090,7 @@ static void bc_stat(Bc*C,Node*st){
     int lastmulti=bc_ismulti(V[n-1]);
     for(int i=0;i<n-(lastmulti?1:0);i++) bc_expr(C,V[i],base+i);
     if(lastmulti) bc_expr_multi(C,V[n-1],base+n-1);
-    bc_emit(C,BC_RETURN,base,lastmulti?0:(n+1),0,0);
+    bc_emit(C,BC_RETURN,base,(n-(lastmulti?1:0))+1,0,lastmulti);
     break;}
   case K_BREAK:{ if(!C->nloops){C->failed=1;break;} struct{int brk[32];int nbrk;}*L=(void*)&C->loops[C->nloops-1]; if(L->nbrk<32)L->brk[L->nbrk++]=bc_jmp(C); break; }
   default: C->failed=1;
@@ -1196,7 +1199,7 @@ static Value vm_call(State*S,Proto*p,Closure*cl,int argc,Value*argv){
     case BC_JMP: pc+=in.imm+1; continue;
     case BC_CALL:{
       Value f=BVR(in.a);
-      int na=in.b?in.b-1:mrc;
+      int na=in.b-1+(in.imm?mrc:0);
       if(na>LX_MAX_ARGS)lx_rt_error(S,"too many arguments");
       Value tmp[LX_MAX_ARGS];
       for(int i=0;i<na;i++) tmp[i]=BVR(in.a+1+i);
@@ -1210,8 +1213,9 @@ static Value vm_call(State*S,Proto*p,Closure*cl,int argc,Value*argv){
     case BC_TSETMULT:{ Value tv=BVR(in.a);
       if(tv.tag!=T_TAB)lx_rt_error(S,"attempt to index a %s value",lx_typename(tv));
       Table*t=tv.u.t;
-      for(int j=0;j<mrc;j++) tset(S,t,BVR(in.b),BVR(in.c+j));
-      BVR(in.b)=VNUM(BVR(in.b).u.num+1);
+      double idx=BVR(in.b).u.num;
+      for(int j=0;j<mrc;j++) tset(S,t,VNUM(idx+j),BVR(in.c+j));
+      BVR(in.b)=VNUM(idx+mrc);
       break;}
     case BC_INC: BVR(in.a)=VNUM(BVR(in.a).u.num+in.b); break;
     case BC_FORPREP:{
@@ -1239,7 +1243,7 @@ static Value vm_call(State*S,Proto*p,Closure*cl,int argc,Value*argv){
       for(int i=nv;i<nn;i++) BVR(in.a+3+i)=VNIL;
       pc+=in.imm+1; continue; }
     case BC_RETURN:{
-      int n2=in.b?in.b-1:mrc;
+      int n2=in.b-1+(in.imm?mrc:0);
       if(n2>64)n2=64;
       for(int i=0;i<n2;i++) S->retbuf[i]=BVR(in.a+i);
       S->nret=n2;

@@ -201,5 +201,36 @@ eq(u1 + u2 + u3, 24, "unpack")
 local mt2 = {[1] = "one", "two"}
 eq(mt2[1], "two", "positional overrides explicit key")
 
+-- multi-value expansion with a fixed prefix (regressions found by bc-fuzz):
+-- f(x, g()) must pass x AND g's expanded results; same for returns,
+-- locals, assignments, method calls and table constructors.
+local function nargs(...) return select("#", ...) end
+local function two() return 1, 2 end
+local function three() return 1, 2, 3 end
+local function argcount() return nargs(10, three()) end
+eq(argcount(), 4, "call arg expands last call")
+local function retmulti() return 7, three() end
+eq(select("#", retmulti()), 4, "return expands last call")
+local function localmulti() local x, y = 5, two() return x, y end
+local lx, ly = localmulti()
+eq(lx, 5, "local multi keeps prefix")
+eq(ly, 1, "local multi keeps call result")
+local function assignmulti() local x, y x, y = 5, two() return x, y end
+local ax, ay = assignmulti()
+eq(ax, 5, "assign multi keeps prefix")
+eq(ay, 1, "assign multi keeps call result")
+local mobj = { n = function(self, ...) return select("#", ...) end }
+local function methcall(o) return o:n(10, two()) end
+eq(methcall(mobj), 3, "method arg expands last call")
+local function ctormulti() return {two(), 9} end
+local tt = ctormulti()
+eq(#tt, 3, "ctor expands call positional")
+eq(tt[3], 9, "ctor positional after expansion")
+
+-- repeat..until exits when the condition is TRUE (was inverted in the VM)
+local function rp(n) local i = 0 repeat i = i + 1 until i >= n return i end
+eq(rp(3), 3, "repeat until exits when true")
+eq(rp(1), 1, "repeat until single pass")
+
 if fails > 0 then error("t25 FAILED: " .. fails .. " case(s)") end
 print("t25 ok")
