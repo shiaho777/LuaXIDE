@@ -232,5 +232,31 @@ local function rp(n) local i = 0 repeat i = i + 1 until i >= n return i end
 eq(rp(3), 3, "repeat until exits when true")
 eq(rp(1), 1, "repeat until single pass")
 
+-- nil expressions must actually write nil: a stale register would leak the
+-- previous iteration's value (LOADNIL used to emit a zero-length store)
+local function nilv(i) return (i < 3) and i or nil end
+eq(nilv(3), nil, "or-nil result is nil")
+eq(nilv(1), 1, "or-nil keeps truthy path")
+local function stalereg()
+  local t = {}
+  for i = 1, 2 do t.v = (i == 1) and 9 or nil end
+  return t.v
+end
+eq(stalereg(), nil, "no stale register through nil")
+
+-- literal folding: compile-time results must match runtime formulas exactly
+local function folds()
+  return 7 % 3, -7 % 3, 7 // 2, 2 ^ 10, 1 / 4, ~5, 5 & 3, 12 | 10 & 3,
+         "a" .. "b", #"hello", -(-3), not nil, 3 < 4
+end
+local f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13 = folds()
+eq(f1, 1, "fold mod"); eq(f2, 2, "fold mod neg"); eq(f3, 3, "fold idiv")
+eq(f4, 1024, "fold pow"); eq(f5, 0.25, "fold div"); eq(f6, -6, "fold bnot")
+eq(f7, 1, "fold band"); eq(f8, 14, "fold bor band precedence")
+eq(f9, "ab", "fold concat"); eq(f10, 5, "fold len"); eq(f11, 3, "fold unm")
+eq(f12, true, "fold not nil"); eq(f13, true, "fold lt")
+local function foldinf() return 1 / 0 > 0 end
+eq(foldinf(), true, "fold div by zero keeps inf")
+
 if fails > 0 then error("t25 FAILED: " .. fails .. " case(s)") end
 print("t25 ok")

@@ -16,6 +16,12 @@ callValue(T_FN)
   └─ otherwise (debug session / disabled) → tree-walking path (original logic unchanged)
 ```
 
+### Encoding & dispatch
+
+- `BIns` is 4 bytes `{op,a,b,c}`; immediates live in a parallel `Proto.imm[pc]` u16 array (constant index ≤65535, or i16 jump delta — oversize functions soft-fail to tree-walk).
+- Dispatch uses computed goto on GNU/Clang (one indirect branch per instruction; inner op-switches fold away since `in.op` is constant per label); other compilers keep the switch fallback.
+- Conditions compile to a fused test-and-branch (`TEST`/`TESTN` carry the jump delta directly — no separate `JMP`); literal arithmetic/bitwise/comparison/concat folds to `LOADK` at compile time.
+
 ## v0 compile coverage (everything else falls back)
 
 | Supported | Falls back |
@@ -46,7 +52,7 @@ This engine resolves names through the runtime Env chain (dynamic scope), not le
 ## Observability & tools
 
 ```bash
-make -C engine test        # includes t25 cases, VM-participation assertions, bc-diff differential
+make -C engine test        # includes t25 cases, VM-participation assertions, bc-diff + bc-fuzz differential
 make -C engine bench-bc    # dual-mode microbenchmark
 ./engine/lx --bc-dump f.lua   # disassemble every compilable function in a source file
 LUAX_BC_STATS=1 ./engine/lx x.lua   # stderr prints "bc: N compiled calls, M fallbacks"
@@ -59,15 +65,13 @@ LUAX_NO_BC=1 ./engine/lx x.lua      # disable the VM entirely (troubleshooting)
 
 | Case | Tree-walking | Bytecode VM | Speedup |
 |---|---|---|---|
-| fib(23) recursive | ~0.023s | ~0.013s | **1.8x** |
-| numeric loop ×3M | ~0.31s | ~0.029s | **~11x** |
-| string concat/len ×60k | ~0.27s | ~0.22s | ~1.25x (C string ops dominate) |
-| build 200k-row table + pairs sum | ~0.105s | ~0.041s | **~2.6x** |
+| fib(23) recursive | ~0.025s | ~0.013s | **~1.9x** |
+| numeric loop ×3M | ~0.42s | ~0.030s | **~14x** |
+| string concat/len ×60k | ~0.36s | ~0.31s | ~1.2x (C string ops dominate) |
+| build 200k-row table + pairs sum | ~0.13s | ~0.051s | **~2.6x** |
 
 ## Roadmap (not done, ordered by value)
 
 1. **upvalues**: a Lua-style open/upvalue protocol, unlocking "nested functions inside functions" — the largest coverage win
 2. main-chunk compilation (needs upvalues; top-level locals are capturable by closures)
-3. constant folding / jump threading and other simple peepholes
-4. instruction encoding compression (BIns is 8 bytes today, packable to 4) + computed goto
-5. breakpoints lowered onto the bytecode line table (today a debug session falls back to tree-walking wholesale — functional but slow)
+3. breakpoints lowered onto the bytecode line table (today a debug session falls back to tree-walking wholesale — functional but slow)

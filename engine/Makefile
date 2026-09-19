@@ -54,7 +54,7 @@ test: $(LX) $(DRIVERS)
 	@echo "=== t28 hardening ==="  && ./t28-hardening
 	@echo "=== fail-grep ==="       && ! ./$(LX) tests/t25_bytecode.lua | grep -q "^FAIL " && ! ./$(LX) tests/t27_patterns.lua | grep -q "^FAIL " || { echo "silent FAIL line in assert-script output"; exit 1; }
 	@echo "=== bc engagement ==="   && LUAX_BC_STATS=1 ./$(LX) tests/t25_bytecode.lua >/dev/null 2>.bc_stats; grep -qE "bc: [1-9][0-9]* compiled" .bc_stats || { echo "bytecode VM did not engage:"; cat .bc_stats; rm -f .bc_stats; exit 1; }; rm -f .bc_stats; echo "vm engaged"
-	@echo "=== bc differential ===" && for t in $(BC_DIFF_SCRIPTS); do ./$(LX) tests/$$t.lua 2>&1 | sed -E 's/0x[0-9a-f]+/0xADDR/g' >/tmp/.lx_bc_a; LUAX_NO_BC=1 ./$(LX) tests/$$t.lua 2>&1 | sed -E 's/0x[0-9a-f]+/0xADDR/g' >/tmp/.lx_bc_b; diff /tmp/.lx_bc_a /tmp/.lx_bc_b >/dev/null || { echo "BC DIVERGENCE in $$t:"; diff /tmp/.lx_bc_a /tmp/.lx_bc_b | head -10; rm -f /tmp/.lx_bc_a /tmp/.lx_bc_b; exit 1; }; done; rm -f /tmp/.lx_bc_a /tmp/.lx_bc_b; echo "bc-diff ok ($(words $(BC_DIFF_SCRIPTS)) scripts)"
+	@echo "=== bc differential ===" && for t in $(BC_DIFF_SCRIPTS); do ./$(LX) tests/$$t.lua 2>&1 | sed -E -e 's/0x[0-9a-f]+/0xADDR/g' -e 's/line [0-9]+: execution step limit/line N: execution step limit/' >/tmp/.lx_bc_a; LUAX_NO_BC=1 ./$(LX) tests/$$t.lua 2>&1 | sed -E -e 's/0x[0-9a-f]+/0xADDR/g' -e 's/line [0-9]+: execution step limit/line N: execution step limit/' >/tmp/.lx_bc_b; diff /tmp/.lx_bc_a /tmp/.lx_bc_b >/dev/null || { echo "BC DIVERGENCE in $$t:"; diff /tmp/.lx_bc_a /tmp/.lx_bc_b | head -10; rm -f /tmp/.lx_bc_a /tmp/.lx_bc_b; exit 1; }; done; rm -f /tmp/.lx_bc_a /tmp/.lx_bc_b; echo "bc-diff ok ($(words $(BC_DIFF_SCRIPTS)) scripts)"
 	@echo "=== bc fuzz ==="        && $(MAKE) -s bc-fuzz
 	@echo "=== doc examples ==="     && python3 tests/doc_check.py
 	@echo "=== cli ==="             && ./$(LX) -e "print('cli-ok')" | grep -q cli-ok
@@ -112,8 +112,8 @@ bc-fuzz: $(LX)
 	@rm -rf $(FUZZ_DIR) && python3 tests/fuzz_gen.py --n $(FUZZ_N) --seed $(FUZZ_SEED) --out $(FUZZ_DIR) >/dev/null
 	@for f in $(FUZZ_DIR)/*.lua; do \
 	  LUAX_BC_STATS=1 ./$(LX) $$f >/dev/null 2>>$(FUZZ_DIR)/.stats; \
-	  ./$(LX) $$f 2>&1 | sed -E 's/0x[0-9a-f]+/0xADDR/g' >/tmp/.lx_bc_a; \
-	  LUAX_NO_BC=1 ./$(LX) $$f 2>&1 | sed -E 's/0x[0-9a-f]+/0xADDR/g' >/tmp/.lx_bc_b; \
+	  ./$(LX) $$f 2>&1 | sed -E -e 's/0x[0-9a-f]+/0xADDR/g' -e 's/line [0-9]+: execution step limit/line N: execution step limit/' >/tmp/.lx_bc_a; \
+	  LUAX_NO_BC=1 ./$(LX) $$f 2>&1 | sed -E -e 's/0x[0-9a-f]+/0xADDR/g' -e 's/line [0-9]+: execution step limit/line N: execution step limit/' >/tmp/.lx_bc_b; \
 	  diff /tmp/.lx_bc_a /tmp/.lx_bc_b >/dev/null || { echo "BC DIVERGENCE in $$f (seed $(FUZZ_SEED)) — program kept at $(FUZZ_DIR):"; diff /tmp/.lx_bc_a /tmp/.lx_bc_b | head -10; rm -f /tmp/.lx_bc_a /tmp/.lx_bc_b; exit 1; }; \
 	done; rm -f /tmp/.lx_bc_a /tmp/.lx_bc_b
 	@grep -qE "bc: [1-9][0-9]* compiled" $(FUZZ_DIR)/.stats || { echo "fuzz programs did not engage the VM"; exit 1; }
