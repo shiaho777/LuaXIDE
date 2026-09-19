@@ -26,19 +26,23 @@ callValue(T_FN)
 
 | 支持 | 回退 |
 |---|---|
-| 局部/赋值/多赋值、调用语句 | 嵌套函数定义(闭包捕获 Env,需要 upvalue 机制) |
-| if/elseif/else、while、repeat(until 可见体内局部)、数值 for、泛型 for | 变长参数函数(`...`) |
-| break、return(含多值展开) | 自由变量(upvalue)——编译期检测 + 调用时复验 |
-| 算术/位运算/比较/拼接、and/or 短路(保值语义) | goto/label(解析器本就拒绝) |
+| 局部/赋值/多赋值、调用语句 | 变长参数函数(`...`) |
+| if/elseif/else、while、repeat(until 可见体内局部)、数值 for、泛型 for | goto/label(解析器本就拒绝) |
+| break、return(含多值展开) | |
+| 算术/位运算/比较/拼接、and/or 短路(保值语义) | |
 | 表构造(kv 字段;位置字段按引擎语义逐个展开多值) | |
 | 方法调用 `obj:m(...)`、元表链(__index/__newindex/__len/__tostring) | |
+| **嵌套函数与捕获变量**——闭包直接绑定运行时 Env 链(见下),涵盖参数、逐迭代循环变量、`do` 块局部 | |
 
-### 动态作用域的兼容处理
+### 捕获变量:Env 驻留 "capmode"
 
-本引擎按运行时 Env 链解析名字(动态作用域),不是词法作用域。因此:
+本引擎按运行时 `Env` 链解析名字(动态作用域),而 `Env` 对象本身就是共享可变绑定容器——闭包因此无需独立的 upvalue 格协议:
 
-1. 编译时:`K_NAME` 先查局部寄存器;再查定义处 Env 链(排除 globals)——查到即视为 upvalue,**拒绝编译**;
-2. 运行时:被当作全局的名字记录在 `Proto->gk`,每次调用前重验"没有外层树遍历作用域在首次编译之后新声明同名局部"(见 `bc_globals_still_global`),发现遮蔽立即本次调用回退。
+1. 函数体含嵌套函数定义时按 **capmode** 编译:其局部变量驻留 `Env` 作用域而非寄存器。VM 在树遍历器调用 `newEnv` 的相同点位发射 `ENVOPEN`/`ENVCLOSE`——每个 `if`/`elseif`/`else`/`do` 块,以及**逐迭代**的循环体(因此每轮闭包捕获当轮的循环变量,与逐迭代 `newEnv` 一致)。
+2. capmode 代码内所有名字编译为 `GETENV`/`SETENV`——即 `envGetFn`/`envAssignFn` 本体——走与树遍历相同的链;`DECL` 对应 `envDeclareFn`。`repeat ... until` 仍在 `ENVCLOSE` 之前求值,可见体内局部;`break` 在跳出前先展开已打开的作用域 env。
+3. `CLOSURE` 以 `env = cur`(当前活跃作用域 env)构造 `Func`——与 `K_FUNC` 求值一致。嵌套函数仍经 `bc_build` 惰性编译,多级嵌套递归成立。
+4. 非 capmode 函数中,编译期命中定义处 Env 链的自由名(`bc_is_upvalue`)同样编译为 `GETENV`/`SETENV` 而非拒绝;只有链上查不到的名字走下方全局路径。
+5. 被当作全局的名字仍记录在 `Proto->gk`,每次调用前重验"没有外层作用域在首次编译之后新声明同名局部"(`bc_globals_still_global`),发现遮蔽立即本次调用回退。
 
 ## 与树遍历的语义对齐点
 
@@ -72,6 +76,6 @@ LUAX_NO_BC=1 ./engine/lx x.lua      # 整体禁用 VM(排障用)
 
 ## 后续路线(未做,按价值排序)
 
-1. **upvalue**:Lua 式 open/upvalue 协议,解锁"函数内嵌套函数"——覆盖面最大的一块
-2. 主 chunk 编译(需配合 upvalue,顶层局部可被闭包捕获)
+1. 主 chunk 编译(capmode 机制已覆盖顶层局部;chunk 本体仍走树遍历)
+2. 变长参数函数(`...`)——仅剩的硬回退
 3. 断点下沉到字节码行号表(目前调试会话整体回退树遍历,功能无损但慢)

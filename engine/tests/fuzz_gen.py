@@ -10,8 +10,11 @@ VM/tree-walk divergence bug.
 Design constraints baked in:
 
 - All generated functions are GLOBAL (`function f(...)`) so bodies referencing
-  them resolve through the global table — a reference to a chunk-level local
-  would be an upvalue and make the caller refuse compilation, killing coverage.
+  them resolve through the global table. Chunk-level local references compile
+  to env-chain ops (GETENV/SETENV) — upvalues no longer refuse compilation.
+- Nested closures (`closure_stmt`) exercise capmode env ops: capture of params
+  and locals, mutation of shared bindings, per-iteration loop-var envs, and
+  closures escaping `do` blocks.
 - Locals are tracked on a scope stack; expressions only reference variables
   visible at that point, and a `local x = <expr>` declares x only after its
   initializer is generated.
@@ -19,8 +22,8 @@ Design constraints baked in:
   literal bound or a counting local, so termination is guaranteed.
 - Error paths are covered by "risky" functions invoked only under pcall —
   both modes must print the same caught error text.
-- "Dirty" functions (nested defs / varargs) force compile refusal; they must
-  still produce identical output via the tree-walk fallback.
+- Vararg "dirty" functions still force compile refusal; they must produce
+  identical output via the tree-walk fallback.
 """
 
 import argparse
@@ -315,10 +318,52 @@ class Fn:
         self.emit("local %s, %s = pcall(%s, %s, %s)" % (ok, rv, fn, e1, e2))
         self.emit("print(%s, %s)" % (ok, rv))
 
+    def closure_stmt(self):
+        """Nested functions capturing enclosing-scope vars — capmode env ops."""
+        r = self.rng
+        k = r.randrange(4)
+        cn = "cn%d" % self.fresh
+        self.fresh += 1
+        caps = self.vars("num")
+        if k == 0:
+            # closure mutates a captured num var (shared mutable binding)
+            if not caps:
+                return self.local_decl()
+            v = r.choice(caps)
+            self.emit("local function %s(p) %s = %s + p return %s end" % (cn, v, v, v))
+            a = self.add("num")
+            self.emit("local %s = %s(%s)" % (a, cn, self.num_expr()))
+        elif k == 1:
+            # closure reads captured var + own param + own local
+            use = r.choice(caps) if caps else str(r.randrange(1, 9))
+            self.emit("local function %s(p) local q = p * 2 return q + %s end" % (cn, use))
+            a = self.add("num")
+            self.emit("local %s = %s(%s)" % (a, cn, self.num_expr()))
+        elif k == 2:
+            # per-iteration capture: each loop round binds a fresh env
+            t = self.add("tab")
+            acc = self.add("num")
+            iv = "i%d" % self.fresh
+            self.fresh += 1
+            self.emit("local %s = {}" % t)
+            self.emit("for %s = 1, %d do %s[%s] = function() return %s * 2 end end"
+                      % (iv, r.randrange(1, 3), t, iv, iv))
+            self.emit("local %s = 0" % acc)
+            self.emit("for %s = 1, #%s do %s = %s + %s[%s]() end" % (iv, t, acc, acc, t, iv))
+        else:
+            # escaped env: closure outlives the do-block that declared q
+            q = "q%d" % self.fresh
+            self.fresh += 1
+            self.emit("local %s" % cn)
+            self.emit("do local %s = %s %s = function() return %s + 1 end end"
+                      % (q, self.num_expr(), cn, q))
+            a = self.add("num")
+            self.emit("local %s = %s()" % (a, cn))
+
     def stmt_block(self, n, risky_names=()):
         r = self.rng
         for _ in range(n):
-            k = r.randrange(14)
+            k = r.randrange(15)
             if k <= 3:
                 self.local_decl()
             elif k <= 5:
@@ -337,6 +382,8 @@ class Fn:
                 self.pcall_stmt(risky_names)
             elif k == 12:
                 self.global_assign()
+            elif k == 13:
+                self.closure_stmt()
             else:
                 self.local_decl()
 
@@ -372,7 +419,8 @@ def gen_risky(rng, name):
 
 
 def gen_dirty(rng, name):
-    """Fallback-inducing function (nested def / vararg) — runs tree-walked."""
+    """Nested defs / varargs. Nested defs compile under capmode now; only
+    vararg bodies still force the tree-walk fallback path."""
     k = rng.randrange(3)
     if k == 0:
         return ("function %s(a)\n  local function inner(x) return x * 2 + a end\n"

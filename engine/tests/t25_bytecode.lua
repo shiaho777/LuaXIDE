@@ -258,5 +258,113 @@ eq(f12, true, "fold not nil"); eq(f13, true, "fold lt")
 local function foldinf() return 1 / 0 > 0 end
 eq(foldinf(), true, "fold div by zero keeps inf")
 
+-- a table ctor as the FIRST call arg: its dst register is the next free slot,
+-- so the ctor's internal temps used to alias it and clobber the new table
+local function ctorfirst() return type({1, 2}) end
+eq(ctorfirst(), "table", "table ctor in first call arg")
+local function ctorfirstmt() return setmetatable({tag = "t"}, {}).tag end
+eq(ctorfirstmt(), "t", "table ctor first arg with second arg")
+local function ctorfirst2() local t = {1, 2, 3} return #{7, t} end
+eq(ctorfirst2(), 2, "table ctor arg keeps own elements")
+
+-- a RETURN inside a conditional block does not make the function's end
+-- unreachable: the fallthrough path still needs the epilogue
+local function ifret(c) if c then return "yes" end end
+eq(ifret(true), "yes", "if-return taken")
+eq(ifret(false), nil, "if-return fallthrough is nil")
+local function ifret2(c) if c then return 1 else return 2 end end
+eq(ifret2(true), 1, "if/else then-arm")
+eq(ifret2(false), 2, "if/else else-arm")
+
+-- ===== nested functions / captured variables (capmode env ops) =====
+local Animal = {}
+Animal.__index = Animal
+function Animal.new(name) return setmetatable({name = name}, Animal) end
+function Animal:speak() return self.name end
+eq(Animal.new("dog"):speak(), "dog", "class-style method on captured table")
+
+local function counter()
+  local n = 0
+  return function() n = n + 1 return n end
+end
+local c1 = counter()
+eq(c1(), 1, "closure mutates captured local")
+eq(c1(), 2, "capture persists across calls")
+local c2 = counter()
+eq(c2(), 1, "second closure gets own binding")
+
+local function outer()
+  local v = 7
+  local function mid()
+    local w = 3
+    return function() return v * w end
+  end
+  return mid()
+end
+eq(outer()(), 21, "two-level capture")
+
+local function par(a, b) return function() return a - b end end
+eq(par(9, 4)(), 5, "captured params")
+
+-- each loop iteration binds a fresh env: closures see their own i
+local function iterfns()
+  local fns = {}
+  for i = 1, 3 do fns[i] = function() return i * 10 end end
+  return fns
+end
+local fs = iterfns()
+eq(fs[1]() + fs[2]() + fs[3](), 60, "per-iteration loop var capture")
+
+-- locals declared inside a do-block stay reachable through an escaped closure
+local esc
+do
+  local hidden = 41
+  esc = function() hidden = hidden + 1 return hidden end
+end
+eq(esc(), 42, "escaped do-block env")
+eq(esc(), 43, "escaped env mutation persists")
+
+-- local function recursion through the env binding
+local function mkrec()
+  local function f(n) if n <= 0 then return 0 end return n + f(n - 1) end
+  return f(4)
+end
+eq(mkrec(), 10, "local function recursion")
+
+-- repeat..until sees a body local from inside a closure-friendly body
+local function repcap()
+  local fns = {}
+  local i = 0
+  repeat
+    i = i + 1
+    local j = i * 2
+    fns[i] = function() return j end
+  until i >= 3
+  return fns[1]() + fns[2]() + fns[3]()
+end
+eq(repcap(), 12, "repeat per-iteration capture")
+
+-- a while-loop closure plus break crossing an opened block env
+local function whilecap()
+  local fns, i = {}, 0
+  while i < 2 do
+    i = i + 1
+    do
+      local k = i + 100
+      fns[i] = function() return k end
+    end
+    if i >= 2 then break end
+  end
+  return fns[1]() + fns[2]()
+end
+eq(whilecap(), 203, "do-block capture inside while + break")
+
+-- nested vararg fn still falls back to tree-walk transparently
+local function hasvararg()
+  local f = function(...) return select('#', ...) end
+  return f(1, 2, 3)
+end
+eq(hasvararg(), 3, "vararg nested fn falls back")
+
 if fails > 0 then error("t25 FAILED: " .. fails .. " case(s)") end
 print("t25 ok")

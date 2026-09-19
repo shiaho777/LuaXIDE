@@ -26,19 +26,23 @@ callValue(T_FN)
 
 | Supported | Falls back |
 |---|---|
-| locals / assignment / multi-assign, call statements | nested function definitions (closures capture Env — needs an upvalue mechanism) |
-| if/elseif/else, while, repeat (until sees in-body locals), numeric for, generic for | vararg functions (`...`) |
-| break, return (incl. multi-value expansion) | free variables (upvalues) — compile-time detection + call-time re-verification |
-| arithmetic/bitwise/comparison/concat, and/or short-circuit (value-preserving) | goto/label (the parser rejects these anyway) |
+| locals / assignment / multi-assign, call statements | vararg functions (`...`) |
+| if/elseif/else, while, repeat (until sees in-body locals), numeric for, generic for | goto/label (the parser rejects these anyway) |
+| break, return (incl. multi-value expansion) | |
+| arithmetic/bitwise/comparison/concat, and/or short-circuit (value-preserving) | |
 | table constructors (kv fields; positional fields expand multi-values per engine semantics) | |
 | method calls `obj:m(...)`, metatable chains (__index/__newindex/__len/__tostring) | |
+| **nested functions & captured variables** — closures bind the runtime Env chain (see below), including params, per-iteration loop vars, and `do`-block locals | |
 
-### Dynamic-scope compatibility
+### Captured variables: Env-resident "capmode"
 
-This engine resolves names through the runtime Env chain (dynamic scope), not lexical scope. Therefore:
+This engine resolves names through the runtime `Env` chain (dynamic scope), and `Env` objects are already shared mutable binding containers — so closures need no separate upvalue-cell protocol:
 
-1. At compile time: `K_NAME` first checks local registers, then the definition-site Env chain (excluding globals) — a hit counts as an upvalue and **refuses compilation**;
-2. At runtime: names treated as globals are recorded in `Proto->gk`; before every call we re-verify "no outer tree-walking scope declared a same-named local after first compilation" (see `bc_globals_still_global`); detected shadowing falls back for that call.
+1. A function whose body contains nested function definitions compiles in **capmode**: its locals are stored in `Env` scopes instead of registers. The VM emits `ENVOPEN`/`ENVCLOSE` at exactly the points the tree-walker calls `newEnv` — every `if`/`elseif`/`else`/`do` block, and **per iteration** for loop bodies (so each loop round's closures capture that round's loop var, matching `newEnv` per iteration).
+2. Inside capmode code, every name compiles to `GETENV`/`SETENV` — literally `envGetFn`/`envAssignFn` — walking the same chain the tree-walker would; `DECL` mirrors `envDeclareFn`. `repeat ... until` still evaluates its condition before `ENVCLOSE`, so it sees body locals; `break` unwinds any open scope envs before leaving the loop.
+3. `CLOSURE` builds a `Func` with `env = cur` (the live scope env) — identical to `K_FUNC` evaluation. The nested function compiles lazily through the usual `bc_build` path, so multi-level nesting works recursively.
+4. In non-capmode functions a free name that hits the definition-site Env chain at compile time (`bc_is_upvalue`) also compiles to `GETENV`/`SETENV` instead of refusing; only names missing from the chain take the global path below.
+5. Names treated as globals are still recorded in `Proto->gk`; before every call we re-verify "no outer scope declared a same-named local after first compilation" (`bc_globals_still_global`); detected shadowing falls back for that call.
 
 ## Semantic alignment with tree-walking
 
@@ -72,6 +76,6 @@ LUAX_NO_BC=1 ./engine/lx x.lua      # disable the VM entirely (troubleshooting)
 
 ## Roadmap (not done, ordered by value)
 
-1. **upvalues**: a Lua-style open/upvalue protocol, unlocking "nested functions inside functions" — the largest coverage win
-2. main-chunk compilation (needs upvalues; top-level locals are capturable by closures)
+1. main-chunk compilation (capmode machinery already covers top-level locals; the chunk itself still runs tree-walked)
+2. vararg functions (`...`) — the only remaining hard fallback
 3. breakpoints lowered onto the bytecode line table (today a debug session falls back to tree-walking wholesale — functional but slow)
