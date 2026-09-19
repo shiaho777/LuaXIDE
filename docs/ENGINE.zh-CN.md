@@ -16,7 +16,7 @@
 - **序列化**(`jnode`):树 → `{type, props, children}` JSON;函数 prop 注册进 `S->handlers[id]`,**每次树重建 id 重新分配**(宿主每轮重读);上限 1024。props 键序为哈希槽序 —— 测试断言只能用子串匹配。
 - **invoke 语义**:`lx_invoke` 用 `callValue` 的**直接返回值**(非 `S->retbuf`,避免被后续调用污染)判定 handler 是否返回新树;nil → 重序列化 `app_view`(view 函数会重调)。语言级契约见 LUAX.md §4.2。
 - **防护**:`STEP` 宏(取消 + 步数)插在语句/循环/VM 每指令;`lx_run` 清残留取消标志,`lx_invoke` 不清。
-- **动态作用域防护**:VM 编译期把"非局部名"记入 `Proto->gk`,每次调用前 `bc_globals_still_global` 复验无遮蔽,命中即回退树遍历(见 BYTECODE_VM.md)。
+- **动态作用域防护**:VM 编译期把"按全局处理的名字"记入 `Proto->gk`,每次调用前 `bc_globals_still_global` 复验无遮蔽,命中即回退树遍历;命中定义处 Env 链的名字编译为 `GETENV`/`SETENV`(capmode 下局部驻留 env 供闭包捕获)——见 BYTECODE_VM.md。
 
 ## 3. 测试工作流
 

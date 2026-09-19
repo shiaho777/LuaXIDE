@@ -16,7 +16,7 @@
 - **Serialization** (`jnode`): tree → `{type, props, children}` JSON; function props register into `S->handlers[id]`, and **ids are re-assigned on every tree rebuild** (the host re-reads each round); capped at 1024. Prop key order is hash-slot order — test assertions may only use substring matching.
 - **invoke semantics**: `lx_invoke` judges whether the handler returned a new tree from `callValue`'s **direct return value** (not `S->retbuf`, which later calls would pollute); nil → re-serializes `app_view` (a view function is re-called). The language-level contract is LUAX.md §4.2.
 - **Guards**: the `STEP` macro (cancel + steps) sits on statements/loops/every VM instruction; `lx_run` clears stale cancel flags, `lx_invoke` does not.
-- **Dynamic-scope guard**: at compile time the VM records "non-local names" into `Proto->gk`; before every call `bc_globals_still_global` re-verifies there is no shadowing — a hit falls back to tree-walking (see BYTECODE_VM.md).
+- **Dynamic-scope guard**: at compile time the VM records names treated as globals into `Proto->gk`; before every call `bc_globals_still_global` re-verifies there is no shadowing — a hit falls back to tree-walking. Names found on the definition-site Env chain compile to `GETENV`/`SETENV` (capmode keeps locals env-resident for closure capture) — see BYTECODE_VM.md.
 
 ## 3. Test workflow
 

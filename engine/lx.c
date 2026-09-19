@@ -344,6 +344,10 @@ static bool toBool(Value v){return !(v.tag==T_NIL||(v.tag==T_BOOL&&!v.u.b)); }
 static void envDeclareFn(State*S,Env*e,const char*name,Value v){ Str*st=newStr(S,name,strlen(name)); tset(S,e->vars,VSTR(st),v); }
 static void envAssignFn(State*S,Env*e,const char*name,Value v){ Str*st=newStr(S,name,strlen(name)); for(Env*p=e;p;p=p->parent){Value*f=tfind(p->vars,VSTR(st));if(f){*f=v;return;}} tset(S,S->globals->vars,VSTR(st),v); }
 static Value envGetFn(State*S,Env*e,const char*name){ Str*st=newStr(S,name,strlen(name)); for(Env*p=e;p;p=p->parent){Value*f=tfind(p->vars,VSTR(st));if(f)return *f;} Value*f=tfind(S->globals->vars,VSTR(st)); return f?*f:VNIL; }
+/* Str*-keyed variants for the VM env ops — same semantics minus the per-access alloc */
+static void envDeclS(State*S,Env*e,Str*st,Value v){ tset(S,e->vars,VSTR(st),v); }
+static void envAssignS(State*S,Env*e,Str*st,Value v){ for(Env*p=e;p;p=p->parent){Value*f=tfind(p->vars,VSTR(st));if(f){*f=v;return;}} tset(S,S->globals->vars,VSTR(st),v); }
+static Value envGetS(State*S,Env*e,Str*st){ for(Env*p=e;p;p=p->parent){Value*f=tfind(p->vars,VSTR(st));if(f)return *f;} Value*f=tfind(S->globals->vars,VSTR(st)); return f?*f:VNIL; }
 
 static Value eval(State*S,Env*env,Node*e);
 static struct Flow exec(State*S,Env*env,Node*st);
@@ -798,10 +802,11 @@ enum {
   BC_ADD,BC_SUB,BC_MUL,BC_DIV,BC_MOD,BC_POW,BC_IDIV,BC_BAND,BC_BOR,BC_BXOR,BC_SHL,BC_SHR,
   BC_UNM,BC_BNOT,BC_NOT,BC_LEN,BC_CONCAT,BC_EQ,BC_LT,BC_LE,
   BC_TEST,BC_TESTN,BC_JMP,BC_CALL,BC_RETURN,BC_EXPAND,BC_NEWTABLE,BC_TSETMULT,BC_INC,
-  BC_FORPREP,BC_FORLOOP,BC_GFORPREP,BC_GFORLOOP
+  BC_FORPREP,BC_FORLOOP,BC_GFORPREP,BC_GFORLOOP,
+  BC_ENVOPEN,BC_ENVCLOSE,BC_DECL,BC_GETENV,BC_SETENV,BC_CLOSURE
 };
 typedef struct { unsigned char op,a,b,c; } BIns;   /* 4-byte insn; immediates live in Proto.imm[pc] (u16: k-idx or i16 jump delta) */
-struct Proto { BIns* code; int ncode; unsigned short* imm; Value* k; int nk; int* lines; int* gk; int ngk; int nparam; int maxstack; int defline; };
+struct Proto { BIns* code; int ncode; unsigned short* imm; Value* k; int nk; int* lines; int* gk; int ngk; int nparam; int maxstack; int defline; int uses_env; Node** subs; int nsubs; };
 
 #define BC_MAXREG 200
 typedef struct {
@@ -814,15 +819,18 @@ typedef struct {
   int reg,maxreg;
   struct { char*name; int reg; } loc[256]; int nloc;
   int scope[40]; int scopereg[40]; int depth;
-  struct { int brk[32]; int nbrk; } loops[16]; int nloops;
+  struct { int brk[32]; int nbrk; int envmark; } loops[16]; int nloops;
   int curline;
   int failed;
+  int capmode;                      /* function contains nested funcs: locals live in scope envs */
+  Node* subs[64]; int nsubs;
 } Bc;
 
 static const char* bc_opname(int op){
   static const char* N[]={"LOADK","LOADNIL","LOADBOOL","MOVE","GETGLOBAL","SETGLOBAL","GETTABLE","SETTABLE","GETFIELD","SETFIELD",
     "ADD","SUB","MUL","DIV","MOD","POW","IDIV","BAND","BOR","BXOR","SHL","SHR","UNM","BNOT","NOT","LEN","CONCAT","EQ","LT","LE",
-    "TEST","TESTN","JMP","CALL","RETURN","EXPAND","NEWTABLE","TSETMULT","INC","FORPREP","FORLOOP","GFORPREP","GFORLOOP"};
+    "TEST","TESTN","JMP","CALL","RETURN","EXPAND","NEWTABLE","TSETMULT","INC","FORPREP","FORLOOP","GFORPREP","GFORLOOP",
+    "ENVOPEN","ENVCLOSE","DECL","GETENV","SETENV","CLOSURE"};
   return op>=0&&(size_t)op<sizeof(N)/sizeof(*N)?N[op]:"?";
 }
 static int bc_emit(Bc*C,int op,int a,int b,int c,int imm){
@@ -841,22 +849,27 @@ static int bc_kstr(Bc*C,const char*s){ Str*st=newStr(C->S,s,strlen(s)); return b
 static int bc_jmp(Bc*C){ return bc_emit(C,BC_JMP,0,0,0,0); }
 /* imm is a u16 slot: jump deltas must fit i16, else soft-fail to tree-walk */
 static void bc_patch(Bc*C,int j,int target){ int d=target-(j+1); if(d>32767||d<-32768){C->failed=1;return;} C->imm[j]=d; }
-static void bc_scope(Bc*C){ if(C->depth>=40){C->failed=1;return;} C->scope[C->depth]=C->nloc; C->scopereg[C->depth]=C->reg; C->depth++; }
-static void bc_endscope(Bc*C){ C->depth--; if(C->depth<40){ C->nloc=C->scope[C->depth]; C->reg=C->scopereg[C->depth]; } }
-static void bc_pushloop(Bc*C){ if(C->nloops>=16){C->failed=1;return;} C->loops[C->nloops].nbrk=0; C->nloops++; }
+/* capmode mirrors the tree-walker's newEnv points: every non-root scope opens a
+ * runtime env at entry and closes it at scope end; the function's own frame env
+ * is created by vm_call so the root scope emits neither */
+static void bc_scope(Bc*C){ if(C->depth>=40){C->failed=1;return;} if(C->capmode&&C->depth>0)bc_emit(C,BC_ENVOPEN,0,0,0,0); C->scope[C->depth]=C->nloc; C->scopereg[C->depth]=C->reg; C->depth++; }
+static void bc_endscope(Bc*C){ if(C->capmode&&C->depth>1)bc_emit(C,BC_ENVCLOSE,0,0,0,0); C->depth--; if(C->depth<40){ C->nloc=C->scope[C->depth]; C->reg=C->scopereg[C->depth]; } }
+static void bc_pushloop(Bc*C){ if(C->nloops>=16){C->failed=1;return;} C->loops[C->nloops].nbrk=0; C->loops[C->nloops].envmark=C->depth; C->nloops++; }
 static void bc_poploop(Bc*C,int exitat){ C->nloops--; for(int i=0;i<C->loops[C->nloops].nbrk;i++) bc_patch(C,C->loops[C->nloops].brk[i],exitat); }
 
-static int bc_local(Bc*C,const char*name){ for(int i=C->nloc-1;i>=0;i--) if(!strcmp(C->loc[i].name,name)) return C->loc[i].reg; return -1; }
+static int bc_local(Bc*C,const char*name){ if(C->capmode)return -1; for(int i=C->nloc-1;i>=0;i--) if(!strcmp(C->loc[i].name,name)) return C->loc[i].reg; return -1; }
+static int bc_sub(Bc*C,Node*e){ if(C->nsubs>=64){C->failed=1;return 0;} C->subs[C->nsubs]=e; return C->nsubs++; }
 static int bc_is_upvalue(Bc*C,const char*name){
   Str tmp; tmp.len=strlen(name); tmp.p=(char*)name;
   Value k; k.tag=T_STR; k.u.s=&tmp;
   for(Env*e=C->fn->env;e;e=e->parent){ if(e==C->S->globals)break; if(tfind(e->vars,k))return 1; }
   return 0;
 }
-/* conservative pre-scan: these constructs keep the function on the tree-walker */
+/* does the body contain nested function definitions? If so the function runs
+ * in capmode: locals become env-resident so BC_CLOSURE can capture them */
 static int bc_has_nested(Node*n){
   if(!n)return 0;
-  switch(n->kind){ case K_FUNC:case K_FUNCDECL:case K_VARARG:case K_LABEL:case K_GOTO:return 1; default:break; }
+  switch(n->kind){ case K_FUNC:case K_FUNCDECL:return 1; default:break; }
   if(bc_has_nested(n->a)||bc_has_nested(n->b)||bc_has_nested(n->c)||bc_has_nested(n->body))return 1;
   for(int i=0;i<n->nlist;i++)if(bc_has_nested(n->list[i]))return 1;
   for(int i=0;i<n->nlist2;i++)if(bc_has_nested(n->list2[i]))return 1;
@@ -908,6 +921,10 @@ static void bc_expr_multi(Bc*C,Node*e,int dst){
 }
 static void bc_expr(Bc*C,Node*e,int dst){
   if(C->failed)return;
+  /* dst's slot must be owned before any temp is allocated: callers can hand us
+   * dst==C->reg (e.g. a table ctor as the first call arg), and without this a
+   * bc_reg() temp would alias dst and clobber the in-flight value */
+  if(dst>=C->reg)C->reg=dst+1;
   if(e->line>0)C->curline=e->line;
   switch(e->kind){
   case K_NIL: bc_emit(C,BC_LOADNIL,dst,1,0,0); break;
@@ -917,7 +934,8 @@ static void bc_expr(Bc*C,Node*e,int dst){
   case K_NAME:{
     int lr=bc_local(C,e->name);
     if(lr>=0) bc_emit(C,BC_MOVE,dst,lr,0,0);
-    else{ if(bc_is_upvalue(C,e->name)){C->failed=1;break;}
+    else if(C->capmode||bc_is_upvalue(C,e->name)) bc_emit(C,BC_GETENV,dst,0,0,bc_kstr(C,e->name));
+    else{
       int k=bc_kstr(C,e->name);
       if(C->ngk<64)C->gk[C->ngk++]=k;
       bc_emit(C,BC_GETGLOBAL,dst,0,0,k); }
@@ -928,6 +946,7 @@ static void bc_expr(Bc*C,Node*e,int dst){
     else{ int t=bc_reg(C),kk=bc_reg(C); bc_expr(C,e->a,t); bc_expr(C,e->b,kk); bc_emit(C,BC_GETTABLE,dst,t,kk,0); }
     break;}
   case K_CALL: case K_METHODCALL: bc_call_compile(C,e,dst,0); break;
+  case K_FUNC: bc_emit(C,BC_CLOSURE,dst,0,0,bc_sub(C,e)); break;
   case K_TABLE:{
     bc_emit(C,BC_NEWTABLE,dst,0,0,0);
     int ridx=bc_reg(C); bc_emit(C,BC_LOADK,ridx,0,0,bc_k(C,VNUM(1)));
@@ -988,7 +1007,6 @@ static void bc_expr(Bc*C,Node*e,int dst){
     bc_emit(C,o,dst,ra,0,0); break;}
   default: C->failed=1;
   }
-  if(dst+1>C->reg)C->reg=dst+1;
 }
 
 static void bc_block(Bc*C,Node*blk);
@@ -1007,6 +1025,7 @@ static void bc_stat(Bc*C,Node*st){
     if(lastmulti){ bc_expr_multi(C,V[nv-1],base+nv-1); bc_emit(C,BC_EXPAND,base+nv-1,nn-(nv-1),0,0); }
     else if(nv<nn) bc_emit(C,BC_LOADNIL,base+nv,nn-nv,0,0);
     for(int i=0;i<nn;i++){ if(C->nloc<256){ C->loc[C->nloc].name=st->names[i]; C->loc[C->nloc].reg=base+i; C->nloc++; } }
+    if(C->capmode) for(int i=0;i<nn;i++) bc_emit(C,BC_DECL,base+i,0,0,bc_kstr(C,st->names[i]));
     break;}
   case K_ASSIGN:{
     Node**V=st->list2;int nv=st->nlist2;
@@ -1022,7 +1041,8 @@ static void bc_stat(Bc*C,Node*st){
       if(t->kind==K_NAME){
         int lr=bc_local(C,t->name);
         if(lr>=0) bc_emit(C,BC_MOVE,lr,base+i,0,0);
-        else{ if(bc_is_upvalue(C,t->name)){C->failed=1;break;}
+        else if(C->capmode||bc_is_upvalue(C,t->name)) bc_emit(C,BC_SETENV,base+i,0,0,bc_kstr(C,t->name));
+        else{
           int k=bc_kstr(C,t->name);
           if(C->ngk<64)C->gk[C->ngk++]=k;
           bc_emit(C,BC_SETGLOBAL,base+i,0,0,k); } }
@@ -1032,6 +1052,17 @@ static void bc_stat(Bc*C,Node*st){
       else{ C->failed=1;break; } }
     break;}
   case K_CALLSTAT:{ int b=bc_reg(C); bc_call_compile(C,st->a,b,2); break; }
+  case K_FUNCDECL:{
+    int base=bc_reg(C);
+    bc_emit(C,BC_CLOSURE,base,0,0,bc_sub(C,st->body));
+    Node*t=st->a;
+    if(st->isLocal&&t->kind==K_NAME) bc_emit(C,BC_DECL,base,0,0,bc_kstr(C,t->name));
+    else if(t->kind==K_NAME) bc_emit(C,BC_SETENV,base,0,0,bc_kstr(C,t->name));
+    else if(t->kind==K_INDEX){
+      if(t->b->kind==K_STR){ int ro=bc_reg(C); bc_expr(C,t->a,ro); int k=bc_k(C,VSTR(t->b->str)); bc_emit(C,BC_SETFIELD,ro,base,0,k); }
+      else{ int ro=bc_reg(C),rk=bc_reg(C); bc_expr(C,t->a,ro); bc_expr(C,t->b,rk); bc_emit(C,BC_SETTABLE,ro,rk,base,0); } }
+    else{ C->failed=1;break; }
+    break;}
   case K_DO: bc_scope(C); bc_block(C,st->body); bc_endscope(C); break;
   case K_IF:{
     int rd=bc_reg(C),jover[33],njover=0;
@@ -1067,9 +1098,9 @@ static void bc_stat(Bc*C,Node*st){
     bc_block(C,st->body);
     int rc=bc_reg(C);
     bc_expr(C,st->a,rc);
+    bc_endscope(C);                     /* capmode: ENVCLOSE after until-eval, before the back-edge */
     int jb=bc_emit(C,BC_TESTN,rc,0,0,0);  /* repeat..until: TESTN loops back while condition is FALSE */
     bc_patch(C,jb,start);
-    bc_endscope(C);
     bc_poploop(C,C->ncode);
     break;}
   case K_NFOR:{
@@ -1080,6 +1111,7 @@ static void bc_stat(Bc*C,Node*st){
     bc_pushloop(C);
     int fp=bc_emit(C,BC_FORPREP,a,0,0,0);
     bc_scope(C);
+    if(C->capmode) bc_emit(C,BC_DECL,a,0,0,bc_kstr(C,st->name));
     if(C->nloc<256){ C->loc[C->nloc].name=st->name; C->loc[C->nloc].reg=a; C->nloc++; }
     bc_block(C,st->body);
     bc_endscope(C);
@@ -1100,6 +1132,7 @@ static void bc_stat(Bc*C,Node*st){
     bc_pushloop(C);
     int gp=bc_emit(C,BC_GFORPREP,a,0,0,0);
     bc_scope(C);
+    if(C->capmode) for(int i=0;i<st->nnames;i++) bc_emit(C,BC_DECL,a+3+i,0,0,bc_kstr(C,st->names[i]));
     for(int i=0;i<st->nnames;i++){ if(C->nloc<256){ C->loc[C->nloc].name=st->names[i]; C->loc[C->nloc].reg=a+3+i; C->nloc++; } }
     bc_block(C,st->body);
     bc_endscope(C);
@@ -1118,7 +1151,9 @@ static void bc_stat(Bc*C,Node*st){
     if(lastmulti) bc_expr_multi(C,V[n-1],base+n-1);
     bc_emit(C,BC_RETURN,base,(n-(lastmulti?1:0))+1,0,lastmulti);
     break;}
-  case K_BREAK:{ if(!C->nloops){C->failed=1;break;} struct{int brk[32];int nbrk;}*L=(void*)&C->loops[C->nloops-1]; if(L->nbrk<32)L->brk[L->nbrk++]=bc_jmp(C); break; }
+  case K_BREAK:{ if(!C->nloops){C->failed=1;break;}
+    if(C->capmode){ int open=C->depth-C->loops[C->nloops-1].envmark; for(int i=0;i<open;i++) bc_emit(C,BC_ENVCLOSE,0,0,0,0); }
+    if(C->loops[C->nloops-1].nbrk<32)C->loops[C->nloops-1].brk[C->loops[C->nloops-1].nbrk++]=bc_jmp(C); break; }
   default: C->failed=1;
   }
 }
@@ -1126,8 +1161,8 @@ static void bc_block(Bc*C,Node*blk){ if(blk)for(int i=0;i<blk->nlist;i++) bc_sta
 
 static Proto* bc_build(State*S,Func*fn){
   if(!fn||!fn->body||fn->vararg) return NULL;
-  if(bc_has_nested(fn->body)) return NULL;
   Bc C; memset(&C,0,sizeof(C)); C.S=S; C.fn=fn;
+  C.capmode=bc_has_nested(fn->body);
   if(fn->body->line>0)C.curline=fn->body->line;
   Proto*p=xalloc(S,sizeof(Proto)); memset(p,0,sizeof(*p));
   bc_scope(&C);
@@ -1136,7 +1171,10 @@ static Proto* bc_build(State*S,Func*fn){
   C.reg=fn->nparam;
   bc_block(&C,fn->body);
   bc_endscope(&C);
-  if(!C.failed && (C.ncode==0 || C.code[C.ncode-1].op!=BC_RETURN)) bc_emit(&C,BC_RETURN,0,1,0,0);
+  /* always emit the epilogue: a trailing BC_RETURN may sit inside a conditional
+   * block (e.g. `if c then return x end`), so "last op is RETURN" does NOT prove
+   * the fallthrough path is unreachable */
+  if(!C.failed) bc_emit(&C,BC_RETURN,0,1,0,0);
   if(!C.failed && C.reg>BC_MAXREG) C.failed=1;
   if(C.failed || !C.ncode){ free(C.code);free(C.lines);free(C.imm);free(C.k); return NULL; }
   p->code=xalloc(S,(size_t)C.ncode*sizeof(BIns)); memcpy(p->code,C.code,(size_t)C.ncode*sizeof(BIns));
@@ -1150,6 +1188,8 @@ static Proto* bc_build(State*S,Func*fn){
   p->nparam=fn->nparam;
   p->maxstack=C.maxreg+1;
   p->defline=fn->line;
+  p->uses_env=C.capmode;
+  if(C.nsubs){ p->subs=xalloc(S,(size_t)C.nsubs*sizeof(Node*)); memcpy(p->subs,C.subs,(size_t)C.nsubs*sizeof(Node*)); p->nsubs=C.nsubs; }
   free(C.code); free(C.lines); free(C.imm); free(C.k);
   return p;
 }
@@ -1174,7 +1214,12 @@ static Value vm_call(State*S,Proto*p,Closure*cl,int argc,Value*argv){
   if(p->defline>0) snprintf(nm,sizeof(nm),"fn@%d",p->defline); else snprintf(nm,sizeof(nm),"fn");
   if(S->nstack>0) dbg_touch_top(S,S->curLine);
   dbg_push_frame(S,nm,S->curLine,p->defline);
-  if(cl&&cl->f&&cl->f->env) S->cur_env=cl->f->env;
+  Env*cur=cl&&cl->f&&cl->f->env?cl->f->env:S->globals;
+  if(p->uses_env){
+    cur=newEnv(S,cur);
+    if(cl&&cl->f) for(int i=0;i<p->nparam;i++) envDeclareFn(S,cur,cl->f->params[i], i<argc?argv[i]:VNIL);
+  }
+  S->cur_env=cur;
   int pc=0,mrc=0;
   Value ret=VNIL;
   BIns in={0,0,0,0};
@@ -1189,7 +1234,8 @@ static Value vm_call(State*S,Proto*p,Closure*cl,int argc,Value*argv){
     &&L_BC_ADD,&&L_BC_SUB,&&L_BC_MUL,&&L_BC_DIV,&&L_BC_MOD,&&L_BC_POW,&&L_BC_IDIV,&&L_BC_BAND,&&L_BC_BOR,&&L_BC_BXOR,&&L_BC_SHL,&&L_BC_SHR,
     &&L_BC_UNM,&&L_BC_BNOT,&&L_BC_NOT,&&L_BC_LEN,&&L_BC_CONCAT,&&L_BC_EQ,&&L_BC_LT,&&L_BC_LE,
     &&L_BC_TEST,&&L_BC_TESTN,&&L_BC_JMP,&&L_BC_CALL,&&L_BC_RETURN,&&L_BC_EXPAND,&&L_BC_NEWTABLE,&&L_BC_TSETMULT,&&L_BC_INC,
-    &&L_BC_FORPREP,&&L_BC_FORLOOP,&&L_BC_GFORPREP,&&L_BC_GFORLOOP};
+    &&L_BC_FORPREP,&&L_BC_FORLOOP,&&L_BC_GFORPREP,&&L_BC_GFORLOOP,
+    &&L_BC_ENVOPEN,&&L_BC_ENVCLOSE,&&L_BC_DECL,&&L_BC_GETENV,&&L_BC_SETENV,&&L_BC_CLOSURE};
 #define BC_OP(n) L_##n
 #define BC_AGAIN() do{ \
     if(S->cancel_flag) lx_rt_error(S,"cancelled by user"); \
@@ -1296,6 +1342,20 @@ static Value vm_call(State*S,Proto*p,Closure*cl,int argc,Value*argv){
       for(int i=0;i<nv;i++) BVR(in.a+3+i)=S->retbuf[i];
       for(int i=nv;i<nn;i++) BVR(in.a+3+i)=VNIL;
       pc+=(short)p->imm[pc]+1; BC_AGAIN(); }
+    BC_OP(BC_ENVOPEN): cur=newEnv(S,cur); S->cur_env=cur; BC_NEXT();
+    BC_OP(BC_ENVCLOSE): cur=cur->parent?cur->parent:cur; S->cur_env=cur; BC_NEXT();
+    BC_OP(BC_DECL): envDeclS(S,cur,p->k[p->imm[pc]].u.s,BVR(in.a)); BC_NEXT();
+    BC_OP(BC_GETENV): BVR(in.a)=envGetS(S,cur,p->k[p->imm[pc]].u.s); BC_NEXT();
+    BC_OP(BC_SETENV): envAssignS(S,cur,p->k[p->imm[pc]].u.s,BVR(in.a)); BC_NEXT();
+    BC_OP(BC_CLOSURE):{
+      Node*e=p->subs[p->imm[pc]];
+      Func*fn=xalloc(S,sizeof(Func));
+      fn->nparam=e->nnames; fn->params=e->names; fn->vararg=e->vararg;
+      fn->body=e->body; fn->env=cur;
+      fn->line=e->line>0?e->line:(e->body&&e->body->line>0?e->body->line:S->curLine);
+      fn->bc=NULL; fn->bc_tried=0;
+      Closure*c2=xalloc(S,sizeof(Closure)); c2->f=fn;
+      BVR(in.a)=VFN(c2); BC_NEXT();}
     BC_OP(BC_RETURN):{
       int n2=in.b-1+(p->imm[pc]?mrc:0);
       if(n2>64)n2=64;
