@@ -2,9 +2,9 @@
  * Same Array<String>{status, error, treeJson} convention as luax_jni.c /
  * qjs_jni.c so the Kotlin host treats all engines uniformly.
  *
- * Note: the MicroPython facade keeps its runtime state process-global
- * (g_active), so exactly ONE engine handle may exist per process; the
- * Kotlin host enforces single-instance usage on its dedicated thread.
+ * Note: each handle owns an independent MicroPython ctx (mp_state_ctx is
+ * swapped under a mutex inside the facade), so several engines may coexist
+ * per process; each Kotlin host still pins its engine to one worker thread.
  */
 #include <jni.h>
 #include <stdlib.h>
@@ -104,6 +104,16 @@ JNIEXPORT void JNICALL
 Java_dev_luaxide_engine_PyNative_nativeClearCancel(JNIEnv* env, jclass clazz, jlong handle) {
     MpyX* x = (MpyX*)(intptr_t)handle;
     if (x) mpyx_clear_cancel(x);
+}
+
+JNIEXPORT void JNICALL
+Java_dev_luaxide_engine_PyNative_nativeSetModroot(JNIEnv* env, jclass clazz, jlong handle, jstring path) {
+    MpyX* x = (MpyX*)(intptr_t)handle;
+    if (!x) return;
+    if (!path) { mpyx_set_modroot(x, ""); return; }
+    const char* c = (*env)->GetStringUTFChars(env, path, NULL);
+    mpyx_set_modroot(x, c ? c : "");
+    if (c) (*env)->ReleaseStringUTFChars(env, path, c);
 }
 
 JNIEXPORT void JNICALL

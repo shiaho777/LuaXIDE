@@ -212,6 +212,7 @@ class BuildPipeline(
         if (entryFile.endsWith(".py")) {
             val engine = PyEngineHost()
             try {
+                if (srcDir.isDirectory) engine.setModuleRoot(srcDir.absolutePath)
                 val result = engine.run(src)
                 if (!result.ok) {
                     val msg = result.error ?: "validation failed"

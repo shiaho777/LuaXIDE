@@ -70,6 +70,8 @@ add_library(luaxpy SHARED
     ${MPY_CORE_SRC}
     ${MPY_SHARED_SRC}
     ${MPY_PORT_SRC}
+    "${ENGINE_PY_DIR}/extmod/modre.c"
+    "${ENGINE_PY_DIR}/extmod/modjson.c"
 )
 
 target_include_directories(luaxpy PRIVATE

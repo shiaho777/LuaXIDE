@@ -25,6 +25,11 @@ void  mpyx_free(MpyX* x);
 int  mpyx_run(MpyX* x, const char* src, char* err, size_t errlen);
 int  mpyx_invoke(MpyX* x, int handler_id, const char* arg, char* err, size_t errlen);
 
+/* lx_set_modroot counterpart: dir appended to sys.path before each run so
+ * `import helper` resolves sibling files next to the entry point. */
+void        mpyx_set_modroot(MpyX* x, const char* path);
+const char* mpyx_modroot(MpyX* x);
+
 const char* mpyx_last_json(MpyX* x);
 const char* mpyx_last_output(MpyX* x);
 void        mpyx_clear_output(MpyX* x);

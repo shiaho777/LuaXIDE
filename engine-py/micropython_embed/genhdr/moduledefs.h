@@ -24,7 +24,17 @@ extern const struct _mp_obj_module_t mp_module_sys;
     MODULE_DEF___MAIN__ \
 // MICROPY_REGISTERED_MODULES
 
+// LuaXIDE additions: vendored extmod modules registered manually (the
+// embed tree is built without makemoduledefs.py, so MP_REGISTER_* expand
+// to nothing — entries below mirror what the generator would emit for
+// MP_REGISTER_EXTENSIBLE_MODULE).
+extern const struct _mp_obj_module_t mp_module_json;
+extern const struct _mp_obj_module_t mp_module_re;
+extern const struct _mp_obj_module_t mp_module_io;
 #define MICROPY_REGISTERED_EXTENSIBLE_MODULES \
+    { MP_ROM_QSTR(MP_QSTR_json), MP_ROM_PTR(&mp_module_json) }, \
+    { MP_ROM_QSTR(MP_QSTR_re), MP_ROM_PTR(&mp_module_re) }, \
+    { MP_ROM_QSTR(MP_QSTR_io), MP_ROM_PTR(&mp_module_io) }, \
 // MICROPY_REGISTERED_EXTENSIBLE_MODULES
 
 extern void mp_module_sys_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest);

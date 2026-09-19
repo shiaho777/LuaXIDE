@@ -16,6 +16,7 @@ internal object PyNative {
     external fun nativeInvoke(handle: Long, handlerId: Int, payload: String?): Array<String>
     external fun nativeCancel(handle: Long)
     external fun nativeClearCancel(handle: Long)
+    external fun nativeSetModroot(handle: Long, path: String)
     external fun nativeSetStepLimit(handle: Long, steps: Long)
     external fun nativeTakeOutput(handle: Long): String
     external fun nativeClearOutput(handle: Long)
