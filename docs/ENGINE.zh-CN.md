@@ -23,14 +23,17 @@
 ```bash
 make -C engine test          # 必须输出 ALL TESTS PASSED;含:
                              #   t1–t28 功能/契约测试、bc-diff 差分(11 脚本)、
+                             #   bc-fuzz(种子化生成程序,VM 开/关输出比对)、
                              #   doc-check(LUAX.md 代码块逐个实跑)、CLI 冒烟
 ./engine/lx --ui foo.lua      # 打印 ---OUTPUT--- / ---TREE---
 ./engine/lx --bc-dump f.lua   # 反汇编;LUAX_NO_BC=1 关 VM;LUAX_BC_STATS=1 看参与度
+make -C engine bc-fuzz FUZZ_N=200 FUZZ_SEED=7   # 更深的分歧扫描;失败程序保留在 FUZZ_DIR
 ```
 
 约定:
 
 - **加引擎能力必须加 `t*` 测试**(AGENTS.md 硬规则);新标准库函数:正向断言进 t6/t14/t25,负例(bad argument)进 t14 的 `musterr` 列表
+- VM/tree-walk 语义修复在 t25 加回归断言(多值展开、循环控制流);bc-fuzz 扫更广表达式空间——命中分歧时保留的程序 + seed 就是复现
 - 涉及 invoke/UI 契约的写 C driver(范式见 `t26_invoke_tree.c`:run → 找 handler id → invoke → 断言 JSON 变化)
 - 纯库函数天然 VM 无关,差分免费;改执行语义(名字解析/调用约定)必须过差分
 - **改 LUAX.md 的示例 = 改测试**:doc-check 会逐块实跑

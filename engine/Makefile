@@ -19,6 +19,11 @@ DRIVERS = t9-debug t10-debug t11-watch t12-err t13-log \
 BC_DIFF_SCRIPTS = t1_hello t2_arith t3_control t4_funcs t5_tables \
                   t6_strings t7_meta t14_lang t16_modules t25_bytecode t27_patterns
 
+# deterministic program fuzzing for VM/tree-walk divergence (see tests/fuzz_gen.py)
+FUZZ_N ?= 60
+FUZZ_SEED ?= 20260919
+FUZZ_DIR ?= /tmp/lx_fuzz_out
+
 test: $(LX) $(DRIVERS)
 	@echo "=== t1 hello ==="        && ./$(LX) tests/t1_hello.lua
 	@echo "=== t2 arith ==="        && ./$(LX) tests/t2_arith.lua
@@ -50,6 +55,7 @@ test: $(LX) $(DRIVERS)
 	@echo "=== fail-grep ==="       && ! ./$(LX) tests/t25_bytecode.lua | grep -q "^FAIL " && ! ./$(LX) tests/t27_patterns.lua | grep -q "^FAIL " || { echo "silent FAIL line in assert-script output"; exit 1; }
 	@echo "=== bc engagement ==="   && LUAX_BC_STATS=1 ./$(LX) tests/t25_bytecode.lua >/dev/null 2>.bc_stats; grep -qE "bc: [1-9][0-9]* compiled" .bc_stats || { echo "bytecode VM did not engage:"; cat .bc_stats; rm -f .bc_stats; exit 1; }; rm -f .bc_stats; echo "vm engaged"
 	@echo "=== bc differential ===" && for t in $(BC_DIFF_SCRIPTS); do ./$(LX) tests/$$t.lua 2>&1 | sed -E 's/0x[0-9a-f]+/0xADDR/g' >/tmp/.lx_bc_a; LUAX_NO_BC=1 ./$(LX) tests/$$t.lua 2>&1 | sed -E 's/0x[0-9a-f]+/0xADDR/g' >/tmp/.lx_bc_b; diff /tmp/.lx_bc_a /tmp/.lx_bc_b >/dev/null || { echo "BC DIVERGENCE in $$t:"; diff /tmp/.lx_bc_a /tmp/.lx_bc_b | head -10; rm -f /tmp/.lx_bc_a /tmp/.lx_bc_b; exit 1; }; done; rm -f /tmp/.lx_bc_a /tmp/.lx_bc_b; echo "bc-diff ok ($(words $(BC_DIFF_SCRIPTS)) scripts)"
+	@echo "=== bc fuzz ==="        && $(MAKE) -s bc-fuzz
 	@echo "=== doc examples ==="     && python3 tests/doc_check.py
 	@echo "=== cli ==="             && ./$(LX) -e "print('cli-ok')" | grep -q cli-ok
 	@echo "=== cli ui ==="          && ./$(LX) --ui -e "return require('ui').app{title='C'}" | grep -q '"type":"app"'
@@ -102,10 +108,21 @@ t28-hardening: lx.c lx.h tests/t28_hardening.c
 clean:
 	rm -f $(LX) $(DRIVERS)
 
+bc-fuzz: $(LX)
+	@rm -rf $(FUZZ_DIR) && python3 tests/fuzz_gen.py --n $(FUZZ_N) --seed $(FUZZ_SEED) --out $(FUZZ_DIR) >/dev/null
+	@for f in $(FUZZ_DIR)/*.lua; do \
+	  LUAX_BC_STATS=1 ./$(LX) $$f >/dev/null 2>>$(FUZZ_DIR)/.stats; \
+	  ./$(LX) $$f 2>&1 | sed -E 's/0x[0-9a-f]+/0xADDR/g' >/tmp/.lx_bc_a; \
+	  LUAX_NO_BC=1 ./$(LX) $$f 2>&1 | sed -E 's/0x[0-9a-f]+/0xADDR/g' >/tmp/.lx_bc_b; \
+	  diff /tmp/.lx_bc_a /tmp/.lx_bc_b >/dev/null || { echo "BC DIVERGENCE in $$f (seed $(FUZZ_SEED)) — program kept at $(FUZZ_DIR):"; diff /tmp/.lx_bc_a /tmp/.lx_bc_b | head -10; rm -f /tmp/.lx_bc_a /tmp/.lx_bc_b; exit 1; }; \
+	done; rm -f /tmp/.lx_bc_a /tmp/.lx_bc_b
+	@grep -qE "bc: [1-9][0-9]* compiled" $(FUZZ_DIR)/.stats || { echo "fuzz programs did not engage the VM"; exit 1; }
+	@rm -rf $(FUZZ_DIR); echo "bc-fuzz ok ($(FUZZ_N) programs, seed $(FUZZ_SEED))"
+
 bench-bc: $(LX)
 	@echo "== tree-walk (LUAX_NO_BC=1) =="
 	@LUAX_NO_BC=1 ./$(LX) tests/bench_bc.lua
 	@echo "== bytecode VM =="
 	@./$(LX) tests/bench_bc.lua
 
-.PHONY: test bench-bc clean all
+.PHONY: test bc-fuzz bench-bc clean all
