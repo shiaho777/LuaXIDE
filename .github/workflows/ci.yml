@@ -50,6 +50,10 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v3
+        with:
+          # 'tools' no longer exists in the SDK repository for cmdline-tools 16+;
+          # only install packages that still resolve.
+          packages: platform-tools
       - uses: gradle/actions/setup-gradle@v4
       - name: Check :app/:runtime paired files are byte-identical
         run: ./scripts/check_sync.sh
