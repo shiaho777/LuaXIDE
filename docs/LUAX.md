@@ -200,7 +200,7 @@ return view
 --    改的变量无人再读,屏幕永远不变。
 ```
 
-Event payload semantics: `input.onSubmit(text)` receives the field text; `switch.onToggle(v)` receives `"true"`/`"false"`; other events take no argument. `tonumber` it yourself when you need a number.
+Event payload semantics: `input.onChange(text)` receives each edit and `input.onSubmit(text)` receives keyboard confirmation, both as field-text strings; `slider.onChange(v)` receives the numeric value as a string; `switch.onToggle(v)` receives `"true"`/`"false"`. Click and timer events take no argument. Use `tonumber(v)` for slider values and `v == "true"` for switches.
 
 ### 4.3 onTick / interval
 
@@ -208,25 +208,109 @@ Two props on a node — `onTick = function() ... end` and `interval = 260` (mill
 
 ## 5. UI DSL
 
-`ui.<type>{ props..., children... }` is literally **an ordinary Lua table tagged `__ui = "<type>"`**. String keys are props; the array part (1..#t) is children; function props register as handlers. The 16 constructors:
+`ui.<type> { props..., children... }` tags an ordinary Lua table with `__ui = "<type>"`. String keys are props; array entries are children; function props become handlers. **Only text accepts string-constructor sugar**: `ui.text('hi')` equals `ui.text { text = "hi" }`. A string child, as in `ui.column { "hi" }`, serializes as a text node; it does not supply a button's label. Other constructors still take prop tables.
 
-| Constructor | Props (type / default) | Notes |
+### Components (19)
+
+Defaults below apply when the prop is absent. Dimensions are dp except text size (sp).
+
+| Constructor | Canonical props and defaults | Behavior |
 |---|---|---|
-| `app` | `title` (str, "") | root node; non-empty title renders a header |
-| `column` / `row` | `spacing` (num, 8dp) | vertical / horizontal container (row children center vertically) |
-| `text` | `text` (str, ""), `size` (num, 16sp), `color` (#hex), `font` (asset path), `animate` (bool, true) | `animate=false` takes the no-animation path (boards/clocks) |
-| `button` | `text` (str), `onClick` (handler) | children are ignored |
-| `card` | `spacing` (8dp), `radius` (16dp), `padding` (16dp) | card container |
-| `input` | `value` (str), `label` (str), `onSubmit` (handler) | **onSubmit receives the field text** (keyboard confirm) |
-| `image` | `src` (str), `size` (num, 96dp) | resolved via AssetResolver; failures show "missing" |
-| `spacer` | `size` (num, 8dp) | height only |
-| `divider` | — | horizontal rule |
-| `scrollview` | `spacing` (8dp) | vertical scrolling |
-| `list` / `listitem` | `spacing` / `title`, `subtitle`, `onClick` | listitem rows are clickable |
-| `stack` / `page` | `selected` (str) / `key` | stack selects the page by key; page only valid as a stack child |
-| `switch` | `label`, `checked` (bool), `onToggle` (handler) | **onToggle receives "true"/"false"** |
+| `app` | `title = ""` | Root; a non-empty title renders a header |
+| `column` / `row` | `spacing = 8` | Vertical / horizontal layout; row children default to vertical center |
+| `box` | Common styles below | Overlapping children, default top-start |
+| `text` | `text = ""`, `size = 16`, `color`, `font`, `bold = false`, `animate = true` | Asset font path; `animate = false` disables text-swap animation |
+| `button` | `text = "button"`, `onClick` | No payload; children ignored |
+| `card` | `spacing = 8`, `radius = 16`, `padding = 16` | Vertical card content |
+| `input` | `value = ""`, `label = "input"`, `onChange`, `onSubmit` | Single line; every edit / keyboard confirmation sends field text as a string |
+| `image` | `src = ""`, `size = 96` | Asset image, cropped to fit; unresolved source shows `missing` |
+| `spacer` | `size = 8` | Default height |
+| `divider` | `color` | Horizontal rule |
+| `scrollview` | `spacing = 8` | Vertical scrolling with a finite viewport |
+| `list` | `spacing = 8` | Plain Column, not lazy/recycled and not an independent scroller |
+| `listitem` | `title = ""`, `subtitle = ""`, `onClick` | Optional clickable row and children; no click payload |
+| `stack` / `page` | `selected = ""` / `key`, `spacing = 8` | Selects by **page.key only**, otherwise first page; without pages, renders all children |
+| `switch` | `label = "switch"`, `checked = false`, `onToggle` | Sends `"true"` / `"false"`, not a boolean |
+| `slider` | `from = 0`, `to = 1`, `value = from`, `step = 0`, `onChange` | Sends numeric value as a **string**; convert with `tonumber` |
+| `progress` | `value`, `color` | Linear bar: value clamped to 0..1; **absent value = indeterminate** |
 
-Common: `key`/`id` is the diff identity (drives animation). Serialization is `{type, props, children}` JSON; prop key order is hash-slot order (test assertions must use substring matching). The full render contract (the authoritative prop table shared by both modules) evolves with [PLATFORM_ABI.md](PLATFORM_ABI.md) §6.
+Slider values and range must be finite, with `to > from` and a finite non-negative step (the range must also be representable by the host float slider). `step = 0` is continuous; positive step is a **numeric increment from `from`**, not a tick count. Values clamp to the range and snap to the nearest increment; `to` stays reachable even when the range is not divisible by step. Invalid parameters display a diagnostic.
+
+### Common styles and child layout
+
+- `width`, `height`, `padding`, `radius`: finite non-negative **numbers in dp**, subject to parent constraints; invalid values are ignored. No `"100%"` / `"fill"` sizing syntax. Radius clips corners; padding defaults to 0, except card's 16dp interior default (applied once).
+- `background`: `#RRGGBB` / `#AARRGGBB`; card/button/input/listitem/image apply the color through their own surfaces. Text/divider/progress `color` uses the same format.
+- `weight`: finite positive child weight in **Row/Column scope**, sharing horizontal/vertical remaining space. The main axis must be bounded; weight is ignored in unbounded scroll content. Box does not use weight.
+- `align` is a **child** prop, not a container-wide setting. Row scope: `top`, `center`, `bottom`. Column scope: `start` (`left` also accepted), `center`, `end`. Box scope: `topleft` (default), `top`, `topright`, `left`, `center`, `right`, `bottomleft`, `bottom`, `bottomright`. Other containers rendering children in a Column use that scope's rules; scope-inapplicable values are ignored.
+- Node identity uses `key`, then `id`, then structural position. A stable explicit identity preserves state when siblings reorder, but changing the component type creates fresh state. Dynamic lists should give each child a stable key; text/content is never used as an automatic key. Duplicate explicit keys/ids among siblings show `duplicate child key '<value>' at <parent path>` instead of rendering that conflicting child list. Keys may repeat under different parents. This does **not** make `page.id` a selector: set `page.key` for `stack.selected`.
+- Host vertical scrolling is independent of a Row child's horizontal weight. Unbounded vertical weights and explicit unbounded scrollviews request a finite host viewport; an explicit container height contains that requirement. Only the selected stack page participates in this decision.
+
+Renderer regression tests: `./gradlew :app:testDebugUnitTest` runs identity and viewport policy tests without a device. `./gradlew :app:connectedDebugAndroidTest` runs Compose layout, keyed-input and nested-scroll tests on an available dedicated device. Building the test APK alone does not validate layout.
+
+A nested `scrollview` needs a **finite height**, supplied on itself or by an actually constraining parent. With unbounded height it displays `scrollview needs a bounded height. Set height on this nested scrollview or its parent.` rather than scrolling. Arbitrary nesting is not guaranteed. `list` remains a plain Column; use a bounded scrollview when independent scrolling is needed.
+
+### Breaking migration: canonical names only
+
+Removed prop/event fallback chains have **no compatibility shim**. Rewrite aliases explicitly rather than expecting a fallback:
+
+| Old spelling / usage | Canonical replacement |
+|---|---|
+| `label` / `value` / `content` used as text or button text | `text` |
+| `fontSize`, `fontPath` | text `size`, `font` |
+| `onTap` / `onPress` | button/listitem `onClick` |
+| input `text`, `placeholder`, `onEnter` | `value`, `label`, `onSubmit` |
+| switch `value`, `text`, `onChange` / `onCheckedChange` | `checked`, `label`, **`onToggle`** |
+| image `source` / `path`, container `gap`, card `cornerRadius` / `pad` | `src`, `spacing`, `radius` / `padding` |
+| listitem `text` / `description` | `title` / `subtitle` |
+| stack `value` / `active`, page `id` used for selection | `selected`, page **`key`** |
+| slider `min` / `max` / `steps` / `onValueChanged` | `from` / `to` / `step` (increment, not count) / `onChange` |
+
+`input.onChange` and `slider.onChange` are canonical; `switch.onChange` is not. Use the component table for all other names and defaults.
+
+### Stateful example
+
+Return a view function so every event rebuilds the tree from the updated state (§4.2):
+
+```lua
+local ui = require("ui")
+local amount = 0.4
+local name = ""
+local enabled = false
+local function view()
+  return ui.app {
+    title = "Controls",
+    ui.column {
+      spacing = 12,
+      ui.text('hi'),
+      "String children become text nodes",
+      ui.row { width = 280,
+        ui.text { text = "A", weight = 1 },
+        ui.text { text = "B", weight = 2, align = "bottom" },
+      },
+      ui.box { width = 280, height = 64, background = "#202020", radius = 8,
+        ui.text { text = "Overlay", bold = true, color = "#FFFFFF",
+                  padding = 8, align = "bottomright" },
+      },
+      ui.input { label = "Name", value = name,
+        onChange = function(text) name = text end,
+        onSubmit = function(text) print(text) end,
+      },
+      ui.slider { value = amount, from = 0, to = 1, step = 0.1,
+        onChange = function(value) amount = tonumber(value) end,
+      },
+      ui.progress { value = amount },
+      ui.progress {}, -- absent value = indeterminate
+      ui.switch { label = "Enabled", checked = enabled,
+        onToggle = function(value) enabled = value == "true" end,
+      },
+      ui.text { text = name .. " / " .. amount },
+    },
+  }
+end
+return view -- return the function, not view(): events rebuild from state
+```
+
+Serialization is `{type, props, children}` JSON; prop order is unspecified, so assertions must not depend on it. See [PLATFORM_ABI.md](PLATFORM_ABI.md) §6 for the cross-language contract.
 
 ## 6. Metatables
 

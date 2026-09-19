@@ -941,7 +941,7 @@ static void bc_expr(Bc*C,Node*e,int dst){
     int ra=bc_reg(C),rb=bc_reg(C);
     bc_expr(C,e->a,ra); bc_expr(C,e->b,rb);
     int o = op=='+'?BC_ADD: op=='-'?BC_SUB: op=='*'?BC_MUL: op=='/'?BC_DIV: op=='%'?BC_MOD: op=='^'?BC_POW: op==T_IDIV?BC_IDIV:
-            op=='|'?BC_BAND: op=='&'?BC_BOR: op=='~'?BC_BXOR: op==T_SHL?BC_SHL: op==T_SHR?BC_SHR:
+            op=='|'?BC_BOR: op=='&'?BC_BAND: op=='~'?BC_BXOR: op==T_SHL?BC_SHL: op==T_SHR?BC_SHR:
             op==T_CONCAT?BC_CONCAT: op==T_EQ?BC_EQ: op==T_NE?BC_EQ: op=='<'?BC_LT: op==T_LE?BC_LE:
             op=='>'?BC_LT: op==T_GE?BC_LE:-1;
     if(o<0){C->failed=1;break;}
@@ -1775,7 +1775,12 @@ static void regFn(State*S,Table*t,const char*name,Value(*fn)(State*,int,Value*))
 /* ---------- declarative ui library ---------- */
 /* ui.<type>{ props..., children... } → tags a table with __ui=<type> and returns it. */
 static Value ui_ctor(State*S,const char*type,int argc,Value*argv){
-  Table*t = (argc>0 && argv[0].tag==T_TAB) ? argv[0].u.t : newTable(S);
+  /* Only ui.text accepts string shorthand; other constructors keep their contract. */
+  Table*t;
+  if(argc>0 && argv[0].tag==T_STR && strcmp(type,"text")==0){
+    t=newTable(S);
+    tset(S,t,VSTR(newStr(S,"text",4)),argv[0]);
+  } else t = (argc>0 && argv[0].tag==T_TAB) ? argv[0].u.t : newTable(S);
   tset(S,t,VSTR(newStr(S,"__ui",4)),VSTR(newStr(S,type,strlen(type))));
   S->nret=1; S->retbuf[0]=VTAB(t); return S->retbuf[0];
 }
@@ -1783,6 +1788,7 @@ static Value ui_ctor(State*S,const char*type,int argc,Value*argv){
 UICTOR(app) UICTOR(column) UICTOR(row) UICTOR(text) UICTOR(button) UICTOR(card)
 UICTOR(input) UICTOR(image) UICTOR(spacer) UICTOR(divider) UICTOR(scrollview)
 UICTOR(list) UICTOR(listitem) UICTOR(stack) UICTOR(page) UICTOR(switch)
+UICTOR(box) UICTOR(slider) UICTOR(progress)
 #undef UICTOR
 
 static Table* package_loaded(State*S){
@@ -1942,10 +1948,19 @@ static void jnode(State*S,Table*t,int depth){
     jstr(S,k.u.s->p,k.u.s->len); jappend(S,":",1); jvalue(S,t->e[i].v,depth+1);
   }
   jappend(S,"}",1);
-  /* children: sequence part entries that are ui nodes */
+  /* children: sequence part entries that are ui nodes; a bare string in a
+   * child position is sugar for a text node (parity with JS/Py engines) */
   jappend(S,",\"children\":[",13);
   int len=tlen(t); int cfirst=1;
-  for(int i=1;i<=len;i++){ Value c=tget(t,VNUM(i)); if(c.tag!=T_TAB)continue;
+  for(int i=1;i<=len;i++){ Value c=tget(t,VNUM(i));
+    if(c.tag==T_STR){
+      if(!cfirst)jappend(S,",",1); cfirst=0;
+      jappend(S,"{\"type\":\"text\",\"props\":{\"text\":",(int)sizeof("{\"type\":\"text\",\"props\":{\"text\":")-1);
+      jstr(S,c.u.s->p,c.u.s->len);
+      jappend(S,"},\"children\":[]}",(int)sizeof("},\"children\":[]}")-1);
+      continue;
+    }
+    if(c.tag!=T_TAB)continue;
     Value cu=tget(c.u.t,VSTR(newStr(S,"__ui",4))); if(cu.tag!=T_STR)continue;
     if(!cfirst)jappend(S,",",1); cfirst=0; jnode(S,c.u.t,depth+1);
   }
@@ -2077,6 +2092,7 @@ static void openLibs(State*S){
   regFn(S,ui,"divider",ui_divider); regFn(S,ui,"scrollview",ui_scrollview);
   regFn(S,ui,"list",ui_list); regFn(S,ui,"listitem",ui_listitem);
   regFn(S,ui,"stack",ui_stack); regFn(S,ui,"page",ui_page); regFn(S,ui,"switch",ui_switch);
+  regFn(S,ui,"box",ui_box); regFn(S,ui,"slider",ui_slider); regFn(S,ui,"progress",ui_progress);
   lx_dostring(S,STRING_PRELUDE,NULL,0); /* string.gmatch (defined in Lua over C find) */
 }
 

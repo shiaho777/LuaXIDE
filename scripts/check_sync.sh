@@ -17,6 +17,8 @@ src/main/java/dev/luaxide/engine/JsNative.kt
 src/main/java/dev/luaxide/engine/PyNative.kt
 src/main/java/dev/luaxide/engine/UiNode.kt
 src/main/java/dev/luaxide/ui/runtime/ComponentRegistry.kt
+src/main/java/dev/luaxide/ui/runtime/NodeProps.kt
+src/main/java/dev/luaxide/ui/runtime/TreeReconciliation.kt
 src/main/java/dev/luaxide/ui/runtime/UiTreeRenderer.kt
 src/main/java/dev/luaxide/ui/theme/Color.kt
 src/main/java/dev/luaxide/ui/theme/Theme.kt

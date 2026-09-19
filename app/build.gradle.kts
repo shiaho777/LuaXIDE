@@ -79,5 +79,9 @@ dependencies {
     implementation(files("libs/ARSCLib-1.4.0.jar"))
     implementation("com.android.tools.build:apksig:8.7.3")
 
+    testImplementation(libs.junit4)
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation(libs.androidx.ui.test.junit4)
+    debugImplementation(libs.androidx.ui.test.manifest)
     debugImplementation(libs.androidx.ui.tooling)
 }

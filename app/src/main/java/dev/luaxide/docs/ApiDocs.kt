@@ -56,8 +56,8 @@ object ApiDocs {
             id = "ui.text",
             category = "ui",
             name = "ui.text",
-            signature = "ui.text { text, size?, font? }",
-            summary = "文本。font 指向工程内字体文件路径。",
+            signature = "ui.text { text, size?, font?, bold? } / ui.text(\"hi\")",
+            summary = "文本。仅 text 支持字符串构造糖;字符串子项也转为 text。font 为工程字体路径。",
             example = """ui.text {
   text = "你好",
   size = 18,
@@ -65,7 +65,8 @@ object ApiDocs {
 }""",
             props = listOf(
                 "text" to "显示文本",
-                "size" to "字号",
+                "size" to "字号 (sp，默认 16)",
+                "bold" to "粗体，默认 false",
                 "font" to "字体相对路径 (ttf/otf)",
                 "color" to "文字颜色 (#RRGGBB / #AARRGGBB)",
                 "animate" to "false 关闭内容动画(棋盘/时钟等高频更新)",
@@ -104,14 +105,20 @@ object ApiDocs {
             id = "ui.input",
             category = "ui",
             name = "ui.input",
-            signature = "ui.input { label?, value?, onSubmit? }",
-            summary = "单行输入框。onSubmit 在键盘确认时触发,收到输入框文本作为参数。",
-            example = """ui.input {
-  label = "名字",
-  value = "",
-  onSubmit = function(text) print("提交: " .. text) end,
-}""",
-            props = listOf("label" to "标签", "value" to "初始值", "onSubmit" to "提交回调(参数为输入文本)"),
+            signature = "ui.input { label?, value?, onChange?, onSubmit? }",
+            summary = "单行输入。onChange 每次编辑、onSubmit 键盘确认均传文本字符串。返回 view 函数以更新状态。",
+            example = """local name = ""
+local function view()
+  return ui.app {
+    ui.input { label = "名字", value = name,
+      onChange = function(text) name = text end,
+      onSubmit = function(text) print(text) end,
+    },
+    ui.text(name),
+  }
+end
+return view""",
+            props = listOf("label" to "标签", "value" to "当前文本", "onChange" to "编辑回调(文本字符串)", "onSubmit" to "确认回调(文本字符串)"),
         ),
         ApiDoc(
             id = "ui.image",
@@ -147,8 +154,9 @@ object ApiDocs {
             category = "ui",
             name = "ui.scrollview",
             signature = "ui.scrollview { spacing?, children... }",
-            summary = "可滚动容器。",
+            summary = "纵向滚动，必须有有限高度。嵌套时设置 height 或约束父容器；否则显示诊断，不保证任意嵌套。",
             example = """ui.scrollview {
+  height = 240,
   ui.text { text = "很长内容…" },
 }""",
             props = listOf("spacing" to "子项间距"),
@@ -158,7 +166,7 @@ object ApiDocs {
             category = "ui",
             name = "ui.list",
             signature = "ui.list { spacing?, children... }",
-            summary = "列表容器，子项常用 ui.listitem。",
+            summary = "普通 Column 列表，无懒加载/回收或独立滚动，子项常用 ui.listitem。",
             example = """ui.list {
   ui.listitem { title = "A", subtitle = "详情" },
   ui.listitem { title = "B" },
@@ -183,7 +191,7 @@ object ApiDocs {
             category = "ui",
             name = "ui.stack",
             signature = "ui.stack { selected?, children page... }",
-            summary = "多页面栈，用 selected 切换 page key。",
+            summary = "selected 仅匹配 page.key（不匹配 id），未匹配取首个 page。key/id 仍支持节点身份。",
             example = """ui.stack {
   selected = "home",
   ui.page { key = "home", ui.text { text = "首页" } },
@@ -217,8 +225,44 @@ object ApiDocs {
             props = listOf(
                 "label" to "标签",
                 "checked" to "是否开启",
-                "onToggle / onChange" to "切换回调(参数为新状态字符串)",
+                "onToggle" to "切换回调(参数为新状态字符串)",
             ),
+        ),
+        ApiDoc(
+            id = "ui.box", category = "ui", name = "ui.box",
+            signature = "ui.box { width?, height?, children... }",
+            summary = "叠放容器，子项默认左上；align 选择九宫格位置，Box 不使用 weight。",
+            example = """ui.box { width = 240, height = 80, background = "#202020", radius = 8,
+  ui.text { text = "Overlay", bold = true, color = "#FFFFFF", align = "bottomright" },
+}""",
+            props = listOf("align" to "子项: topleft/top/topright/left/center/right/bottomleft/bottom/bottomright"),
+        ),
+        ApiDoc(
+            id = "ui.slider", category = "ui", name = "ui.slider",
+            signature = "ui.slider { value?, from?, to?, step?, onChange? }",
+            summary = "数值滑杆；from=0，to=1，value=from，step=0 连续。正 step 为从 from 起算的增量，不是刻度数。",
+            example = """local amount = 0.4
+local function view()
+  return ui.app {
+    ui.slider { value = amount, from = 0, to = 1, step = 0.1,
+      onChange = function(value) amount = tonumber(value) end,
+    },
+    ui.progress { value = amount },
+    ui.text { text = tostring(amount) },
+  }
+end
+return view""",
+            props = listOf("value" to "有限数值，截断并吸附到范围", "from" to "起点，默认 0", "to" to "终点，默认 1，必须大于 from", "step" to "有限非负增量，0 为连续；终点仍可到达", "onChange" to "数值字符串回调，用 tonumber 转数值"),
+        ),
+        ApiDoc(
+            id = "ui.progress", category = "ui", name = "ui.progress",
+            signature = "ui.progress { value?, color? }",
+            summary = "线性进度条；value 截断到 0..1，不传 value 为不定态。联动示例见 ui.slider。",
+            example = """ui.column {
+  ui.progress { value = 0.4 },
+  ui.progress {},
+}""",
+            props = listOf("value" to "0..1；缺省不定态", "color" to "#RRGGBB / #AARRGGBB"),
         ),
         ApiDoc(
             id = "print",
@@ -296,7 +340,17 @@ local util = require("lib.util")""",
             summary = "终端命令：清空会话。",
             example = """.clear""",
         ),
-    )
+    ).map { doc ->
+        if (doc.category != "ui") doc else doc.copy(
+            props = doc.props + listOf(
+                "width / height / padding / radius" to "有限非负 dp 数值；受父约束，非法值忽略。padding 默认 0，card 默认 16（一次）",
+                "background" to "#RRGGBB / #AARRGGBB 背景色",
+                "weight / align" to "子项作用域：Row 权重/上下对齐，Column 权重/左右对齐，Box 九宫格；weight 需主轴有界",
+                "key / id" to "节点身份；stack 选页仅认 page.key",
+                "规范名" to "别名回退已移除；switch 用 checked/onToggle，不用 value/onChange。完整迁移见 LUAX §5",
+            ),
+        )
+    }
 
     fun categories(): List<String> = all.map { it.category }.distinct()
 

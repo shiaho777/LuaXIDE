@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
@@ -38,6 +40,7 @@ import dev.luaxide.engine.PyEngineHost
 import dev.luaxide.engine.RunResult
 import dev.luaxide.ui.runtime.Motion
 import dev.luaxide.ui.runtime.RenderTree
+import dev.luaxide.ui.runtime.TreeViewport
 import dev.luaxide.assets.FileAssetResolver
 import dev.luaxide.assets.LocalAssetResolver
 import androidx.compose.runtime.CompositionLocalProvider
@@ -162,7 +165,7 @@ private fun RuntimeApp(bundle: AppBundle) {
     )
     val scroll = rememberScrollState()
 
-    Surface(Modifier.fillMaxSize(), color = cs.background) {
+    Surface(Modifier.fillMaxSize().safeDrawingPadding().imePadding(), color = cs.background) {
         Box(Modifier.fillMaxSize()) {
             if (tree != null) {
                 val rootKey = nodeIdentity(tree, "root")
@@ -175,20 +178,22 @@ private fun RuntimeApp(bundle: AppBundle) {
                             scaleX = contentScale
                             scaleY = contentScale
                             translationY = contentY
-                        }
-                        .verticalScroll(scroll)
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                        },
                 ) {
                     CompositionLocalProvider(
                         LocalAssetResolver provides FileAssetResolver(File(bundle.modRoot.ifBlank { "." })),
                     ) {
-                        RenderTree(
-                            node = tree,
-                            onEvent = { handlerId, payload ->
-                                scope.launch { result = engine.invoke(handlerId, payload) }
-                            },
-                        )
+                        // Shared scroll policy with the IDE preview: trees that declare
+                        // their own scrollers/weights own the finite viewport; plain
+                        // trees keep host scrolling (NodeProps.TreeViewport).
+                        TreeViewport(node = tree) {
+                            RenderTree(
+                                node = tree,
+                                onEvent = { handlerId, payload ->
+                                    scope.launch { result = engine.invoke(handlerId, payload) }
+                                },
+                            )
+                        }
                     }
                 }
                 }

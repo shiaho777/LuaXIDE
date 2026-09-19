@@ -42,7 +42,7 @@ The Kotlin side unifies everything as [`EngineAdapter`](../app/src/main/java/dev
 2. **Per-engine guarantee**: `run` resets the output buffer and step counter at start, and clears any stale cancel flag (a new run is unaffected by an old cancel).
 3. The script's return value decides the first frame:
    - returns a ui tree (Lua: table tagged `__ui`; JS: `{type: string, ...}` object) → serialized as tree JSON;
-   - returns a **function** → remembered as the live view (`app_view` / `__lx_view` / `view()` convention), called immediately to produce the first frame; on later invokes, if the handler does not return a tree it is re-called — identical semantics on all three engines;
+   - returns a **function** → remembered as the live view (`app_view` / `__lx_view` / `view()` convention), called immediately to produce the first frame; on later invokes, if the handler does not return a tree it is re-called — this describes Lua/JS. Python discovers a global `view()` or `_lx_tree` instead (§10);
    - anything else / no return → tree is `null` (Lua) or keeps the previous tree (JS); the host returns to the idle state.
 4. `print` (and equivalent output) is captured into the output buffer, pulled by the host via `last_output` — engines never write to the terminal directly.
 
@@ -51,8 +51,8 @@ The Kotlin side unifies everything as [`EngineAdapter`](../app/src/main/java/dev
 `invoke(handlerId, payload)`:
 
 1. Function props serialize in the tree JSON as `{"__handler": N}`; **ids are re-assigned on every tree rebuild** — the host re-reads them each round.
-2. A non-null `payload` is passed as the handler's first (and only) argument: `input.onSubmit(text)` receives the field text; `switch.onToggle(v)` receives `"true"`/`"false"`; all other events take no argument.
-3. **Re-render decision** (must be identical across the three engines):
+2. A non-null `payload` is passed as the handler's first (and only) argument: `input.onChange(text)` / `input.onSubmit(text)` receive the field text as a string; `slider.onChange(v)` receives the numeric value as a string; `switch.onToggle(v)` receives `"true"`/`"false"`; all other events take no argument.
+3. **Re-render decision** (Lua/JS conformance target; Python limitations in §10):
    - handler returns a ui tree → the new tree replaces the current view (and any stored view function is dropped);
    - handler returns a function → it becomes the new live view and is called immediately to produce the new tree;
    - nil/undefined/non-tree return → **the old tree is retained** (the JS side must not clear the json early; on the Lua side `lx_build_tree` re-serialization guarantees it); if a view function is stored, it is re-called first and then serialized (LUAX.md §4.2 path A).
@@ -61,12 +61,12 @@ The Kotlin side unifies everything as [`EngineAdapter`](../app/src/main/java/dev
 ## 5. Runtime guards
 
 - **Cancel**: `cancel()` sets a cooperative cancel flag (poll points are engine-specific: the STEP macro for Lua, an interrupt handler for JS); hitting it reports `"cancelled by user"`. `invoke` does **not** clear the cancel flag — an event handler fired after a mid-run cancel is cancelled too; `run` does clear it.
-- **Step limit**: `set_step_limit` (App-side default 50,000,000); exceeding reports `"execution step limit exceeded (possible infinite loop)"`. The message is byte-identical across engines — the host does no re-translation.
+- **Step limit**: `set_step_limit` (App-side default 50,000,000); exceeding reports `"execution step limit exceeded (possible infinite loop)"`. The message is byte-identical across the wired engines — the host does no re-translation.
 - QuickJS extras: 64 MB memory limit, 4 MB stack limit (fixed in `qjsx_new`).
 
 ## 6. UI component parity
 
-**The JS side must expose the same 16 constructors as Lua** (`app column row text button card input image spacer divider scrollview list listitem stack page switch`), producing identically-shaped tree nodes. Prop semantics (alias chains, defaults, event names) follow the prop table in LUAX.md §5 — that is the language-neutral renderer contract. Conformance tests assert per type (§7).
+**The JS side must expose the same 19 constructors as Lua** (`app column row text button card input image spacer divider scrollview list listitem stack page switch box slider progress`), producing identically-shaped tree nodes. Prop semantics (canonical names only — removed alias chains are a documented breaking migration, see LUAX.md §5; defaults, event names, string-constructor sugar for `text`, string children wrapping) follow the prop table in LUAX.md §5 — that is the language-neutral renderer contract. Conformance tests assert per type (§7).
 
 ## 7. Conformance tests (the anti-drift mechanism)
 
@@ -76,7 +76,8 @@ The two suites assert **the same contract** and must evolve in lockstep:
 |---|---|---|
 | invoke tri-state (adopt/retain/error) | `t26_invoke_tree.c` | `j6_conformance.c` |
 | payload reaches the handler | t26 | j6 |
-| all 16 component types serialize | t15 (serialize coverage) | j6 |
+| all 19 component types serialize | t15 (constructors); t22 (new types / JSON) | j6 |
+| text-only string constructor / string children | t15 / t22 | j6 |
 | print capture / error line numbers | t22/t23 | j4/j6 |
 | cancel / step-limit semantics | t19 (stdio/cancel) | j5_cancel.c |
 
@@ -86,7 +87,7 @@ The two suites assert **the same contract** and must evolve in lockstep:
 
 The packaging chain's multi-language support is closed-loop:
 
-- The template runtime (`:runtime` release APK → `template.apk`) embeds **both engines** (libluax.so + libluaxjs.so × each ABI)
+- The template runtime (`:runtime` release APK → `template.apk`) embeds **multiple engines** (libluax.so + libluaxjs.so × each ABI)
 - `entryFile` in `luaxcfg.json` decides the language: ending in `.js` → RuntimeActivity picks `JsEngineHost`, otherwise `EngineHost` (see the isJs routing in RuntimeActivity)
 - Pre-packaging smoke validation picks the engine by entry suffix the same way (BuildPipeline.validateEntry)
 - Project sources ship whole under `assets/lua/` (historical directory name, language-neutral)
@@ -105,6 +106,8 @@ The packaging chain's multi-language support is closed-loop:
 `engine-py/mpy_x.c` is built on the MicroPython v1.25.0 embed port (self-contained generated package) and is **wired into the App**: JNI bridge `mpy_jni.c` ×2, `PyEngineHost` (implements EngineAdapter; IDE and packaged-runtime dual variants), `Language.PYTHON.supported = true`, entry routing (`.py` → PyEngineHost) and pre-packaging validation are all live; emulator E2E: create a Python project → run renders → tap +1 re-renders (taps 0→1→2).
 
 Implementation notes (parts matching the other engines): run → tree JSON + print capture; invoke(id, payload) → handler + re-render (view() first); `MICROPY_VM_HOOK_LOOP`-driven cooperative cancel and step limit (error messages byte-identical to Lua/JS, see p2); globals survive across invokes.
+
+Python is not covered by t26/j6: p1_smoke.c and p2_cancel.c cover only their tested subset, not full component/event parity. Its global `view()` takes precedence over handler-returned trees; callable handler returns do not implement Lua/JS live-view replacement. Do not infer full ABI parity from the counter smoke test.
 
 **Remaining limits (to be handled by follow-up Issues)**:
 - no `import` module root path (multi-file projects unsupported; single-file projects fully work)

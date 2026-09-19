@@ -11,11 +11,18 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -25,9 +32,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -54,7 +64,7 @@ import androidx.compose.ui.unit.sp
 import dev.luaxide.assets.LocalAssetResolver
 import dev.luaxide.engine.UiNode
 
-typealias RenderChildren = @Composable (List<UiNode>) -> Unit
+typealias RenderChildren = @Composable (List<UiNode>, (UiNode) -> Modifier) -> Unit
 
 typealias OnEvent = (handlerId: Int, payload: String?) -> Unit
 
@@ -65,6 +75,7 @@ object ComponentRegistry {
         put("app") { n, e, r -> AppComponent(n, e, r) }
         put("column") { n, e, r -> ColumnComponent(n, e, r) }
         put("row") { n, e, r -> RowComponent(n, e, r) }
+        put("box") { n, e, r -> BoxComponent(n, e, r) }
         put("text") { n, e, r -> TextComponent(n, e, r) }
         put("button") { n, e, r -> ButtonComponent(n, e, r) }
         put("card") { n, e, r -> CardComponent(n, e, r) }
@@ -78,6 +89,8 @@ object ComponentRegistry {
         put("stack") { n, e, r -> StackComponent(n, e, r) }
         put("page") { n, e, r -> PageComponent(n, e, r) }
         put("switch") { n, e, r -> SwitchComponent(n, e, r) }
+        put("slider") { n, e, r -> SliderComponent(n, e, r) }
+        put("progress") { n, e, r -> ProgressComponent(n, e, r) }
     }
 
     operator fun get(type: String): Component? = components[type]
@@ -89,7 +102,7 @@ object ComponentRegistry {
 private fun AppComponent(node: UiNode, onEvent: OnEvent, renderChildren: RenderChildren) {
     val cs = MaterialTheme.colorScheme
     Column(
-        modifier = Modifier
+        modifier = nodeStyle(node)
             .fillMaxWidth()
             .animateContentSize(animationSpec = Motion.contentSize),
     ) {
@@ -109,7 +122,7 @@ private fun AppComponent(node: UiNode, onEvent: OnEvent, renderChildren: RenderC
                 )
             }
         }
-        renderChildren(node.children)
+        renderChildren(node.children) { childModifier(it) }
     }
 }
 
@@ -121,12 +134,13 @@ private fun ColumnComponent(node: UiNode, onEvent: OnEvent, renderChildren: Rend
         label = "col-spacing",
     )
     Column(
-        modifier = Modifier
+        modifier = nodeStyle(node)
             .fillMaxWidth()
             .animateContentSize(animationSpec = Motion.contentSize),
         verticalArrangement = Arrangement.spacedBy(spacing),
+        horizontalAlignment = Alignment.Start,
     ) {
-        renderChildren(node.children)
+        renderChildren(node.children) { childModifier(it) }
     }
 }
 
@@ -138,61 +152,59 @@ private fun RowComponent(node: UiNode, onEvent: OnEvent, renderChildren: RenderC
         label = "row-spacing",
     )
     Row(
-        modifier = Modifier.animateContentSize(animationSpec = Motion.contentSize),
+        modifier = nodeStyle(node).animateContentSize(animationSpec = Motion.contentSize),
         horizontalArrangement = Arrangement.spacedBy(spacing),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        renderChildren(node.children)
+        renderChildren(node.children) { childModifier(it) }
     }
 }
 
 @Composable
 private fun TextComponent(node: UiNode, onEvent: OnEvent, renderChildren: RenderChildren) {
     val cs = MaterialTheme.colorScheme
-    val text = node.string("text", node.string("value", ""))
+    val text = node.string("text")
     val size = node.number("size", 16.0).sp
-    val fontPath = node.string("font", node.string("typeface", ""))
-    val color = parseColor(node.string("color"), cs.onSurface)
+    val fontPath = node.string("font")
+    val color = parseHexColor(node.string("color")) ?: cs.onSurface
     val animate = node.bool("animate", true)
+    val bold = node.bool("bold", false)
+    val weight = if (bold) FontWeight.Bold else FontWeight.Normal
     val resolver = LocalAssetResolver.current
-    val family = remember(fontPath) {
+    // Font file metadata stays Normal; bold comes from Text's fontWeight (synthetic bold).
+    val family = remember(fontPath, resolver) {
         val file = if (fontPath.isBlank()) null else resolver.resolveFile(fontPath)
         if (file != null) FontFamily(Font(file = file, weight = FontWeight.Normal)) else FontFamily.Default
     }
-    if (!animate) {
-        // Cheap path for fast-updating text (game boards, clocks): no AnimatedContent.
+    val textNode = @Composable { value: String ->
         Text(
-            text = text,
+            text = value,
             color = color,
             fontSize = size,
+            fontWeight = weight,
             fontFamily = family,
+            modifier = nodeStyle(node),
         )
+    }
+    if (!animate) {
+        // Cheap path for fast-updating text (game boards, clocks): no AnimatedContent.
+        textNode(text)
         return
     }
     AnimatedContent(
         targetState = text,
         transitionSpec = { Motion.textSwap() },
         label = "text",
+        modifier = nodeStyle(node),
     ) { value ->
         Text(
             text = value,
             color = color,
             fontSize = size,
+            fontWeight = weight,
             fontFamily = family,
             modifier = Modifier.animateContentSize(animationSpec = Motion.contentSize),
         )
-    }
-}
-
-/** Parse "#RRGGBB" or "#AARRGGBB" (also bare RRGGBB); falls back to [fallback]. */
-private fun parseColor(hex: String, fallback: Color): Color {
-    val h = hex.removePrefix("#")
-    if (h.length != 6 && h.length != 8) return fallback
-    val v = h.toLongOrNull(16) ?: return fallback
-    return if (h.length == 8) {
-        Color((v and 0xFFFFFFFFL).toInt())
-    } else {
-        Color(0xFF000000L or v)
     }
 }
 
@@ -209,9 +221,10 @@ private fun ButtonComponent(node: UiNode, onEvent: OnEvent, renderChildren: Rend
     val label = node.string("text", "button")
     androidx.compose.material3.Button(
         onClick = { handlerId?.let { onEvent(it, null) } },
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(node.dpProp("radius") ?: 16.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = parseHexColor(node.string("background")) ?: MaterialTheme.colorScheme.primary),
         interactionSource = interaction,
-        modifier = Modifier
+        modifier = nodeStyle(node)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
@@ -236,22 +249,23 @@ private fun CardComponent(node: UiNode, onEvent: OnEvent, renderChildren: Render
         label = "card-spacing",
     )
     val radius by animateDpAsState(
-        targetValue = node.number("radius", 16.0).dp,
+        targetValue = node.dpProp("radius") ?: 16.dp,
         animationSpec = Motion.softDp,
         label = "card-radius",
     )
     val pad by animateDpAsState(
-        targetValue = node.number("padding", 16.0).dp,
+        targetValue = node.dpProp("padding") ?: 16.dp,
         animationSpec = Motion.softDp,
         label = "card-padding",
     )
     Card(
         shape = RoundedCornerShape(radius),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+            containerColor = parseHexColor(node.string("background"))
+                ?: MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        modifier = Modifier
+        modifier = nodeStyle(node)
             .fillMaxWidth()
             .animateContentSize(animationSpec = Motion.contentSize),
     ) {
@@ -259,7 +273,7 @@ private fun CardComponent(node: UiNode, onEvent: OnEvent, renderChildren: Render
             modifier = Modifier.padding(pad),
             verticalArrangement = Arrangement.spacedBy(spacing),
         ) {
-            renderChildren(node.children)
+            renderChildren(node.children) { childModifier(it) }
         }
     }
 }
@@ -269,19 +283,23 @@ private fun InputComponent(node: UiNode, onEvent: OnEvent, renderChildren: Rende
     val incoming = node.string("value")
     val label = node.string("label", "input")
     val onSubmit = node.handler("onSubmit")
+    val onChange = node.handler("onChange")
+    val buffer = remember { EchoBuffer(incoming) }
     var text by remember { mutableStateOf(incoming) }
-    LaunchedEffect(incoming) {
-        if (text != incoming) text = incoming
-    }
-    val focus = LocalFocusManager.current
-    OutlinedTextField(
+    val focusManager = LocalFocusManager.current
+    LaunchedEffect(incoming) { buffer.receive(incoming)?.let { text = it } }
+    androidx.compose.material3.OutlinedTextField(
         value = text,
-        onValueChange = { text = it },
+        onValueChange = {
+            text = it
+            buffer.edit(it, onChange != null)
+            if (onChange != null) onEvent(onChange, it)
+        },
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
         keyboardActions = KeyboardActions(onDone = {
             // Event payload contract: the field's text is passed back to the script.
             if (onSubmit != null) onEvent(onSubmit, text)
-            focus.clearFocus()
+            focusManager.clearFocus()
         }),
         label = {
             AnimatedContent(
@@ -291,8 +309,12 @@ private fun InputComponent(node: UiNode, onEvent: OnEvent, renderChildren: Rende
             ) { value -> Text(value) }
         },
         singleLine = true,
-        shape = RoundedCornerShape(14.dp),
-        modifier = Modifier
+        shape = RoundedCornerShape(node.dpProp("radius") ?: 14.dp),
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedContainerColor = parseHexColor(node.string("background")) ?: Color.Transparent,
+            unfocusedContainerColor = parseHexColor(node.string("background")) ?: Color.Transparent,
+        ),
+        modifier = nodeStyle(node)
             .fillMaxWidth()
             .animateContentSize(animationSpec = Motion.contentSize),
     )
@@ -306,16 +328,16 @@ private fun ImageComponent(node: UiNode, onEvent: OnEvent, renderChildren: Rende
         animationSpec = Motion.softDp,
         label = "image-size",
     )
-    val src = node.string("src", node.string("path", node.string("file", "")))
+    val src = node.string("src")
     val resolver = LocalAssetResolver.current
     val bmp = remember(src) {
         if (src.isBlank()) null else resolver.decodeBitmap(src)
     }
     Box(
-        modifier = Modifier
+        modifier = nodeStyle(node)
             .size(size)
-            .clip(RoundedCornerShape(12.dp))
-            .background(cs.surfaceVariant),
+            .clip(RoundedCornerShape(node.dpProp("radius") ?: 12.dp))
+            .background(parseHexColor(node.string("background")) ?: cs.surfaceVariant),
         contentAlignment = Alignment.Center,
     ) {
         if (bmp != null) {
@@ -323,7 +345,7 @@ private fun ImageComponent(node: UiNode, onEvent: OnEvent, renderChildren: Rende
                 bitmap = bmp.asImageBitmap(),
                 contentDescription = src,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.size(size),
+                modifier = Modifier.fillMaxSize(),
             )
         } else {
             Text(
@@ -342,12 +364,15 @@ private fun SpacerComponent(node: UiNode, onEvent: OnEvent, renderChildren: Rend
         animationSpec = Motion.softDp,
         label = "spacer",
     )
-    Spacer(modifier = Modifier.height(h))
+    Spacer(modifier = nodeStyle(node).height(h))
 }
 
 @Composable
 private fun DividerComponent(node: UiNode, onEvent: OnEvent, renderChildren: RenderChildren) {
-    HorizontalDivider()
+    HorizontalDivider(
+        modifier = nodeStyle(node),
+        color = parseHexColor(node.string("color")) ?: MaterialTheme.colorScheme.outlineVariant,
+    )
 }
 
 @Composable
@@ -357,14 +382,21 @@ private fun ScrollViewComponent(node: UiNode, onEvent: OnEvent, renderChildren: 
         animationSpec = Motion.softDp,
         label = "scroll-spacing",
     )
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
-            .animateContentSize(animationSpec = Motion.contentSize),
-        verticalArrangement = Arrangement.spacedBy(spacing),
-    ) {
-        renderChildren(node.children)
+    BoxWithConstraints(modifier = nodeStyle(node).fillMaxWidth(), propagateMinConstraints = true) {
+        if (!constraints.hasBoundedHeight) {
+            Text(
+                "scrollview needs a bounded height. Set height on this nested scrollview or its parent.",
+                color = MaterialTheme.colorScheme.error,
+            )
+        } else {
+            Column(
+                modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
+                    .animateContentSize(Motion.contentSize),
+                verticalArrangement = Arrangement.spacedBy(spacing),
+            ) {
+                renderChildren(node.children) { childModifier(it) }
+            }
+        }
     }
 }
 
@@ -376,27 +408,28 @@ private fun ListComponent(node: UiNode, onEvent: OnEvent, renderChildren: Render
         label = "list-spacing",
     )
     Column(
-        modifier = Modifier
+        modifier = nodeStyle(node)
             .fillMaxWidth()
             .animateContentSize(animationSpec = Motion.contentSize),
         verticalArrangement = Arrangement.spacedBy(spacing),
     ) {
-        renderChildren(node.children)
+        renderChildren(node.children) { childModifier(it) }
     }
 }
 
 @Composable
 private fun ListItemComponent(node: UiNode, onEvent: OnEvent, renderChildren: RenderChildren) {
     val cs = MaterialTheme.colorScheme
-    val title = node.string("title", node.string("text", ""))
+    val title = node.string("title")
     val subtitle = node.string("subtitle")
     val click = node.handler("onClick")
     Surface(
-        color = cs.surfaceVariant.copy(alpha = 0.55f),
-        shape = RoundedCornerShape(14.dp),
-        modifier = Modifier
+        color = parseHexColor(node.string("background"))
+            ?: cs.surfaceVariant.copy(alpha = 0.55f),
+        shape = RoundedCornerShape(node.dpProp("radius") ?: 14.dp),
+        modifier = nodeStyle(node)
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(node.dpProp("radius") ?: 14.dp))
             .then(
                 if (click != null) Modifier.clickable { onEvent(click, null) } else Modifier,
             ),
@@ -418,7 +451,7 @@ private fun ListItemComponent(node: UiNode, onEvent: OnEvent, renderChildren: Re
                     modifier = Modifier.padding(top = if (title.isNotEmpty() || subtitle.isNotEmpty()) 8.dp else 0.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    renderChildren(node.children)
+                    renderChildren(node.children) { childModifier(it) }
                 }
             }
         }
@@ -427,25 +460,10 @@ private fun ListItemComponent(node: UiNode, onEvent: OnEvent, renderChildren: Re
 
 @Composable
 private fun StackComponent(node: UiNode, onEvent: OnEvent, renderChildren: RenderChildren) {
-    val selected = node.string("selected", node.string("page", ""))
-    val pages = node.children.filter { it.type.equals("page", ignoreCase = true) }
-    val page = when {
-        pages.isEmpty() -> null
-        selected.isEmpty() -> pages.first()
-        else -> pages.firstOrNull {
-            it.string("key") == selected || it.string("name") == selected || it.string("id") == selected
-        } ?: pages.first()
-    }
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .animateContentSize(animationSpec = Motion.contentSize),
+        modifier = nodeStyle(node).fillMaxWidth().animateContentSize(Motion.contentSize),
     ) {
-        if (page != null) {
-            renderChildren(page.children)
-        } else {
-            renderChildren(node.children)
-        }
+        renderChildren(node.visibleChildren()) { childModifier(it) }
     }
 }
 
@@ -457,26 +475,25 @@ private fun PageComponent(node: UiNode, onEvent: OnEvent, renderChildren: Render
         label = "page-spacing",
     )
     Column(
-        modifier = Modifier
+        modifier = nodeStyle(node)
             .fillMaxWidth()
             .animateContentSize(animationSpec = Motion.contentSize),
         verticalArrangement = Arrangement.spacedBy(spacing),
     ) {
-        renderChildren(node.children)
+        renderChildren(node.children) { childModifier(it) }
     }
 }
 
 @Composable
 private fun SwitchComponent(node: UiNode, onEvent: OnEvent, renderChildren: RenderChildren) {
     val cs = MaterialTheme.colorScheme
-    val label = node.string("label", node.string("text", "switch"))
-    val checkedProp = node.bool("checked", node.bool("value", false))
+    val label = node.string("label", "switch")
+    val checkedProp = node.bool("checked", false)
     var checked by remember(checkedProp) { mutableStateOf(checkedProp) }
     LaunchedEffect(checkedProp) { checked = checkedProp }
-    val onChange = node.handler("onChange")
-    val onToggle = node.handler("onToggle") ?: onChange
+    val onToggle = node.handler("onToggle")
     Row(
-        modifier = Modifier
+        modifier = nodeStyle(node)
             .fillMaxWidth()
             .animateContentSize(animationSpec = Motion.contentSize),
         verticalAlignment = Alignment.CenterVertically,
@@ -490,5 +507,70 @@ private fun SwitchComponent(node: UiNode, onEvent: OnEvent, renderChildren: Rend
                 if (onToggle != null) onEvent(onToggle, checked.toString())
             },
         )
+    }
+}
+
+@Composable
+private fun BoxComponent(node: UiNode, onEvent: OnEvent, renderChildren: RenderChildren) {
+    Box(modifier = nodeStyle(node).animateContentSize(Motion.contentSize)) {
+        renderChildren(node.children) { childModifier(it) }
+    }
+}
+
+@Composable
+private fun SliderComponent(node: UiNode, onEvent: OnEvent, renderChildren: RenderChildren) {
+    val from = node.number("from", 0.0)
+    val to = node.number("to", 1.0)
+    val step = node.number("step", 0.0)
+    val raw = node.number("value", from)
+    val valid = from.isFinite() && to.isFinite() && from.toFloat().isFinite() &&
+        to.toFloat().isFinite() && to.toFloat() > from.toFloat() &&
+        (to - from).toFloat().isFinite() && step.isFinite() && step >= 0 && raw.isFinite()
+    if (!valid) {
+        Text("slider requires finite value/from/to, to > from and step >= 0", modifier = nodeStyle(node),
+            color = MaterialTheme.colorScheme.error)
+        return
+    }
+    fun snap(value: Double): Double {
+        val bounded = value.coerceIn(from, to)
+        if (step == 0.0) return bounded
+        // Increment anchored at from, not Material's evenly spaced tick count.
+        // The upper endpoint remains reachable even for non-divisible ranges.
+        val units = (bounded - from) / step
+        if (!units.isFinite()) return bounded
+        val lower = (from + kotlin.math.floor(units) * step).coerceIn(from, to)
+        val upper = (lower + step).coerceIn(from, to)
+        return if (bounded - lower < upper - bounded) lower else upper
+    }
+    val incoming = snap(raw)
+    val buffer = remember(from, to, step) { EchoBuffer(incoming) }
+    var value by remember(from, to, step) { mutableStateOf(incoming) }
+    LaunchedEffect(incoming) { buffer.receive(incoming)?.let { value = it } }
+    val onChange = node.handler("onChange")
+    Slider(
+        value = value.toFloat(),
+        onValueChange = {
+            val next = snap(it.toDouble())
+            if (next != value) {
+                value = next
+                buffer.edit(next, onChange != null)
+                onChange?.let { handler -> onEvent(handler, next.toString()) }
+            }
+        },
+        valueRange = from.toFloat()..to.toFloat(),
+        steps = 0,
+        modifier = nodeStyle(node).fillMaxWidth(),
+    )
+}
+
+@Composable
+private fun ProgressComponent(node: UiNode, onEvent: OnEvent, renderChildren: RenderChildren) {
+    val raw = node.number("value", Double.NaN)
+    val color = parseHexColor(node.string("color")) ?: MaterialTheme.colorScheme.primary
+    if (raw.isNaN()) {
+        LinearProgressIndicator(color = color, modifier = nodeStyle(node).fillMaxWidth())
+    } else {
+        LinearProgressIndicator(progress = { raw.coerceIn(0.0, 1.0).toFloat() }, color = color,
+            modifier = nodeStyle(node).fillMaxWidth())
     }
 }

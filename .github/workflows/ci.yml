@@ -50,10 +50,16 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v3
+        with:
+          # 'tools' no longer exists in the SDK repository for cmdline-tools 16+;
+          # only install packages that still resolve.
+          packages: platform-tools
       - uses: gradle/actions/setup-gradle@v4
       - name: Check :app/:runtime paired files are byte-identical
         run: ./scripts/check_sync.sh
-      - name: Build debug APKs (:app and :runtime)
-        run: ./gradlew :app:assembleDebug :runtime:assembleDebug --stacktrace
+      - name: Run UI policy unit tests
+        run: ./gradlew :app:testDebugUnitTest --stacktrace
       - name: Sync runtime template APK into app assets
         run: ./gradlew :runtime:syncRuntimeTemplate --stacktrace
+      - name: Build debug APKs and Compose test APK
+        run: ./gradlew :app:assembleDebug :runtime:assembleDebug :app:assembleDebugAndroidTest --stacktrace

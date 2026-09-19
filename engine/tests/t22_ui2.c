@@ -60,6 +60,27 @@ int main(void){
   CHK(has(j,"\"items\":[1,\"two\",false]"), "plain array prop");
   lx_close(g);
 
+  /* string child sugar: bare string in child position serializes as a text
+   * node; ui.text("hi") shorthand ≡ ui.text{text="hi"}; non-text constructor
+   * keeps its contract (string arg is not a props table) */
+  g = lx_new();
+  memset(err,0,sizeof(err));
+  rc = lx_run(g,
+    "local ui=require('ui')\n"
+    "return ui.app{\n"
+    "  ui.column{ 'hello', ui.text('hi') },\n"
+    "  ui.button('no sugar'),\n"
+    "  ui.box{ ui.slider{min=0,max=100}, ui.progress{value=50} },\n"
+    "}\n",
+    err, sizeof(err));
+  j = lx_last_json(g);
+  CHK(rc==0, "string sugar run");
+  CHK(has(j,"{\"type\":\"text\",\"props\":{\"text\":\"hello\"},\"children\":[]}"), "string child wrapped as text node");
+  CHK(has(j,"{\"type\":\"text\",\"props\":{\"text\":\"hi\"},\"children\":[]}"), "ui.text string shorthand");
+  CHK(has(j,"\"type\":\"button\",\"props\":{}"), "ui.button string arg is not a props object");
+  CHK(has(j,"\"type\":\"box\"")&&has(j,"\"type\":\"slider\"")&&has(j,"\"type\":\"progress\""), "box/slider/progress serialize");
+  lx_close(g);
+
   /* lx_invoke: a registered handler rebuilds the tree */
   g = lx_new();
   memset(err,0,sizeof(err));
