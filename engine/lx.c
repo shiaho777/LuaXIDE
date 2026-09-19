@@ -800,14 +800,15 @@ enum {
   BC_TEST,BC_TESTN,BC_JMP,BC_CALL,BC_RETURN,BC_EXPAND,BC_NEWTABLE,BC_TSETMULT,BC_INC,
   BC_FORPREP,BC_FORLOOP,BC_GFORPREP,BC_GFORLOOP
 };
-typedef struct { unsigned char op,a,b,c; int imm; } BIns;
-struct Proto { BIns* code; int ncode; Value* k; int nk; int* lines; int* gk; int ngk; int nparam; int maxstack; int defline; };
+typedef struct { unsigned char op,a,b,c; } BIns;   /* 4-byte insn; immediates live in Proto.imm[pc] (u16: k-idx or i16 jump delta) */
+struct Proto { BIns* code; int ncode; unsigned short* imm; Value* k; int nk; int* lines; int* gk; int ngk; int nparam; int maxstack; int defline; };
 
 #define BC_MAXREG 200
 typedef struct {
   State*S; Func*fn;
   BIns* code; int ncode,capcode;
   int* lines;
+  int* imm;
   Value* k; int nk,capk;
   int gk[64]; int ngk;
   int reg,maxreg;
@@ -825,8 +826,9 @@ static const char* bc_opname(int op){
   return op>=0&&(size_t)op<sizeof(N)/sizeof(*N)?N[op]:"?";
 }
 static int bc_emit(Bc*C,int op,int a,int b,int c,int imm){
-  if(C->ncode>=C->capcode){ C->capcode=C->capcode?C->capcode*2:64; C->code=realloc(C->code,(size_t)C->capcode*sizeof(BIns)); C->lines=realloc(C->lines,(size_t)C->capcode*sizeof(int)); }
-  C->code[C->ncode]=(BIns){(unsigned char)op,(unsigned char)a,(unsigned char)b,(unsigned char)c,imm};
+  if(C->ncode>=C->capcode){ C->capcode=C->capcode?C->capcode*2:64; C->code=realloc(C->code,(size_t)C->capcode*sizeof(BIns)); C->lines=realloc(C->lines,(size_t)C->capcode*sizeof(int)); C->imm=realloc(C->imm,(size_t)C->capcode*sizeof(int)); }
+  C->code[C->ncode]=(BIns){(unsigned char)op,(unsigned char)a,(unsigned char)b,(unsigned char)c};
+  C->imm[C->ncode]=imm;
   C->lines[C->ncode]=C->curline;
   if(C->reg>C->maxreg)C->maxreg=C->reg;
   return C->ncode++;
@@ -834,10 +836,11 @@ static int bc_emit(Bc*C,int op,int a,int b,int c,int imm){
 static int bc_reg(Bc*C){ if(C->failed)return 0; if(C->reg>=BC_MAXREG){C->failed=1;return 0;} return C->reg++; }
 /* watermark only ever rises within a block; scopes release via bc_endscope */
 static void bc_raise(Bc*C,int r){ if(!C->failed && r>C->reg)C->reg=r; }
-static int bc_k(Bc*C,Value v){ if(C->nk>=C->capk){C->capk=C->capk?C->capk*2:16;C->k=realloc(C->k,(size_t)C->capk*sizeof(Value));} C->k[C->nk]=v; return C->nk++; }
+static int bc_k(Bc*C,Value v){ if(C->nk>=0xFFFF){C->failed=1;return 0;} if(C->nk>=C->capk){C->capk=C->capk?C->capk*2:16;C->k=realloc(C->k,(size_t)C->capk*sizeof(Value));} C->k[C->nk]=v; return C->nk++; }
 static int bc_kstr(Bc*C,const char*s){ Str*st=newStr(C->S,s,strlen(s)); return bc_k(C,VSTR(st)); }
 static int bc_jmp(Bc*C){ return bc_emit(C,BC_JMP,0,0,0,0); }
-static void bc_patch(Bc*C,int j,int target){ C->code[j].imm=target-(j+1); }
+/* imm is a u16 slot: jump deltas must fit i16, else soft-fail to tree-walk */
+static void bc_patch(Bc*C,int j,int target){ int d=target-(j+1); if(d>32767||d<-32768){C->failed=1;return;} C->imm[j]=d; }
 static void bc_scope(Bc*C){ if(C->depth>=40){C->failed=1;return;} C->scope[C->depth]=C->nloc; C->scopereg[C->depth]=C->reg; C->depth++; }
 static void bc_endscope(Bc*C){ C->depth--; if(C->depth<40){ C->nloc=C->scope[C->depth]; C->reg=C->scopereg[C->depth]; } }
 static void bc_pushloop(Bc*C){ if(C->nloops>=16){C->failed=1;return;} C->loops[C->nloops].nbrk=0; C->nloops++; }
@@ -907,7 +910,7 @@ static void bc_expr(Bc*C,Node*e,int dst){
   if(C->failed)return;
   if(e->line>0)C->curline=e->line;
   switch(e->kind){
-  case K_NIL: bc_emit(C,BC_LOADNIL,dst,0,0,0); break;
+  case K_NIL: bc_emit(C,BC_LOADNIL,dst,1,0,0); break;
   case K_TRUE: case K_FALSE: bc_emit(C,BC_LOADBOOL,dst,e->kind==K_TRUE?1:0,0,0); break;
   case K_NUM: bc_emit(C,BC_LOADK,dst,0,0,bc_k(C,VNUM(e->num))); break;
   case K_STR: bc_emit(C,BC_LOADK,dst,0,0,bc_k(C,VSTR(e->str))); break;
@@ -936,11 +939,30 @@ static void bc_expr(Bc*C,Node*e,int dst){
   case K_BINOP:{ int op=e->op;
     if(op==T_AND||op==T_OR){
       bc_expr(C,e->a,dst);
-      bc_emit(C,op==T_AND?BC_TESTN:BC_TEST,dst,0,0,0);
-      int j=bc_jmp(C);
+      int j=bc_emit(C,op==T_AND?BC_TESTN:BC_TEST,dst,0,0,0);
       bc_expr(C,e->b,dst);
       bc_patch(C,j,C->ncode);
       break; }
+    if(e->a->kind==K_NUM&&e->b->kind==K_NUM){          /* fold literal ops — same formulas as the VM cases */
+      double x=e->a->num,y=e->b->num; Value v=VNIL; int ok=1;
+      if(op=='+')v=VNUM(x+y); else if(op=='-')v=VNUM(x-y); else if(op=='*')v=VNUM(x*y);
+      else if(op=='/')v=VNUM(x/y); else if(op=='%')v=VNUM(x-floor(x/y)*y);
+      else if(op=='^')v=VNUM(pow(x,y)); else if(op==T_IDIV)v=VNUM(floor(x/y));
+      else if(op=='&')v=VNUM((double)((int64_t)x&(int64_t)y));
+      else if(op=='|')v=VNUM((double)((int64_t)x|(int64_t)y));
+      else if(op=='~')v=VNUM((double)((int64_t)x^(int64_t)y));
+      else if(op==T_SHL)v=VNUM((double)((int64_t)x<<((int64_t)y&63)));
+      else if(op==T_SHR)v=VNUM((double)((int64_t)x>>((int64_t)y&63)));
+      else if(op==T_EQ)v=VBOOL(x==y); else if(op==T_NE)v=VBOOL(x!=y);
+      else if(op=='<')v=VBOOL(x<y); else if(op==T_LE)v=VBOOL(x<=y);
+      else if(op=='>')v=VBOOL(x>y); else if(op==T_GE)v=VBOOL(x>=y);
+      else ok=0;
+      if(ok){ bc_emit(C,BC_LOADK,dst,0,0,bc_k(C,v)); break; } }
+    if(e->a->kind==K_STR&&e->b->kind==K_STR&&op==T_CONCAT){
+      Str*sa=e->a->str,*sb=e->b->str;
+      char*buf=xalloc(C->S,sa->len+sb->len+1);
+      memcpy(buf,sa->p,sa->len); memcpy(buf+sa->len,sb->p,sb->len);
+      bc_emit(C,BC_LOADK,dst,0,0,bc_k(C,VSTR(newStr(C->S,buf,sa->len+sb->len)))); break; }
     int ra=bc_reg(C),rb=bc_reg(C);
     bc_expr(C,e->a,ra); bc_expr(C,e->b,rb);
     int o = op=='+'?BC_ADD: op=='-'?BC_SUB: op=='*'?BC_MUL: op=='/'?BC_DIV: op=='%'?BC_MOD: op=='^'?BC_POW: op==T_IDIV?BC_IDIV:
@@ -953,6 +975,13 @@ static void bc_expr(Bc*C,Node*e,int dst){
     if(op==T_NE) bc_emit(C,BC_NOT,dst,dst,0,0);
     break;}
   case K_UNOP:{
+    if(e->a->kind==K_NUM&&e->op=='-'){ bc_emit(C,BC_LOADK,dst,0,0,bc_k(C,VNUM(-e->a->num))); break; }
+    if(e->a->kind==K_NUM&&e->op=='~'){ bc_emit(C,BC_LOADK,dst,0,0,bc_k(C,VNUM((double)(~(int64_t)e->a->num)))); break; }
+    if(e->a->kind==K_STR&&e->op=='#'){ bc_emit(C,BC_LOADK,dst,0,0,bc_k(C,VNUM((double)e->a->str->len))); break; }
+    if(e->op==T_NOT){ Value lv=VNIL; int lit=1;
+      switch(e->a->kind){ case K_NIL:lv=VNIL;break; case K_TRUE:lv=VBOOL(1);break; case K_FALSE:lv=VBOOL(0);break;
+        case K_NUM:lv=VNUM(e->a->num);break; case K_STR:lv=VSTR(e->a->str);break; default:lit=0; }
+      if(lit){ bc_emit(C,BC_LOADK,dst,0,0,bc_k(C,VBOOL(!toBool(lv)))); break; } }
     int ra=bc_reg(C); bc_expr(C,e->a,ra);
     int o=e->op=='-'?BC_UNM: e->op==T_NOT?BC_NOT: e->op=='~'?BC_BNOT: e->op=='#'?BC_LEN:-1;
     if(o<0){C->failed=1;break;}
@@ -1007,15 +1036,13 @@ static void bc_stat(Bc*C,Node*st){
   case K_IF:{
     int rd=bc_reg(C),jover[33],njover=0;
     bc_expr(C,st->a,rd);
-    bc_emit(C,BC_TESTN,rd,0,0,0);
-    int jelse=bc_jmp(C);
+    int jelse=bc_emit(C,BC_TESTN,rd,0,0,0);
     bc_scope(C); bc_block(C,st->body); bc_endscope(C);
     if(st->nlist||st->b){ if(njover<33)jover[njover++]=bc_jmp(C); }
     bc_patch(C,jelse,C->ncode);
     for(int i=0;i<st->nlist;i++){ Node*eli=st->list[i];
       bc_expr(C,eli->a,rd);
-      bc_emit(C,BC_TESTN,rd,0,0,0);
-      int jn=bc_jmp(C);
+      int jn=bc_emit(C,BC_TESTN,rd,0,0,0);
       bc_scope(C); bc_block(C,eli->body); bc_endscope(C);
       if(i<st->nlist-1||st->b){ if(njover<33)jover[njover++]=bc_jmp(C); }
       bc_patch(C,jn,C->ncode); }
@@ -1027,8 +1054,7 @@ static void bc_stat(Bc*C,Node*st){
     int start=C->ncode;
     int rd=bc_reg(C);
     bc_expr(C,st->a,rd);
-    bc_emit(C,BC_TESTN,rd,0,0,0);
-    int jexit=bc_jmp(C);
+    int jexit=bc_emit(C,BC_TESTN,rd,0,0,0);
     bc_scope(C); bc_block(C,st->body); bc_endscope(C);
     int jb=bc_jmp(C); bc_patch(C,jb,start);
     bc_patch(C,jexit,C->ncode);
@@ -1041,8 +1067,8 @@ static void bc_stat(Bc*C,Node*st){
     bc_block(C,st->body);
     int rc=bc_reg(C);
     bc_expr(C,st->a,rc);
-    bc_emit(C,BC_TESTN,rc,0,0,0);   /* repeat..until: exit when condition is TRUE */
-    int jb=bc_jmp(C); bc_patch(C,jb,start);
+    int jb=bc_emit(C,BC_TESTN,rc,0,0,0);  /* repeat..until: TESTN loops back while condition is FALSE */
+    bc_patch(C,jb,start);
     bc_endscope(C);
     bc_poploop(C,C->ncode);
     break;}
@@ -1112,8 +1138,9 @@ static Proto* bc_build(State*S,Func*fn){
   bc_endscope(&C);
   if(!C.failed && (C.ncode==0 || C.code[C.ncode-1].op!=BC_RETURN)) bc_emit(&C,BC_RETURN,0,1,0,0);
   if(!C.failed && C.reg>BC_MAXREG) C.failed=1;
-  if(C.failed || !C.ncode){ free(C.code);free(C.lines);free(C.k); return NULL; }
+  if(C.failed || !C.ncode){ free(C.code);free(C.lines);free(C.imm);free(C.k); return NULL; }
   p->code=xalloc(S,(size_t)C.ncode*sizeof(BIns)); memcpy(p->code,C.code,(size_t)C.ncode*sizeof(BIns));
+  p->imm=xalloc(S,(size_t)C.ncode*sizeof(short)); for(int i=0;i<C.ncode;i++)p->imm[i]=(unsigned short)(short)C.imm[i];
   p->lines=xalloc(S,(size_t)C.ncode*sizeof(int)); memcpy(p->lines,C.lines,(size_t)C.ncode*sizeof(int));
   p->ncode=C.ncode;
   p->k=xalloc(S,(size_t)(C.nk?C.nk:1)*sizeof(Value)); if(C.nk)memcpy(p->k,C.k,(size_t)C.nk*sizeof(Value));
@@ -1123,7 +1150,7 @@ static Proto* bc_build(State*S,Func*fn){
   p->nparam=fn->nparam;
   p->maxstack=C.maxreg+1;
   p->defline=fn->line;
-  free(C.code); free(C.lines); free(C.k);
+  free(C.code); free(C.lines); free(C.imm); free(C.k);
   return p;
 }
 /* per-call guard: a name compiled as global must not have been captured by a
@@ -1150,56 +1177,83 @@ static Value vm_call(State*S,Proto*p,Closure*cl,int argc,Value*argv){
   if(cl&&cl->f&&cl->f->env) S->cur_env=cl->f->env;
   int pc=0,mrc=0;
   Value ret=VNIL;
+  BIns in={0,0,0,0};
+#if defined(__GNUC__)||defined(__clang__)
+  /* computed-goto dispatch: one indirect branch per insn; the inner op-switches
+   * below fold away since in.op is a constant at each label. Non-GNU compilers
+   * keep the switch fallback via the BC_* macros. */
+#define BC_THREADED 1
+  static const void*const disp[]={
+    &&L_BC_LOADK,&&L_BC_LOADNIL,&&L_BC_LOADBOOL,&&L_BC_MOVE,
+    &&L_BC_GETGLOBAL,&&L_BC_SETGLOBAL,&&L_BC_GETTABLE,&&L_BC_SETTABLE,&&L_BC_GETFIELD,&&L_BC_SETFIELD,
+    &&L_BC_ADD,&&L_BC_SUB,&&L_BC_MUL,&&L_BC_DIV,&&L_BC_MOD,&&L_BC_POW,&&L_BC_IDIV,&&L_BC_BAND,&&L_BC_BOR,&&L_BC_BXOR,&&L_BC_SHL,&&L_BC_SHR,
+    &&L_BC_UNM,&&L_BC_BNOT,&&L_BC_NOT,&&L_BC_LEN,&&L_BC_CONCAT,&&L_BC_EQ,&&L_BC_LT,&&L_BC_LE,
+    &&L_BC_TEST,&&L_BC_TESTN,&&L_BC_JMP,&&L_BC_CALL,&&L_BC_RETURN,&&L_BC_EXPAND,&&L_BC_NEWTABLE,&&L_BC_TSETMULT,&&L_BC_INC,
+    &&L_BC_FORPREP,&&L_BC_FORLOOP,&&L_BC_GFORPREP,&&L_BC_GFORLOOP};
+#define BC_OP(n) L_##n
+#define BC_AGAIN() do{ \
+    if(S->cancel_flag) lx_rt_error(S,"cancelled by user"); \
+    if(S->step_limit>0 && ++S->steps>S->step_limit) lx_rt_error(S,"execution step limit exceeded (possible infinite loop)"); \
+    { int pl=p->lines[pc]; if(pl>0) S->curLine=pl; } \
+    in=p->code[pc]; goto *disp[in.op]; }while(0)
+#define BC_NEXT() do{ pc++; BC_AGAIN(); }while(0)
+  BC_AGAIN();
+#else
+#define BC_OP(n) case n
+#define BC_AGAIN() continue
+#define BC_NEXT() break
   while(1){
-    BIns in=p->code[pc];
+    in=p->code[pc];
     if(S->cancel_flag) lx_rt_error(S,"cancelled by user");
     if(S->step_limit>0 && ++S->steps>S->step_limit) lx_rt_error(S,"execution step limit exceeded (possible infinite loop)");
     { int pl=p->lines[pc]; if(pl>0) S->curLine=pl; }
     switch(in.op){
-    case BC_LOADK: BVR(in.a)=p->k[in.imm]; break;
-    case BC_LOADNIL: for(int i=0;i<in.b;i++) BVR(in.a+i)=VNIL; break;
-    case BC_LOADBOOL: BVR(in.a)=VBOOL(in.b?true:false); break;
-    case BC_MOVE: BVR(in.a)=BVR(in.b); break;
-    case BC_GETGLOBAL: BVR(in.a)=tget(S->globals->vars,p->k[in.imm]); break;
-    case BC_SETGLOBAL: tset(S,S->globals->vars,p->k[in.imm],BVR(in.a)); break;
-    case BC_GETTABLE: BVR(in.a)=indexVal(S,BVR(in.b),BVR(in.c)); break;
-    case BC_SETTABLE: newIndex(S,BVR(in.a),BVR(in.b),BVR(in.c)); break;
-    case BC_GETFIELD: BVR(in.a)=indexVal(S,BVR(in.b),p->k[in.imm]); break;
-    case BC_SETFIELD: newIndex(S,BVR(in.a),p->k[in.imm],BVR(in.b)); break;
-    case BC_ADD: case BC_SUB: case BC_MUL: case BC_DIV: case BC_MOD: case BC_POW: case BC_IDIV:{
+#endif
+    BC_OP(BC_LOADK): BVR(in.a)=p->k[p->imm[pc]]; BC_NEXT();
+    BC_OP(BC_LOADNIL): for(int i=0;i<in.b;i++) BVR(in.a+i)=VNIL; BC_NEXT();
+    BC_OP(BC_LOADBOOL): BVR(in.a)=VBOOL(in.b?true:false); BC_NEXT();
+    BC_OP(BC_MOVE): BVR(in.a)=BVR(in.b); BC_NEXT();
+    BC_OP(BC_GETGLOBAL): BVR(in.a)=tget(S->globals->vars,p->k[p->imm[pc]]); BC_NEXT();
+    BC_OP(BC_SETGLOBAL): tset(S,S->globals->vars,p->k[p->imm[pc]],BVR(in.a)); BC_NEXT();
+    BC_OP(BC_GETTABLE): BVR(in.a)=indexVal(S,BVR(in.b),BVR(in.c)); BC_NEXT();
+    BC_OP(BC_SETTABLE): newIndex(S,BVR(in.a),BVR(in.b),BVR(in.c)); BC_NEXT();
+    BC_OP(BC_GETFIELD): BVR(in.a)=indexVal(S,BVR(in.b),p->k[p->imm[pc]]); BC_NEXT();
+    BC_OP(BC_SETFIELD): newIndex(S,BVR(in.a),p->k[p->imm[pc]],BVR(in.b)); BC_NEXT();
+    BC_OP(BC_ADD): BC_OP(BC_SUB): BC_OP(BC_MUL): BC_OP(BC_DIV): BC_OP(BC_MOD): BC_OP(BC_POW): BC_OP(BC_IDIV):{
       double x=toNum(S,BVR(in.b)),y=toNum(S,BVR(in.c)),v=0;
       switch(in.op){case BC_ADD:v=x+y;break;case BC_SUB:v=x-y;break;case BC_MUL:v=x*y;break;case BC_DIV:v=x/y;break;
         case BC_MOD:v=x-floor(x/y)*y;break;case BC_POW:v=pow(x,y);break;case BC_IDIV:v=floor(x/y);break;}
-      BVR(in.a)=VNUM(v); break;}
-    case BC_BAND: case BC_BOR: case BC_BXOR: case BC_SHL: case BC_SHR:{
+      BVR(in.a)=VNUM(v); BC_NEXT();}
+    BC_OP(BC_BAND): BC_OP(BC_BOR): BC_OP(BC_BXOR): BC_OP(BC_SHL): BC_OP(BC_SHR):{
       int64_t x=(int64_t)toNum(S,BVR(in.b)),y=(int64_t)toNum(S,BVR(in.c)),v=0;
       switch(in.op){case BC_BAND:v=x&y;break;case BC_BOR:v=x|y;break;case BC_BXOR:v=x^y;break;
         case BC_SHL:v=x<<(y&63);break;case BC_SHR:v=x>>(y&63);break;}
-      BVR(in.a)=VNUM((double)v); break;}
-    case BC_UNM: BVR(in.a)=VNUM(-toNum(S,BVR(in.b))); break;
-    case BC_BNOT: BVR(in.a)=VNUM((double)(~(int64_t)toNum(S,BVR(in.b)))); break;
-    case BC_NOT:{ Value v=BVR(in.b); BVR(in.a)=VBOOL(!toBool(v)); break; }
-    case BC_LEN:{ Value a=BVR(in.b); Value r;
+      BVR(in.a)=VNUM((double)v); BC_NEXT();}
+    BC_OP(BC_UNM): BVR(in.a)=VNUM(-toNum(S,BVR(in.b))); BC_NEXT();
+    BC_OP(BC_BNOT): BVR(in.a)=VNUM((double)(~(int64_t)toNum(S,BVR(in.b)))); BC_NEXT();
+    BC_OP(BC_NOT):{ Value v=BVR(in.b); BVR(in.a)=VBOOL(!toBool(v)); BC_NEXT();}
+    BC_OP(BC_LEN):{ Value a=BVR(in.b); Value r;
       if(a.tag==T_STR)r=VNUM((double)a.u.s->len);
       else if(a.tag==T_TAB){
         if(a.u.t->meta){Value m=tget(a.u.t->meta,VSTR(newStr(S,"__len",5)));r=m.tag!=T_NIL?callValue(S,m,1,&a):VNUM((double)tlen(a.u.t));}
         else r=VNUM((double)tlen(a.u.t)); }
       else lx_rt_error(S,"attempt to get length of a %s value",lx_typename(a));
-      BVR(in.a)=r; break;}
-    case BC_CONCAT:{
+      BVR(in.a)=r; BC_NEXT();}
+    BC_OP(BC_CONCAT):{
       Str*sa=toStrx(S,BVR(in.b)),*sb=toStrx(S,BVR(in.c));
       char*buf=xalloc(S,sa->len+sb->len+1);
       memcpy(buf,sa->p,sa->len); memcpy(buf+sa->len,sb->p,sb->len);
-      BVR(in.a)=VSTR(newStr(S,buf,sa->len+sb->len)); break;}
-    case BC_EQ: BVR(in.a)=VBOOL(valEq(BVR(in.b),BVR(in.c))); break;
-    case BC_LT: BVR(in.a)=VBOOL(toNum(S,BVR(in.b))<toNum(S,BVR(in.c))); break;
-    case BC_LE: BVR(in.a)=VBOOL(toNum(S,BVR(in.b))<=toNum(S,BVR(in.c))); break;
-    case BC_TEST: if(!toBool(BVR(in.a))){pc+=2;continue;} break;
-    case BC_TESTN: if(toBool(BVR(in.a))){pc+=2;continue;} break;
-    case BC_JMP: pc+=in.imm+1; continue;
-    case BC_CALL:{
+      BVR(in.a)=VSTR(newStr(S,buf,sa->len+sb->len)); BC_NEXT();}
+    BC_OP(BC_EQ): BVR(in.a)=VBOOL(valEq(BVR(in.b),BVR(in.c))); BC_NEXT();
+    BC_OP(BC_LT): BVR(in.a)=VBOOL(toNum(S,BVR(in.b))<toNum(S,BVR(in.c))); BC_NEXT();
+    BC_OP(BC_LE): BVR(in.a)=VBOOL(toNum(S,BVR(in.b))<=toNum(S,BVR(in.c))); BC_NEXT();
+    /* fused test-and-branch: imm holds the i16 jump delta directly */
+    BC_OP(BC_TEST): if(toBool(BVR(in.a))){pc+=(short)p->imm[pc]+1;BC_AGAIN();} BC_NEXT();
+    BC_OP(BC_TESTN): if(!toBool(BVR(in.a))){pc+=(short)p->imm[pc]+1;BC_AGAIN();} BC_NEXT();
+    BC_OP(BC_JMP): pc+=(short)p->imm[pc]+1; BC_AGAIN();
+    BC_OP(BC_CALL):{
       Value f=BVR(in.a);
-      int na=in.b-1+(in.imm?mrc:0);
+      int na=in.b-1+(p->imm[pc]?mrc:0);
       if(na>LX_MAX_ARGS)lx_rt_error(S,"too many arguments");
       Value tmp[LX_MAX_ARGS];
       for(int i=0;i<na;i++) tmp[i]=BVR(in.a+1+i);
@@ -1207,43 +1261,43 @@ static Value vm_call(State*S,Proto*p,Closure*cl,int argc,Value*argv){
       int n=S->nret;
       if(in.c){ int want=in.c-1; for(int i=0;i<want;i++) BVR(in.a+i)= i<n?S->retbuf[i]:VNIL; mrc=want; }
       else { for(int i=0;i<n;i++) BVR(in.a+i)=S->retbuf[i]; mrc=n; }
-      break;}
-    case BC_EXPAND:{ int want=in.b; if(mrc<want) for(int i=mrc;i<want;i++) BVR(in.a+i)=VNIL; mrc=want; break; }
-    case BC_NEWTABLE: BVR(in.a)=VTAB(newTable(S)); break;
-    case BC_TSETMULT:{ Value tv=BVR(in.a);
+      BC_NEXT();}
+    BC_OP(BC_EXPAND):{ int want=in.b; if(mrc<want) for(int i=mrc;i<want;i++) BVR(in.a+i)=VNIL; mrc=want; BC_NEXT();}
+    BC_OP(BC_NEWTABLE): BVR(in.a)=VTAB(newTable(S)); BC_NEXT();
+    BC_OP(BC_TSETMULT):{ Value tv=BVR(in.a);
       if(tv.tag!=T_TAB)lx_rt_error(S,"attempt to index a %s value",lx_typename(tv));
       Table*t=tv.u.t;
       double idx=BVR(in.b).u.num;
       for(int j=0;j<mrc;j++) tset(S,t,VNUM(idx+j),BVR(in.c+j));
       BVR(in.b)=VNUM(idx+mrc);
-      break;}
-    case BC_INC: BVR(in.a)=VNUM(BVR(in.a).u.num+in.b); break;
-    case BC_FORPREP:{
+      BC_NEXT();}
+    BC_OP(BC_INC): BVR(in.a)=VNUM(BVR(in.a).u.num+in.b); BC_NEXT();
+    BC_OP(BC_FORPREP):{
       double step=BVR(in.a+2).u.num;
       BVR(in.a+3)=BVR(in.a);
       bool inrange = step>0 ? BVR(in.a).u.num<=BVR(in.a+1).u.num : BVR(in.a).u.num>=BVR(in.a+1).u.num;
-      if(inrange){ BVR(in.a)=BVR(in.a+3); pc++; continue; }
-      pc+=in.imm+1; continue; }
-    case BC_FORLOOP:{
+      if(inrange){ BVR(in.a)=BVR(in.a+3); pc++; BC_AGAIN(); }
+      pc+=(short)p->imm[pc]+1; BC_AGAIN(); }
+    BC_OP(BC_FORLOOP):{
       double i=BVR(in.a+3).u.num+BVR(in.a+2).u.num, lim=BVR(in.a+1).u.num, st=BVR(in.a+2).u.num;
       BVR(in.a+3)=VNUM(i);
       bool cont = st>0 ? i<=lim : i>=lim;
-      if(cont){ BVR(in.a)=VNUM(i); pc+=in.imm+1; continue; }
-      break;}
-    case BC_GFORPREP: pc+=in.imm+1; continue;
-    case BC_GFORLOOP:{
+      if(cont){ BVR(in.a)=VNUM(i); pc+=(short)p->imm[pc]+1; BC_AGAIN(); }
+      BC_NEXT();}
+    BC_OP(BC_GFORPREP): pc+=(short)p->imm[pc]+1; BC_AGAIN();
+    BC_OP(BC_GFORLOOP):{
       Value args[2]={BVR(in.a+1),BVR(in.a+2)};
       callValue(S,BVR(in.a),2,args);
       int n=S->nret;
-      if(n==0||S->retbuf[0].tag==T_NIL) break;          /* exit loop */
+      if(n==0||S->retbuf[0].tag==T_NIL) BC_NEXT();          /* exit loop */
       int nn=in.c;
       BVR(in.a+2)=S->retbuf[0];
       int nv=n>nn?nn:n;
       for(int i=0;i<nv;i++) BVR(in.a+3+i)=S->retbuf[i];
       for(int i=nv;i<nn;i++) BVR(in.a+3+i)=VNIL;
-      pc+=in.imm+1; continue; }
-    case BC_RETURN:{
-      int n2=in.b-1+(in.imm?mrc:0);
+      pc+=(short)p->imm[pc]+1; BC_AGAIN(); }
+    BC_OP(BC_RETURN):{
+      int n2=in.b-1+(p->imm[pc]?mrc:0);
       if(n2>64)n2=64;
       for(int i=0;i<n2;i++) S->retbuf[i]=BVR(in.a+i);
       S->nret=n2;
@@ -1251,12 +1305,20 @@ static Value vm_call(State*S,Proto*p,Closure*cl,int argc,Value*argv){
       S->vtop=base;
       dbg_pop_frame(S);
       return ret;}
+#ifndef BC_THREADED
     default: lx_rt_error(S,"internal error: bad opcode %d",(int)in.op);
     }
     pc++;
   }
+#endif
 }
 #undef BVR
+#undef BC_OP
+#undef BC_AGAIN
+#undef BC_NEXT
+#ifdef BC_THREADED
+#undef BC_THREADED
+#endif
 
 /* ---- disassembler (CLI --bc-dump / tests) ---- */
 static void bc_collect_funcs(Node*n,Node**out,int*no,int max){
@@ -1284,8 +1346,9 @@ int lx_bc_disassemble(lx_State*S,const char*src,char*errbuf,int errlen){
       else if(v.tag==T_STR)snprintf(b,sizeof(b),"\"%.*s\"",(int)v.u.s->len,v.u.s->p);
       else snprintf(b,sizeof(b),"?");
       printf("    K%d = %s\n",j,b); }
-    for(int j=0;j<p->ncode;j++)
-      printf("  %4d  %-9s a=%-3d b=%-3d c=%-3d imm=%-6d ; line %d\n",j,bc_opname(p->code[j].op),p->code[j].a,p->code[j].b,p->code[j].c,p->code[j].imm,p->lines[j]);
+    for(int j=0;j<p->ncode;j++){ int o=p->code[j].op;
+      int sgn=(o==BC_JMP||o==BC_TEST||o==BC_TESTN||o==BC_FORPREP||o==BC_FORLOOP||o==BC_GFORPREP||o==BC_GFORLOOP);
+      printf("  %4d  %-9s a=%-3d b=%-3d c=%-3d imm=%-6d ; line %d\n",j,bc_opname(o),p->code[j].a,p->code[j].b,p->code[j].c,sgn?(short)p->imm[j]:(int)p->imm[j],p->lines[j]); }
   }
   return nf;
 }
