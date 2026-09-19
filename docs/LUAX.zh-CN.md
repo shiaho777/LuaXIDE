@@ -200,7 +200,7 @@ return view
 --    改的变量无人再读,屏幕永远不变。
 ```
 
-事件 payload 语义:`input.onSubmit(text)` 收到输入框文本;`switch.onToggle(v)` 收到 `"true"`/`"false"`;其余事件无参。需要数字自行 `tonumber`。
+事件 payload 语义:`input.onChange(text)` 每次输入都收到字段文本字符串,`input.onSubmit(text)` 在键盘确认时收到字段文本;`slider.onChange(v)` 收到数值的字符串形式;`switch.onToggle(v)` 收到 `"true"`/`"false"`。点击与定时事件无参。slider 值需 `tonumber`,开关用 `v == "true"`。
 
 ### 4.3 onTick / interval
 
@@ -208,25 +208,109 @@ return view
 
 ## 5. UI DSL
 
-`ui.<type>{ props..., children... }` 的本质:**一个普通 Lua 表,打上 `__ui = "<type>"` 标签**。字符串键是 props;数组部分(1..#t)是 children;函数 prop 注册为 handler。16 个构造器:
+`ui.<type> { props..., children... }` 给普通 Lua 表打上 `__ui = "<type>"` 标签。字符串键是属性,数组项是子节点,函数属性注册为 handler。**只有 text 支持字符串构造糖**:`ui.text('hi')` 等同于 `ui.text { text = "hi" }`。`ui.column { "hi" }` 这样的字符串子项序列化为 text 节点,并不会变成按钮标签;其他构造器仍接收属性表。
 
-| 构造器 | 属性(类型 / 默认) | 说明 |
+### 组件(19 个)
+
+以下为属性缺省值。尺寸单位为 dp,文本字号为 sp。
+
+| 构造器 | 规范属性与默认值 | 行为 |
 |---|---|---|
-| `app` | `title`(str, "") | 根节点;非空时渲染标题头 |
-| `column` / `row` | `spacing`(num, 8dp) | 纵向 / 横向容器(row 子项垂直居中) |
-| `text` | `text`(str, "")、`size`(num, 16sp)、`color`(#hex)、`font`(资产路径)、`animate`(bool, true) | `animate=false` 走无动画路径(棋盘/时钟) |
-| `button` | `text`(str)、`onClick`(handler) | 子节点被忽略 |
-| `card` | `spacing`(8dp)、`radius`(16dp)、`padding`(16dp) | 卡片容器 |
-| `input` | `value`(str)、`label`(str)、`onSubmit`(handler) | **onSubmit 收到输入框文本**(键盘确认触发) |
-| `image` | `src`(str)、`size`(num, 96dp) | 经 AssetResolver;失败显示 missing |
-| `spacer` | `size`(num, 8dp) | 仅高度 |
-| `divider` | — | 水平分隔线 |
-| `scrollview` | `spacing`(8dp) | 纵向滚动 |
-| `list` / `listitem` | `spacing` / `title`、`subtitle`、`onClick` | listitem 整行可点 |
-| `stack` / `page` | `selected`(str)/ `key` | 按 key 选页;page 仅作 stack 子节点 |
-| `switch` | `label`、`checked`(bool)、`onToggle`(handler) | **onToggle 收到 "true"/"false"** |
+| `app` | `title = ""` | 根节点;标题非空时显示标题栏 |
+| `column` / `row` | `spacing = 8` | 纵向 / 横向布局;row 子项默认垂直居中 |
+| `box` | 下述通用样式 | 子项叠放,默认左上(start) |
+| `text` | `text = ""`, `size = 16`, `color`, `font`, `bold = false`, `animate = true` | font 为资产字体路径;`animate = false` 关闭文本切换动画 |
+| `button` | `text = "button"`, `onClick` | 点击无参;忽略子节点 |
+| `card` | `spacing = 8`, `radius = 16`, `padding = 16` | 卡片内纵向排列 |
+| `input` | `value = ""`, `label = "input"`, `onChange`, `onSubmit` | 单行输入;每次编辑 / 键盘确认均传字段文本字符串 |
+| `image` | `src = ""`, `size = 96` | 资产图片,裁剪适配;路径解析失败显示 `missing` |
+| `spacer` | `size = 8` | 默认高度 |
+| `divider` | `color` | 水平分隔线 |
+| `scrollview` | `spacing = 8` | 有限视口内纵向滚动 |
+| `list` | `spacing = 8` | 普通 Column,非懒加载/回收列表,也不是独立滚动容器 |
+| `listitem` | `title = ""`, `subtitle = ""`, `onClick` | 可选点击行及子项;点击无参 |
+| `stack` / `page` | `selected = ""` / `key`, `spacing = 8` | **仅按 page.key** 选页,否则取首个 page;无 page 时显示全部子项 |
+| `switch` | `label = "switch"`, `checked = false`, `onToggle` | 传 `"true"` / `"false"` 字符串,不是布尔值 |
+| `slider` | `from = 0`, `to = 1`, `value = from`, `step = 0`, `onChange` | 传数值的**字符串**形式,用 `tonumber` 转换 |
+| `progress` | `value`, `color` | 线性进度条:值截断到 0..1;**不传 value 为不定态** |
 
-通用:`key`/`id` 作为 diff 身份(影响动画)。序列化为 `{type, props, children}` JSON;props 键序为哈希表槽序(测试断言须用子串匹配)。完整渲染契约(两模块一致的权威属性表)随 [PLATFORM_ABI.md](PLATFORM_ABI.zh-CN.md) §6 演进。
+slider 的值和范围必须有限,`to > from`,step 为有限非负数(范围还必须能由宿主 float 滑杆表示)。`step = 0` 为连续滑动;正 step 是**从 from 起算的数值增量**,不是刻度数量。值会截断到范围并吸附至最近增量;即使范围不能整除 step,仍能到达 `to`。非法参数显示诊断信息。
+
+### 通用样式与子项布局
+
+- `width`、`height`、`padding`、`radius`:有限非负的 **dp 数值**,受父容器约束;非法值忽略。不支持 `"100%"` / `"fill"` 尺寸语法。radius 裁剪圆角;padding 默认 0,card 内边距默认 16dp(只应用一次)。
+- `background`:`#RRGGBB` / `#AARRGGBB`;card/button/input/listitem/image 通过各自 surface 上色。text/divider/progress 的 `color` 格式相同。
+- `weight`:**Row/Column 作用域**中子项的有限正权重,分配水平/垂直剩余空间。主轴必须有界;无界滚动内容中的 weight 被忽略。Box 不使用 weight。
+- `align` 是**子项属性**,不是容器整体对齐方式。Row 作用域:`top`、`center`、`bottom`。Column 作用域:`start`(也接受 `left`)、`center`、`end`。Box 作用域:`topleft`(默认)、`top`、`topright`、`left`、`center`、`right`、`bottomleft`、`bottom`、`bottomright`。其他以 Column 渲染子项的容器沿用该作用域规则;不适用的值被忽略。
+- 节点身份按 `key`、`id`、结构位置的优先级确定。同类型节点使用稳定 key 时,重排会保留状态;更换组件类型时重新创建状态。动态列表应显式提供稳定 key,不会根据文本或内容自动生成 key。同级重复的显式 key/id 会显示 `duplicate child key '<value>' at <parent path>`,而不渲染该冲突子列表;不同父节点下可重复使用 key。这**不代表**可以用 `page.id` 选页:`stack.selected` 必须对应 `page.key`。
+- Row 子项的水平权重不影响宿主纵向滚动。未约束的垂直权重与 scrollview 需要有限宿主视口;显式容器高度会截断该需求向上传播。仅 stack 当前选中的页面参与判断。
+
+渲染器回归测试:`./gradlew :app:testDebugUnitTest` 无需设备即可检查节点身份和视口规则;`./gradlew :app:connectedDebugAndroidTest` 在可用的专用设备上检查 Compose 布局、带 key 输入框和嵌套滚动。仅编译测试 APK 不等于验证布局。
+
+嵌套 `scrollview` 必须有**有限高度**,来自自身或真正约束它的父容器。高度无界时会显示 `scrollview needs a bounded height. Set height on this nested scrollview or its parent.`,而不是滚动。不保证任意嵌套都可用。`list` 仍是普通 Column;需要独立滚动时请用有界 scrollview。
+
+### 破坏性迁移:仅使用规范名
+
+属性/事件别名回退链已移除,**没有兼容层**。请显式改写,不要依赖回退:
+
+| 旧拼写 / 用法 | 规范替代 |
+|---|---|
+| text/button 用 `label` / `value` / `content` 作文字 | `text` |
+| `fontSize`, `fontPath` | text 的 `size`, `font` |
+| `onTap` / `onPress` | button/listitem 的 `onClick` |
+| input 的 `text`, `placeholder`, `onEnter` | `value`, `label`, `onSubmit` |
+| switch 的 `value`, `text`, `onChange` / `onCheckedChange` | `checked`, `label`, **`onToggle`** |
+| image 的 `source` / `path`, 容器的 `gap`, card 的 `cornerRadius` / `pad` | `src`, `spacing`, `radius` / `padding` |
+| listitem 的 `text` / `description` | `title` / `subtitle` |
+| stack 的 `value` / `active`, 用于选页的 page `id` | `selected`, page **`key`** |
+| slider 的 `min` / `max` / `steps` / `onValueChanged` | `from` / `to` / `step`(增量,不是数量) / `onChange` |
+
+`input.onChange` 与 `slider.onChange` 是规范名称,`switch.onChange` 不是。其余名称及默认值以组件表为准。
+
+### 状态更新示例
+
+返回 view 函数,让每次事件根据更新后的状态重建树(§4.2):
+
+```lua
+local ui = require("ui")
+local amount = 0.4
+local name = ""
+local enabled = false
+local function view()
+  return ui.app {
+    title = "Controls",
+    ui.column {
+      spacing = 12,
+      ui.text('hi'),
+      "String children become text nodes",
+      ui.row { width = 280,
+        ui.text { text = "A", weight = 1 },
+        ui.text { text = "B", weight = 2, align = "bottom" },
+      },
+      ui.box { width = 280, height = 64, background = "#202020", radius = 8,
+        ui.text { text = "Overlay", bold = true, color = "#FFFFFF",
+                  padding = 8, align = "bottomright" },
+      },
+      ui.input { label = "Name", value = name,
+        onChange = function(text) name = text end,
+        onSubmit = function(text) print(text) end,
+      },
+      ui.slider { value = amount, from = 0, to = 1, step = 0.1,
+        onChange = function(value) amount = tonumber(value) end,
+      },
+      ui.progress { value = amount },
+      ui.progress {}, -- absent value = indeterminate
+      ui.switch { label = "Enabled", checked = enabled,
+        onToggle = function(value) enabled = value == "true" end,
+      },
+      ui.text { text = name .. " / " .. amount },
+    },
+  }
+end
+return view -- return the function, not view(): events rebuild from state
+```
+
+序列化为 `{type, props, children}` JSON;属性顺序不保证,测试断言不可依赖键序。跨语言契约见 [PLATFORM_ABI.md](PLATFORM_ABI.zh-CN.md) §6。
 
 ## 6. 元表
 

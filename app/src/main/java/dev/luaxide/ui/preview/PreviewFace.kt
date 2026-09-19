@@ -32,6 +32,7 @@ import dev.luaxide.program.resolvePreviewKind
 import dev.luaxide.ui.runtime.Motion
 import dev.luaxide.ui.runtime.OnEvent
 import dev.luaxide.ui.runtime.RenderTree
+import dev.luaxide.ui.runtime.TreeViewport
 import dev.luaxide.ui.runtime.nodeIdentity
 
 /**
@@ -133,13 +134,15 @@ private fun UiPreview(
                         scaleX = contentScale
                         scaleY = contentScale
                         translationY = contentY
-                    }
-                    .verticalScroll(scroll)
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                    },
             ) {
                 key(rootKey) {
-                    RenderTree(node = displayTree, onEvent = onEvent)
+                    // Shared scroll policy with the packaged runtime: trees that
+                    // declare their own scrollers/weights own the finite viewport;
+                    // plain trees keep host scrolling (NodeProps.TreeViewport).
+                    TreeViewport(node = displayTree) {
+                        RenderTree(node = displayTree, onEvent = onEvent)
+                    }
                 }
             }
         }

@@ -1,7 +1,7 @@
 /* j6_conformance.c — the JS side of the cross-engine conformance suite.
  * Mirrors the assertions of engine/tests/t26_invoke_tree.c so the LuaX and
  * QuickJS facades cannot drift apart on the PLATFORM_ABI contract:
- *   - every one of the 16 ui constructors must produce its type in the tree
+ *   - every one of the 19 ui constructors must produce its type in the tree
  *   - a handler returning a ui tree replaces the view
  *   - a handler returning undefined keeps the previous tree
  *   - the event payload reaches the handler as its first argument
@@ -38,7 +38,16 @@ static const char* ALL_COMPONENTS =
     "    ui.stack({ selected: 'a' },"
     "      ui.page({ key: 'a' }, ui.text({ text: 'pa' })),"
     "      ui.page({ key: 'b' }, ui.text({ text: 'pb' }))),"
-    "    ui.switch({ label: 'sw', onToggle: function(){} })));";
+    "    ui.switch({ label: 'sw', onToggle: function(){} }),"
+    "    ui.box({}, ui.progress({ value: 50 })),"
+    "    ui.slider({ min: 0, max: 100 })));";
+
+/* string children in array position are contract: any engine must wrap a
+ * bare string child into a text node (JS does it in node(), Lua in jnode,
+ * Python in _lx_ser) */
+static const char* STRING_CHILDREN =
+    "return ui.app({ title: 'strings' },"
+    "  ui.column({}, 'hello', ui.text('hi'), ui.button({ text: 'no sugar' })));";
 
 static const char* PAYLOAD_VIEW =
     "var name = '?';"
@@ -67,7 +76,8 @@ int main(void){
   {
     static const char* types[] = { "app","column","row","text","button","card","input",
                                    "image","spacer","divider","scrollview","list",
-                                   "listitem","stack","page","switch" };
+                                   "listitem","stack","page","switch",
+                                   "box","slider","progress" };
     int rc = qjsx_run(x, ALL_COMPONENTS, err, sizeof(err));
     CHK(rc == 0, "all-components run");
     if (rc) fprintf(stderr, "  err: %s\n", err);
@@ -78,6 +88,20 @@ int main(void){
       CHK(has(j, pat), types[i]); /* message = the missing component */
     }
     CHK(handler_id(j) >= 0, "handlers registered");
+  }
+
+  /* --- 1b. string children + ui.text string shorthand --- */
+  {
+    int rc = qjsx_run(x, STRING_CHILDREN, err, sizeof(err));
+    CHK(rc == 0, "string-children run");
+    if (rc) fprintf(stderr, "  err: %s\n", err);
+    const char* j = qjsx_last_json(x);
+    /* a bare string child is wrapped into a text node */
+    CHK(has(j, "{\"type\":\"text\",\"props\":{\"text\":\"hello\"},\"children\":[]}"), "string child wrapped as text node");
+    /* ui.text('hi') shorthand ≡ ui.text({text:'hi'}) */
+    CHK(has(j, "{\"type\":\"text\",\"props\":{\"text\":\"hi\"},\"children\":[]}"), "ui.text string shorthand");
+    CHK(has(j, "{\"type\":\"button\",\"props\":{\"text\":\"no sugar\"},\"children\":[]}"), "button explicit text prop preserved");
+    CHK(strcmp(j, "{\"type\":\"app\",\"props\":{\"title\":\"strings\"},\"children\":[{\"type\":\"column\",\"props\":{},\"children\":[{\"type\":\"text\",\"props\":{\"text\":\"hello\"},\"children\":[]},{\"type\":\"text\",\"props\":{\"text\":\"hi\"},\"children\":[]},{\"type\":\"button\",\"props\":{\"text\":\"no sugar\"},\"children\":[]}]}]}") == 0, "complete string children tree");
   }
 
   /* --- 2. payload reaches the handler; returned tree replaces the view --- */

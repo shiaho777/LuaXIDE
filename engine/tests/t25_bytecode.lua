@@ -26,6 +26,19 @@ eq(1 / 4, 0.25, "div")
 eq(~5, -6, "bnot")
 eq(5 & 3, 1, "band")
 eq(5 | 3, 7, "bor")
+-- bitwise ops only reach the bytecode VM inside a function body (top-level
+-- chunks are always tree-walked), so assert there too
+local function bits(a, b) return a & b, a | b, a ~ b, ~a, a << 2, a >> 1 end
+local g1, g2, g3, g4, g5, g6 = bits(5, 3)
+eq(g1, 1, "band in fn")
+eq(g2, 7, "bor in fn")
+eq(g3, 6, "bxor in fn")
+eq(g4, -6, "bnot in fn")
+eq(g5, 20, "shl in fn")
+eq(g6, 2, "shr in fn")
+-- mixed precedence: | is lower than ~ and &, compiled into the same body
+local function mix() return 12 | 10 & 3 end
+eq(mix(), 14, "bit precedence in fn")
 eq(5 ~ 3, 6, "bxor")
 eq(1 << 10, 1024, "shl")
 eq(1024 >> 3, 128, "shr")

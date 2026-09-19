@@ -86,7 +86,11 @@ object ComponentCatalog {
             type = "input",
             label = "input",
             icon = Icons.Filled.Edit,
-            snippet = """ui.input { label = "label", value = "" }""",
+            snippet = """ui.input {
+    label = "label", value = "",
+    onChange = function(text) print(text) end,
+    onSubmit = function(text) print("submitted: " .. text) end,
+}""",
         ),
         CatalogEntry(
             type = "image",
@@ -111,6 +115,7 @@ object ComponentCatalog {
             label = "scroll",
             icon = Icons.AutoMirrored.Filled.Notes,
             snippet = """ui.scrollview {
+    height = 240,
     ui.text { text = "scrollable" },
 }""",
         ),
@@ -165,8 +170,32 @@ object ComponentCatalog {
             snippet = """ui.switch {
     label = "enabled",
     checked = true,
-    onChange = function() print("toggled") end,
+    onToggle = function(v) print("now " .. v) end,
 }""",
+        ),
+        CatalogEntry(
+            type = "box",
+            label = "box",
+            icon = Icons.Filled.CropSquare,
+            snippet = """ui.box { width = 240, height = 80, background = "#202020", radius = 8,
+    ui.text { text = "overlay", bold = true, color = "#FFFFFF", align = "bottomright" },
+}""",
+        ),
+        CatalogEntry(
+            type = "slider",
+            label = "slider",
+            icon = Icons.Filled.SpaceBar,
+            snippet = """ui.slider {
+    value = 0.4, from = 0, to = 1, step = 0.1,
+    onChange = function(value) print(tonumber(value)) end,
+    -- For shared state, see the returned-view example in ui.slider API docs.
+}""",
+        ),
+        CatalogEntry(
+            type = "progress",
+            label = "progress",
+            icon = Icons.Filled.HorizontalRule,
+            snippet = """ui.progress { value = 0.4 }""",
         ),
     )
 

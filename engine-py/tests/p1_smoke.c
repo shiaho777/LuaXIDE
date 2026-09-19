@@ -92,5 +92,24 @@ int main(void){
   if (!strstr(j, "\"title\":\"keep\"")) { printf("FAIL: tree lost after handler error\n"); return 1; }
   printf("keep-tree contract OK\n");
   mpyx_free(y);
+
+  /* --- string sugar + box/slider/progress constructors --- */
+  MpyX* z = mpyx_new();
+  const char* src4 =
+    "def view():\n"
+    "    return ui.app({'title': 'sugar'}, ui.column({},\n"
+    "        'hello',\n"
+    "        ui.text('hi'),\n"
+    "        ui.button({'text': 'plain'}),\n"
+    "        ui.box({}, ui.progress({'value': 50})),\n"
+    "        ui.slider({'min': 0, 'max': 100})))\n";
+  rc = mpyx_run(z, src4, err, sizeof(err));
+  if (rc) { printf("FAIL: sugar run: %s\n", err); return 1; }
+  j = mpyx_last_json(z);
+  if (!strstr(j, "\"type\":\"text\",\"props\":{\"text\":\"hello\"}")) { printf("FAIL: string child not wrapped as text node: %.240s\n", j); return 1; }
+  if (!strstr(j, "\"props\":{\"text\":\"hi\"}")) { printf("FAIL: ui.text('hi') shorthand: %.240s\n", j); return 1; }
+  if (!strstr(j, "\"type\":\"box\"") || !strstr(j, "\"type\":\"slider\"") || !strstr(j, "\"type\":\"progress\"")) { printf("FAIL: box/slider/progress missing: %.240s\n", j); return 1; }
+  printf("string sugar + box/slider/progress OK\n");
+  mpyx_free(z);
   return 0;
 }

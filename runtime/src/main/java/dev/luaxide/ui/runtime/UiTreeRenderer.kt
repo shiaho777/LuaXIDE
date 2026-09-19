@@ -27,22 +27,6 @@ import dev.luaxide.engine.UiNode
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 
-private class TrackedChild(
-    val id: String,
-    path: String,
-    node: UiNode,
-    val appear: MutableTransitionState<Boolean>,
-) {
-    var path by mutableStateOf(path)
-    var node by mutableStateOf(node)
-}
-
-private data class IncomingChild(
-    val id: String,
-    val path: String,
-    val node: UiNode,
-)
-
 @Composable
 fun RenderTree(
     node: UiNode,
@@ -51,11 +35,12 @@ fun RenderTree(
 ) {
     val component = ComponentRegistry[node.type]
     if (component != null) {
-        component(node, onEvent) { children ->
+        component(node, onEvent) { children, childModifier ->
             DiffedChildren(
                 children = children,
                 parentPath = path,
                 onEvent = onEvent,
+                childModifier = childModifier,
             )
         }
     } else {
@@ -68,9 +53,15 @@ private fun DiffedChildren(
     children: List<UiNode>,
     parentPath: String,
     onEvent: OnEvent,
+    childModifier: (UiNode) -> Modifier,
 ) {
     val tracks: SnapshotStateList<TrackedChild> = remember { mutableStateListOf() }
     val seeded = remember { booleanArrayOf(false) }
+    val conflict = duplicateChildKey(children)
+    if (conflict != null) {
+        Text("duplicate child key '$conflict' at $parentPath", color = MaterialTheme.colorScheme.error)
+        return
+    }
     val incoming = mapIncoming(children, parentPath)
 
     applyIncoming(
@@ -84,7 +75,7 @@ private fun DiffedChildren(
 
     tracks.forEach { track ->
         key(track.id) {
-            Box(modifier = Modifier.animatePlacement()) {
+            Box(modifier = childModifier(track.node).animatePlacement()) {
                 AnimatedVisibility(
                     visibleState = track.appear,
                     enter = Motion.listEnter(),
@@ -119,88 +110,6 @@ private fun DiffedChildren(
             }
         }
     }
-}
-
-private fun mapIncoming(children: List<UiNode>, parentPath: String): List<IncomingChild> {
-    val typeCounts = HashMap<String, Int>()
-    return children.map { child ->
-        val typeIndex = typeCounts.merge(child.type, 1) { a, _ -> a + 1 }!! - 1
-        val structuralPath = "$parentPath/${child.type}[$typeIndex]"
-        IncomingChild(
-            id = nodeIdentity(child, structuralPath),
-            path = structuralPath,
-            node = child,
-        )
-    }
-}
-
-private fun applyIncoming(
-    tracks: SnapshotStateList<TrackedChild>,
-    incoming: List<IncomingChild>,
-    animateEnter: Boolean,
-) {
-    val nextIds = LinkedHashSet<String>(incoming.size)
-    for (item in incoming) nextIds.add(item.id)
-    val existing = tracks.associateBy { it.id }
-
-    for (track in tracks) {
-        if (track.id !in nextIds && track.appear.targetState) {
-            track.appear.targetState = false
-        }
-    }
-
-    val rebuilt = ArrayList<TrackedChild>(incoming.size + 4)
-    val placed = HashSet<String>()
-
-    for (item in incoming) {
-        val cur = existing[item.id]
-        if (cur != null) {
-            if (cur.node !== item.node) cur.node = item.node
-            if (cur.path != item.path) cur.path = item.path
-            if (!cur.appear.targetState) cur.appear.targetState = true
-            rebuilt.add(cur)
-        } else {
-            val initial = if (animateEnter) false else true
-            rebuilt.add(
-                TrackedChild(
-                    id = item.id,
-                    path = item.path,
-                    node = item.node,
-                    appear = MutableTransitionState(initial).apply { targetState = true },
-                ),
-            )
-        }
-        placed.add(item.id)
-    }
-
-    val oldOrder = tracks.map { it.id }
-    for (track in tracks) {
-        if (track.id in placed) continue
-        if (!track.appear.currentState && !track.appear.targetState) continue
-        if (track.appear.targetState) track.appear.targetState = false
-        val oldIndex = oldOrder.indexOf(track.id)
-        val predId = oldOrder.take(oldIndex).lastOrNull { it in placed }
-        val insertAt = if (predId == null) {
-            0
-        } else {
-            val i = rebuilt.indexOfFirst { it.id == predId }
-            if (i < 0) rebuilt.size else i + 1
-        }
-        rebuilt.add(insertAt.coerceIn(0, rebuilt.size), track)
-    }
-
-    val sameOrder = rebuilt.size == tracks.size &&
-        rebuilt.indices.all { rebuilt[it].id == tracks[it].id }
-    if (!sameOrder) {
-        tracks.clear()
-        tracks.addAll(rebuilt)
-    }
-}
-
-fun nodeIdentity(node: UiNode, structuralPath: String): String {
-    val explicit = node.string("key").ifEmpty { node.string("id") }.trim()
-    if (explicit.isNotEmpty()) return "k:$explicit"
-    return "s:$structuralPath"
 }
 
 @Composable
