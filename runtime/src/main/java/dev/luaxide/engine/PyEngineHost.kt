@@ -25,6 +25,9 @@ class PyEngineHost : EngineAdapter {
     @Volatile
     private var handle: Long = 0L
 
+    @Volatile
+    private var modrootPath: String = ""
+
     private val _state = MutableStateFlow<EngineState>(EngineState.Idle)
     override val state: StateFlow<EngineState> = _state.asStateFlow()
 
@@ -33,7 +36,16 @@ class PyEngineHost : EngineAdapter {
             handle = PyNative.nativeNew()
             // same runaway-loop guard as the other engines
             PyNative.nativeSetStepLimit(handle, 50_000_000L)
+            if (modrootPath.isNotEmpty()) PyNative.nativeSetModroot(handle, modrootPath)
         }
+    }
+
+    /** Module search root for `import` (project source dir); mirrors
+     *  [EngineHost.setModuleRoot]. Applies on the next engine handle. */
+    fun setModuleRoot(path: String) {
+        modrootPath = path
+        val h = handle
+        if (h != 0L) PyNative.nativeSetModroot(h, path)
     }
 
     override suspend fun run(src: String): RunResult {

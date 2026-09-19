@@ -7,26 +7,33 @@
  * platform JSON with Python's json module (dicts with str keys only).
  */
 #include "mpy_x.h"
+#include "py/builtin.h"
 #include "py/compile.h"
 #include "py/gc.h"
 #include "py/mpstate.h"
+#include "py/objlist.h"
+#include "py/pystack.h"
 #include "py/runtime.h"
 #include "py/stackctrl.h"
 #include "shared/runtime/gchelper.h"
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
-#define MPY_HEAP_SIZE (512 * 1024)
+#define MPY_HEAP_SIZE   (512 * 1024)
+#define MPY_PYSTACK_SIZE (16 * 1024)
 
 struct MpyX {
+    mp_state_ctx_t* saved; /* parked VM state while another engine runs */
     char* heap;
+    char* modroot;         /* dir appended to sys.path before each run */
     char* out;    size_t out_sz, out_used;
     char* json;   size_t json_sz, json_used;
     volatile int cancel_flag;
     int interrupt_kind; /* 0 none, 1 cancelled, 2 step limit */
     long steps, step_limit;
-    int ready;         /* runtime initialized */
     int stack_mark;
 };
 
@@ -43,8 +50,41 @@ static void buf_append(char** b, size_t* sz, size_t* used, const char* s, size_t
     (*b)[*used] = 0;
 }
 
-/* single active engine per process (pilot scope; the host owns one worker thread) */
+/* The MicroPython core keeps all VM state in the process-global mp_state_ctx.
+ * To host several engines per process we swap the whole ctx: every entry
+ * point that touches VM state runs inside swap_in()..swap_out() under g_mx,
+ * so engines serialize their VM windows but keep fully independent heaps,
+ * globals, module tables and sys.path. g_active routes stdout capture and
+ * the cancel/step-limit poll to the engine currently inside its window. */
 static MpyX* g_active;
+static pthread_mutex_t g_mx = PTHREAD_MUTEX_INITIALIZER;
+static char g_pystack[MPY_PYSTACK_SIZE];
+
+static void swap_in(MpyX* x) {
+    memcpy(&mp_state_ctx, x->saved, sizeof(mp_state_ctx));
+    g_active = x;
+}
+
+static void swap_out(MpyX* x) {
+    memcpy(x->saved, &mp_state_ctx, sizeof(mp_state_ctx));
+    g_active = NULL;
+}
+
+/* sys.path/fs-import bridge (MICROPY_VFS is off, so the port provides this) */
+mp_import_stat_t mp_import_stat(const char* path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return MP_IMPORT_STAT_NO_EXIST;
+    return S_ISDIR(st.st_mode) ? MP_IMPORT_STAT_DIR : MP_IMPORT_STAT_FILE;
+}
+
+/* MICROPY_PY_IO registers open() on builtins/io, but the embed tree has no
+ * FileIO object — raise a clear error rather than leave the symbol absent.
+ * io.StringIO/BytesIO (in-memory streams) work fine without it. */
+mp_obj_t mp_builtin_open(size_t n_args, const mp_obj_t *args, mp_map_t *kwargs) {
+    (void)n_args; (void)args; (void)kwargs;
+    mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("open: no filesystem file objects"));
+}
+MP_DEFINE_CONST_FUN_OBJ_KW(mp_builtin_open_obj, 1, mp_builtin_open);
 
 void mp_hal_stdout_tx_strn(const char* str, size_t len) {
     if (g_active && str) buf_append(&g_active->out, &g_active->out_sz, &g_active->out_used, str, len);
@@ -140,25 +180,32 @@ MpyX* mpyx_new(void) {
     MpyX* x = calloc(1, sizeof(MpyX));
     if (!x) return NULL;
     x->heap = malloc(MPY_HEAP_SIZE);
-    if (!x->heap) { free(x); return NULL; }
-    g_active = x;
-    return x;
-}
-
-static void mpy_reset(MpyX* x) {
-    if (x->ready) return; /* one runtime for the engine's lifetime; run() re-executes
-                             a fresh globals dict instead of tearing the VM down */
+    x->saved = calloc(1, sizeof(mp_state_ctx_t));
+    if (!x->heap || !x->saved) { free(x->heap); free(x->saved); free(x); return NULL; }
+    /* one runtime for the engine's lifetime; run() re-executes in fresh
+     * globals instead of tearing the VM down. Init happens inside a ctx
+     * window so the new VM lands in x->saved, not in shared state. */
+    pthread_mutex_lock(&g_mx);
+    swap_in(x); /* zeroed ctx == first-use state for gc_init/mp_init */
     int stack_top;
     mp_stack_set_top(&stack_top);
+    mp_pystack_init(g_pystack, g_pystack + MPY_PYSTACK_SIZE);
     gc_init(x->heap, x->heap + MPY_HEAP_SIZE);
     mp_init();
-    x->ready = 1;
+    swap_out(x);
+    pthread_mutex_unlock(&g_mx);
+    return x;
 }
 
 void mpyx_free(MpyX* x) {
     if (!x) return;
-    g_active = NULL;
-    if (x->ready) mp_deinit();
+    pthread_mutex_lock(&g_mx);
+    swap_in(x);
+    mp_deinit();
+    swap_out(x);
+    pthread_mutex_unlock(&g_mx);
+    free(x->saved);
+    free(x->modroot);
     free(x->heap);
     free(x->out);
     free(x->json);
@@ -172,6 +219,20 @@ void mpyx_cancel(MpyX* x) { if (x) x->cancel_flag = 1; }
 void mpyx_clear_cancel(MpyX* x) { if (x) x->cancel_flag = 0; }
 void mpyx_set_step_limit(MpyX* x, long steps) { if (x) x->step_limit = steps; }
 
+/* lx_set_modroot counterpart: dir appended to sys.path before each run so
+ * `import helper` resolves sibling files next to the project entry point.
+ * g_mx serializes against a concurrent run()'s read of x->modroot. */
+void mpyx_set_modroot(MpyX* x, const char* path) {
+    if (!x) return;
+    char* dup = (path && path[0]) ? strdup(path) : NULL;
+    pthread_mutex_lock(&g_mx);
+    free(x->modroot);
+    x->modroot = dup;
+    pthread_mutex_unlock(&g_mx);
+}
+
+const char* mpyx_modroot(MpyX* x) { return (x && x->modroot) ? x->modroot : ""; }
+
 /* find the LAST __LXTREE__ marker in the captured output — user prints
  * containing the marker must not corrupt the tree or truncate the output
  * (the real capture line is always printed last, after user code runs). */
@@ -184,7 +245,9 @@ static const char* last_tree_marker(const char* out, size_t used) {
 
 int mpyx_run(MpyX* x, const char* src, char* err, size_t errlen) {
     if (!x) { if (err && errlen) snprintf(err, errlen, "engine not initialized"); return 1; }
-    mpy_reset(x); /* one VM per engine lifetime; run() re-executes in fresh globals */
+    pthread_mutex_lock(&g_mx);
+    swap_in(x);
+    int rc = 1;
     x->cancel_flag = 0;   /* lx_reset_run semantics */
     x->steps = 0; x->interrupt_kind = 0;
     MP_STATE_THREAD(mp_pending_exception) = MP_OBJ_NULL;
@@ -193,11 +256,18 @@ int mpyx_run(MpyX* x, const char* src, char* err, size_t errlen) {
     char errbuf[512];
     /* fresh globals: prelude + script run in their own namespace per run */
     mpy_exec(x, "globals().clear()", NULL, 0);
+    /* module root: rebuild sys.path so `import` sees exactly the project
+     * dir (builtin modules resolve before the filesystem scan) */
+    {
+        mp_obj_list_t* path = MP_OBJ_TO_PTR(mp_sys_path);
+        path->len = 0;
+        if (x->modroot) mp_obj_list_append(mp_sys_path, mp_obj_new_str(x->modroot, strlen(x->modroot)));
+    }
     if (mpy_exec(x, PRELUDE, errbuf, sizeof(errbuf))) {
         if (err && errlen) snprintf(err, errlen, "prelude: %s", errbuf);
-        return 1;
+        goto done;
     }
-    if (mpy_exec(x, src, err, errlen)) return 1;
+    if (mpy_exec(x, src, err, errlen)) goto done;
     /* capture tree: view() or _lx_tree global, serialized with json.dumps */
     static const char* cap =
         "def _lx_str(s):\n"
@@ -259,11 +329,17 @@ int mpyx_run(MpyX* x, const char* src, char* err, size_t errlen) {
         x->out_used = marker - x->out;
         x->out[x->out_used] = 0;
     }
-    return 0;
+    rc = 0;
+done:
+    swap_out(x);
+    pthread_mutex_unlock(&g_mx);
+    return rc;
 }
 
 int mpyx_invoke(MpyX* x, int handler_id, const char* arg, char* err, size_t errlen) {
     if (!x) { if (err && errlen) snprintf(err, errlen, "engine not initialized"); return 1; }
+    pthread_mutex_lock(&g_mx);
+    swap_in(x);
     /* invoke keeps a set cancel flag (lx semantics) but resets steps */
     x->steps = 0; x->interrupt_kind = 0;
     MP_STATE_THREAD(mp_pending_exception) = MP_OBJ_NULL;
@@ -311,7 +387,7 @@ int mpyx_invoke(MpyX* x, int handler_id, const char* arg, char* err, size_t errl
     if (!code) {
         free(x->json); x->json = old_json; x->json_sz = old_sz; x->json_used = old_used;
         if (err && errlen) snprintf(err, errlen, "out of memory");
-        return 1;
+        goto done1;
     }
     char errbuf[512];
     int failed = mpy_exec(x, code, errbuf, sizeof(errbuf));
@@ -325,7 +401,7 @@ int mpyx_invoke(MpyX* x, int handler_id, const char* arg, char* err, size_t errl
         } else if (err && errlen) {
             snprintf(err, errlen, "%s", errbuf);
         }
-        return 1;
+        goto done1;
     }
     /* re-render: view() wins (fresh state) over a handler-set _lx_tree,
      * mirroring the Lua app_view-function re-call on every invoke */
@@ -352,5 +428,11 @@ int mpyx_invoke(MpyX* x, int handler_id, const char* arg, char* err, size_t errl
     if (x->json_used == 0) { /* no new tree → restore the previous view */
         free(x->json); x->json = old_json; x->json_sz = old_sz; x->json_used = old_used;
     } else free(old_json);
+    swap_out(x);
+    pthread_mutex_unlock(&g_mx);
     return 0;
+done1:
+    swap_out(x);
+    pthread_mutex_unlock(&g_mx);
+    return 1;
 }

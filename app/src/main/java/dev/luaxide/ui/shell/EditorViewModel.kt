@@ -1109,6 +1109,9 @@ print("got", n)
             return
         }
         if (lang?.id == dev.luaxide.lang.Language.PYTHON.id) {
+            val pyProjId = _project.value?.id ?: "_anon"
+            val pyRoot = runCatching { repo.srcDirOf(pyProjId).absolutePath }.getOrNull().orEmpty()
+            if (pyRoot.isNotEmpty()) pyEngine.setModuleRoot(pyRoot)
             val result = pyEngine.run(src)
             publishResult(result)
             _busy.value = false

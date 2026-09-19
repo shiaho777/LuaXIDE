@@ -136,7 +136,11 @@ private fun RuntimeApp(bundle: AppBundle) {
 
     LaunchedEffect(bundle.source, bundle.modRoot) {
         loading = true
-        if (bundle.modRoot.isNotEmpty() && engine is EngineHost) engine.setModuleRoot(bundle.modRoot)
+        if (bundle.modRoot.isNotEmpty()) when (engine) {
+            is EngineHost -> engine.setModuleRoot(bundle.modRoot)
+            is PyEngineHost -> engine.setModuleRoot(bundle.modRoot)
+            else -> {}
+        }
         result = engine.run(bundle.source)
         loading = false
     }

@@ -33,6 +33,7 @@ Every engine facade must provide these functions (names may follow language conv
 | tree/output | `lx_last_json` / `lx_last_output` | `qjsx_last_json` / `qjsx_last_output` | `mpyx_last_json` / `mpyx_last_output` |
 | cancel | `lx_cancel` / `lx_clear_cancel` | `qjsx_cancel` / `qjsx_clear_cancel` | `mpyx_cancel` / `mpyx_clear_cancel` (§10 note) |
 | step limit | `lx_set_step_limit` | `qjsx_set_step_limit` | `mpyx_set_step_limit` (§10 note) |
+| module root | `lx_set_modroot` / `lx_modroot` | — | `mpyx_set_modroot` / `mpyx_modroot` |
 
 The Kotlin side unifies everything as [`EngineAdapter`](../app/src/main/java/dev/luaxide/engine/EngineAdapter.kt) (`state / run / invoke / cancel / close`); Lua-only capabilities (REPL, blocking stdin, debugger, rootfs) are **outside the ABI** — they live in `EngineHost` and language-neutral callers must not touch them.
 
@@ -107,10 +108,16 @@ The packaging chain's multi-language support is closed-loop:
 
 Implementation notes (parts matching the other engines): run → tree JSON + print capture; invoke(id, payload) → handler + re-render (view() first); `MICROPY_VM_HOOK_LOOP`-driven cooperative cancel and step limit (error messages byte-identical to Lua/JS, see p2); globals survive across invokes.
 
+Module root: `mpyx_set_modroot` mirrors `lx_set_modroot` — the dir is rebuilt into `sys.path` before each `run`, so `import helper` / `import pkg.mod` resolve sibling files next to the entry point (builtin modules still win). Wired through `PyNative.nativeSetModroot` → `PyEngineHost.setModuleRoot`, applied by the IDE run path, packaging validation, and `RuntimeActivity` (p3 covers flat modules, packages, in-handler imports and the no-modroot failure).
+
+Multiple engines per process: each `MpyX` owns a private MicroPython ctx — `mp_state_ctx` is memcpy-swapped under a mutex around every VM window, so heaps, globals, handler tables and `sys.path` stay independent (p4 covers interleaved and concurrent use; windows serialize across engines).
+
+Stdlib: `json` (vendored `extmod/modjson.c`), `re` (`extmod/modre.c` + `lib/re1.5`), `io.StringIO`/`BytesIO` are in; `open()` exists but raises `OSError` (no FileIO in the embed tree — by design). `pystack` is enabled for `re`'s local allocations.
+
 Python is not covered by t26/j6: p1_smoke.c and p2_cancel.c cover only their tested subset, not full component/event parity. Its global `view()` takes precedence over handler-returned trees; callable handler returns do not implement Lua/JS live-view replacement. Do not infer full ABI parity from the counter smoke test.
 
 **Remaining limits (to be handled by follow-up Issues)**:
-- no `import` module root path (multi-file projects unsupported; single-file projects fully work)
-- one engine instance per process (facade uses a process-global `g_active`; the host uses it as a singleton)
 - debugger/REPL/stdin do not apply to Python (allowed by contract: those are Lua-only extensions)
-- the embed config is trimmed (compiler + GC + slice + str/float builtins); `re`/`json` etc. are missing — extend mpconfigport.h and regenerate micropython_embed/ when needed
+- no filesystem file objects: `open()` raises `OSError`; `io` is limited to in-memory streams (would need `extmod/vfs_*` vendored)
+- `sys.modules` persists across `run()` calls in one engine (module cache is VM-level, not cleared with globals)
+- engine windows serialize process-wide (the ctx swap mutex); CPU-bound scripts in different engines do not run truly concurrently
