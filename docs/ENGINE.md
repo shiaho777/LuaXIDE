@@ -7,7 +7,7 @@
 ## 1. Architecture
 
 - **One source, three build targets**: `engine/lx.c` (~2200 lines, single file) compiles into the desktop CLI (`make`) and into `libluax.so` for both `:app` and `:runtime`. Each Android module carries a byte-identical copy of `luax_jni.c` — JNI-layer changes must be synced to both (a zero diff is the norm).
-- **Hybrid execution**: tree-walking interpreter + bytecode VM (function bodies compile on first call; uncompilable constructs fall back transparently; the VM only accelerates, never changes semantics). VM design, compile coverage, and benchmarks: [BYTECODE_VM.md](BYTECODE_VM.md).
+- **Hybrid execution**: tree-walking interpreter + bytecode VM (function bodies compile on first call; the top-level chunk compiles on every run/dostring/repl/require; uncompilable constructs fall back transparently; the VM only accelerates, never changes semantics). VM design, compile coverage, and benchmarks: [BYTECODE_VM.md](BYTECODE_VM.md).
 - **Memory**: arena allocation, no GC; `lx_close` frees everything. Script memory grows monotonically — don't write leak-shaped long-running scripts; big strings/buffers use malloc+free (`st_tconcat` is the pattern).
 - **Debug protocol**: `lx_debug_*` (breakpoints / conditional breakpoints / logpoints / stepping / watches / eval) is wired only into `:app`'s EngineHost — `:runtime` does not carry it; never copy debug calls across modules.
 
