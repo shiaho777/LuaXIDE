@@ -45,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '17'
@@ -53,7 +53,9 @@ jobs:
         with:
           # 'tools' no longer exists in the SDK repository for cmdline-tools 16+;
           # only install packages that still resolve.
-          packages: platform-tools
+          packages: |
+            platform-tools
+            platforms;android-37
       - uses: gradle/actions/setup-gradle@v4
       - name: Check :app/:runtime paired files are byte-identical
         run: ./scripts/check_sync.sh
