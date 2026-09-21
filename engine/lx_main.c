@@ -6,7 +6,16 @@
 
 static char* read_all(const char* path){
     FILE* f=fopen(path,"rb"); if(!f)return NULL;
-    fseek(f,0,SEEK_END); long n=ftell(f); fseek(f,0,SEEK_SET);
+    /* Non-seekable inputs (pipes, /dev/stdin) make fseek/ftell fail;
+     * streaming-read those instead of trusting a reported size. */
+    long n = fseek(f,0,SEEK_END)==0 ? ftell(f) : -1;
+    if(n<0){
+        rewind(f);
+        size_t cap=1<<16, m=0; char* b=malloc(cap);
+        while(1){ if(m+4096+1>cap){cap*=2;b=realloc(b,cap);} size_t r=fread(b+m,1,4096,f); m+=r; if(r<4096)break; }
+        b[m]=0; fclose(f); return b;
+    }
+    fseek(f,0,SEEK_SET);
     char* b=malloc(n+1); fread(b,1,n,f); b[n]=0; fclose(f); return b;
 }
 
