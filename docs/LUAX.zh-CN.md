@@ -8,7 +8,7 @@
 
 LuaX 是 Lua 5.1 语义的**方言子集**,为「在 Android 上写并打包小 App」而生:
 
-- 单文件 C 引擎(约 2200 行),树遍历 + 字节码 VM 混合执行,数值循环约 11× 加速
+- 单文件 C 引擎(约 2200 行),树遍历 + 字节码 VM 混合执行(函数体**与**顶层 chunk 均编译),数值循环约 11–22× 加速
 - 声明式 UI:UI 树就是普通 Lua 表;事件驱动重渲染(§4)
 - 无 root:沙箱执行;一键打包为独立签名 APK
 - 是 LuaXIDE 三语言平台(Lua / JavaScript / Python)的**参考语言** —— 跨语言契约见 [PLATFORM_ABI.md](PLATFORM_ABI.zh-CN.md)

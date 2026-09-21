@@ -784,7 +784,29 @@ static struct Flow exec(State*S,Env*env,Node*st){
   }
   return F_NORMAL;
 }
-static struct Flow execChunk(State*S,Env*env,Node*chunk){ struct Flow fl=F_NORMAL; for(int i=0;i<chunk->nlist;i++){fl=exec(S,env,chunk->list[i]);if(fl.kind)break;} return fl; }
+static struct Flow execChunk(State*S,Env*env,Node*chunk){
+  /* Phase 1b: the main chunk compiles through the same path as function
+   * bodies — wrapped in a synthetic 0-param Func so top-level statements
+   * (loops, table building, module bodies, view defs) run on the VM too.
+   * Falls back to the tree-walk below whenever the body is not compilable,
+   * debugging is on, or LUAX_NO_BC is set — identical gates to callValue. */
+  if(env && !S->debug_enabled && !getenv("LUAX_NO_BC")){
+    Func df; memset(&df,0,sizeof(df));
+    df.body=chunk; df.env=env; df.line=chunk&&chunk->line>0?chunk->line:1;
+    Proto*p=bc_build(S,&df);
+    if(p&&bc_globals_still_global(S,&df,p)){
+      Closure cl; cl.f=&df;
+      S->bc_calls++;
+      vm_call(S,p,&cl,0,NULL);
+      struct Flow fl=F_NORMAL;
+      fl.nret=S->nret; for(int i=0;i<fl.nret&&i<64;i++)fl.rets[i]=S->retbuf[i];
+      fl.kind=fl.nret>0?1:0;
+      return fl;
+    }
+    S->bc_fallbacks++;
+  }
+  struct Flow fl=F_NORMAL; for(int i=0;i<chunk->nlist;i++){fl=exec(S,env,chunk->list[i]);if(fl.kind)break;} return fl;
+}
 
 /* ---------- bytecode VM (Phase 1b v0) ----------
  * Compiles closure-free function bodies to register bytecode on first call and

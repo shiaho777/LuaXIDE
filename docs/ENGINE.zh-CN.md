@@ -7,7 +7,7 @@
 ## 1. 架构
 
 - **单一源码,三个构建目标**:`engine/lx.c`(~2200 行,单文件)编译为桌面 CLI(`make`)、`:app` 与 `:runtime` 的 `libluax.so`。两个 Android 模块各持一份字节级一致的 `luax_jni.c` —— 改 JNI 层必须两份同步(diff 为零是常态)。
-- **混合执行**:树遍历解释器 + 字节码 VM(函数体首次调用时编译,不可编译的构造透明回退;VM 只加速不改语义)。VM 设计、编译范围与基准见 [BYTECODE_VM.md](BYTECODE_VM.zh-CN.md)。
+- **混合执行**:树遍历解释器 + 字节码 VM(函数体首次调用时编译;顶层 chunk 在每次 run/dostring/repl/require 时编译;不可编译的构造透明回退;VM 只加速不改语义)。VM 设计、编译范围与基准见 [BYTECODE_VM.md](BYTECODE_VM.zh-CN.md)。
 - **内存**:arena 分配,无 GC,`lx_close` 整体释放。脚本内存单调增长 —— 不要写泄漏型长循环脚本;大字符串/缓冲用 malloc+free(`st_tconcat` 是范式)。
 - **调试协议**:`lx_debug_*`(断点/条件断点/logpoint/单步/监视/求值),仅 `:app` 的 EngineHost 接入 —— `:runtime` 不带,不得跨模块复制调用。
 

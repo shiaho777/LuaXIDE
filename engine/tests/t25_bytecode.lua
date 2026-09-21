@@ -26,8 +26,7 @@ eq(1 / 4, 0.25, "div")
 eq(~5, -6, "bnot")
 eq(5 & 3, 1, "band")
 eq(5 | 3, 7, "bor")
--- bitwise ops only reach the bytecode VM inside a function body (top-level
--- chunks are always tree-walked), so assert there too
+-- bitwise ops also run inside a function body — assert there too
 local function bits(a, b) return a & b, a | b, a ~ b, ~a, a << 2, a >> 1 end
 local g1, g2, g3, g4, g5, g6 = bits(5, 3)
 eq(g1, 1, "band in fn")
@@ -136,10 +135,11 @@ local vs, vf = va("A", "B", "C")
 eq(vs, 3, "vararg select#")
 eq(vf, "A", "vararg first")
 
--- upvalue function stays tree-walked but must behave identically
+-- a function reading a top-level local captures it via the chunk's env
+-- (capmode): the same name resolves identically on both engine paths
 local base = 100
 local function addbase(v) return v + base end
-eq(addbase(5), 105, "upvalue fallback")
+eq(addbase(5), 105, "top-level local capture")
 
 -- methods
 local obj = {n = 40}
@@ -366,5 +366,28 @@ local function hasvararg()
 end
 eq(hasvararg(), 3, "vararg nested fn falls back")
 
+-- ===== top-level chunk on the VM (Phase 1b) =====
+-- Everything above already ran on the VM when compilable; these cases pin the
+-- chunk-specific semantics: top-level locals, per-iteration capture from the
+-- chunk, early return with values, and chunk-level control flow.
+local tl_acc = 0
+for tl_i = 1, 10 do tl_acc = tl_acc + tl_i end
+eq(tl_acc, 55, "top-level numeric loop")
+
+local tl_fns = {}
+for tl_i = 1, 3 do tl_fns[tl_i] = function() return tl_i * 10 end end
+eq(tl_fns[1]() + tl_fns[2]() + tl_fns[3](), 60, "top-level per-iteration capture")
+
+local tl_s = ""
+for tl_i = 1, 5 do
+  if tl_i == 3 then
+    -- continue-style: skip via nested block + if
+  elseif tl_i >= 4 then break
+  else tl_s = tl_s .. tl_i
+  end
+end
+eq(tl_s, "12", "top-level break and branch")
+
 if fails > 0 then error("t25 FAILED: " .. fails .. " case(s)") end
 print("t25 ok")
+return "t25 chunk return value"
