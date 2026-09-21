@@ -2,7 +2,7 @@
 
 [简体中文](BYTECODE_VM.zh-CN.md)
 
-`engine/lx.c` was originally a pure tree-walking interpreter (Phase 1a). It now carries a conservatively hybrid bytecode VM: function bodies attempt compilation to register bytecode on first call; on success a stack-based VM executes them, otherwise they fall back transparently to tree-walking. **Fallback is the semantic safety net — the VM only accelerates; it never changes observable behavior.**
+`engine/lx.c` was originally a pure tree-walking interpreter (Phase 1a). It now carries a conservatively hybrid bytecode VM: function bodies attempt compilation to register bytecode on first call, and the **top-level chunk** is compiled the same way on every `run`/`dostring`/`repl`/`require` (wrapped in a synthetic 0-param `Func`); on success a stack-based VM executes them, otherwise they fall back transparently to tree-walking. **Fallback is the semantic safety net — the VM only accelerates; it never changes observable behavior.**
 
 ## How it works
 
@@ -14,7 +14,16 @@ callValue(T_FN)
   │    │    └─ failure → mark bc_tried, tree-walk forever
   │    └─ Proto exists → check → vm_call()
   └─ otherwise (debug session / disabled) → tree-walking path (original logic unchanged)
+
+execChunk(chunk)                       # lx_run / lx_dostring / lx_repl / require
+  ├─ debugger off && LUAX_NO_BC unset?
+  │    ├─ wrap chunk in synthetic Func{env=fresh chunk env} → bc_build()
+  │    │    ├─ success + globals check → vm_call(); S->nret/retbuf rebuild the Flow
+  │    │    └─ failure → fall through to the tree-walk loop
+  └─ otherwise (debug session / disabled) → tree-walking path
 ```
+
+The chunk path deliberately shares the function-body machinery: `capmode` detection puts top-level locals into `Env` scopes whenever any nested function exists (so closures capture them correctly); a chunk without nested functions keeps locals in registers. A `break` outside a loop soft-fails the compile exactly like inside function bodies and runs tree-walked — the parser still treats `break` as a block terminator, so surviving semantics are unchanged.
 
 ### Encoding & dispatch
 
@@ -71,11 +80,11 @@ LUAX_NO_BC=1 ./engine/lx x.lua      # disable the VM entirely (troubleshooting)
 |---|---|---|---|
 | fib(23) recursive | ~0.025s | ~0.013s | **~1.9x** |
 | numeric loop ×3M | ~0.42s | ~0.030s | **~14x** |
+| **top-level numeric loop ×5M** (main chunk) | ~1.17s | ~0.052s | **~22x** |
 | string concat/len ×60k | ~0.36s | ~0.31s | ~1.2x (C string ops dominate) |
 | build 200k-row table + pairs sum | ~0.13s | ~0.051s | **~2.6x** |
 
 ## Roadmap (not done, ordered by value)
 
-1. main-chunk compilation (capmode machinery already covers top-level locals; the chunk itself still runs tree-walked)
-2. vararg functions (`...`) — the only remaining hard fallback
-3. breakpoints lowered onto the bytecode line table (today a debug session falls back to tree-walking wholesale — functional but slow)
+1. vararg functions (`...`) — the only remaining hard fallback
+2. breakpoints lowered onto the bytecode line table (today a debug session falls back to tree-walking wholesale — functional but slow)

@@ -8,7 +8,7 @@
 
 LuaX is a **dialect subset** of Lua 5.1 semantics, built for writing and packaging small apps on Android:
 
-- Single-file C engine (~2200 lines), tree-walking + bytecode VM hybrid, ~11× on numeric loops
+- Single-file C engine (~2200 lines), tree-walking + bytecode VM hybrid (function bodies **and** the top-level chunk), ~11–22× on numeric loops
 - Declarative UI: the UI tree is an ordinary Lua table; event-driven re-render (§4)
 - No root: sandboxed execution; one-tap packaging into a standalone signed APK
 - The **reference language** of LuaXIDE's three-language platform (Lua / JavaScript / Python) — cross-language contract: [PLATFORM_ABI.md](PLATFORM_ABI.md)
