@@ -122,7 +122,7 @@ struct State {
   /* name interning for the tree-walk path: Node names are arena-allocated
    * stable char* pointers, so memoize char* -> Str* by pointer identity -
    * repeat visits (loop bodies!) cost one pointer probe, no strlen/FNV/alloc. */
-  struct { const char* name; Str* s; }* names; int names_cap, names_n;
+  struct { const char* name; Str* s; }* names; int names_cap, names_n; CFn *cfn_next,*cfn_iter; /* cached iterator closures for pairs/ipairs */
   /* lazily-interned fixed keys: metamethod names, "__ui", "string" —
    * avoids newStr+strlen+FNV on every metatable hit / UI node read */
   Str *k_index, *k_newindex, *k_len, *k_tostring, *k_ui, *k_string, *k_uilib;
@@ -166,6 +166,11 @@ static void lx_rt_error(State* S,const char* fmt,...){
 
 static unsigned strHash(const char*p,size_t n){ unsigned h=2166136261u; for(size_t i=0;i<n;i++){h^=(unsigned char)p[i];h*=16777619u;} return h; }
 static Str* newStr(State* S,const char* s,size_t n){ Str*st=xalloc(S,sizeof(Str)); st->len=n; st->h=strHash(s,n); st->p=xstrndup(S,s,n); return st; }
+/* unfilled Str for builtins that build the bytes themselves (upper/rep/...):
+ * write into ->p then strSeal() computes the cached hash. Skips the old
+ * temp-buffer + newStr double copy. */
+static Str* newStrBuf(State* S,size_t n){ Str*st=xalloc(S,sizeof(Str)); st->len=n; st->p=xalloc(S,n+1); st->p[n]=0; st->h=0; return st; }
+static Str* strSeal(Str*st){ st->h=strHash(st->p,st->len); return st; }
 static bool strEq(Str*a,Str*b){ return a==b||(a->len==b->len&&memcmp(a->p,b->p,a->len)==0); }
 static Table* newTable(State* S){ Table*t=xcalloc(S,sizeof(Table)); t->cap=8; t->e=xcalloc(S,8*sizeof(*t->e)); return t; }
 static unsigned hashVal(Value v){ switch(v.tag){
@@ -1599,7 +1604,7 @@ static Value st_next(State*S,int argc,Value*argv);
 static Value st_ipiter(State*S,int argc,Value*argv);
 
 static Value st_print(State*S,int argc,Value*argv){ for(int i=0;i<argc;i++){ Str*st=toStrx(S,argv[i]); if(i){fputs("\t",stdout); buf_append(&S->out,&S->outsz,&S->outused,"\t",1);} fwrite(st->p,1,st->len,stdout); buf_append(&S->out,&S->outsz,&S->outused,st->p,st->len);} fputc('\n',stdout); buf_append(&S->out,&S->outsz,&S->outused,"\n",1); S->nret=0; return VNIL; }
-static Value st_type(State*S,int argc,Value*argv){ const char*n=lx_typename(argv[0]); S->nret=1; S->retbuf[0]=VSTR(newStr(S,n,strlen(n))); return S->retbuf[0]; }
+static Value st_type(State*S,int argc,Value*argv){ const char*n=lx_typename(argv[0]); S->nret=1; S->retbuf[0]=VSTR(internName(S,n)); return S->retbuf[0]; }
 static Value st_tostring(State*S,int argc,Value*argv){ S->nret=1; S->retbuf[0]=VSTR(toStrx(S,argv[0])); return S->retbuf[0]; }
 static Value st_tonumber(State*S,int argc,Value*argv){ Value v=argv[0]; if(v.tag==T_NUM){S->nret=1;S->retbuf[0]=v;return v;} if(v.tag==T_STR){char*e;double d=strtod(v.u.s->p,&e);if(e!=v.u.s->p){S->nret=1;S->retbuf[0]=VNUM(d);return S->retbuf[0];}} S->nret=1; S->retbuf[0]=VNIL; return VNIL; }
 static Value st_next(State*S,int argc,Value*argv){ Table*t=argTab(S,argv[0],"next"); Value k=argc>1?argv[1]:VNIL; int from=0;
@@ -1614,9 +1619,9 @@ static Value st_next(State*S,int argc,Value*argv){ Table*t=argTab(S,argv[0],"nex
   }
   if(ai>=0) for(int i=ai;i<t->acap;i++){ if(t->arr[i].tag!=T_NIL){ S->nret=2; S->retbuf[0]=VNUM(i+1); S->retbuf[1]=t->arr[i]; return S->retbuf[0]; } }
   for(int i=from;i<t->cap;i++){ if(t->e[i].used){ S->nret=2; S->retbuf[0]=t->e[i].k; S->retbuf[1]=t->e[i].v; return S->retbuf[0]; } } S->nret=1; S->retbuf[0]=VNIL; return VNIL; }
-static Value st_pairs(State*S,int argc,Value*argv){ S->nret=3; S->retbuf[0]=VCFN(mkCFn(S,"next",st_next)); S->retbuf[1]=argv[0]; S->retbuf[2]=VNIL; return S->retbuf[0]; }
+static Value st_pairs(State*S,int argc,Value*argv){ if(!S->cfn_next)S->cfn_next=mkCFn(S,"next",st_next); S->nret=3; S->retbuf[0]=VCFN(S->cfn_next); S->retbuf[1]=argv[0]; S->retbuf[2]=VNIL; return S->retbuf[0]; }
 static Value st_ipiter(State*S,int argc,Value*argv){ Table*t=argTab(S,argv[0],"ipairs"); int i=(int)argv[1].u.num+1; Value v=tget(t,VNUM(i)); if(v.tag==T_NIL){S->nret=1;S->retbuf[0]=VNIL;return VNIL;} S->nret=2; S->retbuf[0]=VNUM(i); S->retbuf[1]=v; return S->retbuf[0]; }
-static Value st_ipairs(State*S,int argc,Value*argv){ S->nret=3; S->retbuf[0]=VCFN(mkCFn(S,"iter",st_ipiter)); S->retbuf[1]=argv[0]; S->retbuf[2]=VNUM(0); return S->retbuf[0]; }
+static Value st_ipairs(State*S,int argc,Value*argv){ if(!S->cfn_iter)S->cfn_iter=mkCFn(S,"iter",st_ipiter); S->nret=3; S->retbuf[0]=VCFN(S->cfn_iter); S->retbuf[1]=argv[0]; S->retbuf[2]=VNUM(0); return S->retbuf[0]; }
 static Value st_setmt(State*S,int argc,Value*argv){ if(argv[0].tag!=T_TAB)lx_rt_error(S,"bad argument #1 to 'setmetatable'"); if(argv[1].tag!=T_TAB&&argv[1].tag!=T_NIL)lx_rt_error(S,"bad argument #2 to 'setmetatable'"); argv[0].u.t->meta=argv[1].tag==T_TAB?argv[1].u.t:NULL; S->nret=1; S->retbuf[0]=argv[0]; return argv[0]; }
 static Value st_getmt(State*S,int argc,Value*argv){ Table*m=argv[0].tag==T_TAB?argv[0].u.t->meta:NULL; S->nret=1; S->retbuf[0]=m?VTAB(m):VNIL; return S->retbuf[0]; }
 static Value st_rawget(State*S,int argc,Value*argv){ S->nret=1; S->retbuf[0]=tget(argTab(S,argv[0],"rawget"),argv[1]); return S->retbuf[0]; }
@@ -1632,10 +1637,10 @@ static Value st_pcall(State*S,int argc,Value*argv){ Value f=argv[0]; jmp_buf out
 static Value st_select(State*S,int argc,Value*argv){ if(argv[0].tag==T_STR&&argv[0].u.s->len==1&&argv[0].u.s->p[0]=='#'){S->nret=1;S->retbuf[0]=VNUM(argc-1);return S->retbuf[0];} int n=num2int(S,argv[0]); if(n<0)n=argc+n; else if(n==0)lx_rt_error(S,"bad argument #1 to 'select'"); if(n<1)lx_rt_error(S,"bad argument #1 to 'select' (index out of range)"); if(n>argc){S->nret=0;return VNIL;} S->nret=argc-n; for(int i=0;i+n<argc;i++)S->retbuf[i]=argv[n+i]; return S->nret?S->retbuf[0]:VNIL; }
 static Value st_unpack(State*S,int argc,Value*argv){ Table*t=argTab(S,argv[0],"table.unpack"); int i=argc>1?num2int(S,argv[1]):1; int j=argc>2?num2int(S,argv[2]):tlen(t); if(i<=j && (long)j-(long)i+1>64)lx_rt_error(S,"too many results to unpack"); S->nret=0; for(;i<=j;i++)S->retbuf[S->nret++]=tget(t,VNUM(i)); return S->nret?S->retbuf[0]:VNIL; }
 static Value st_slen(State*S,int argc,Value*argv){S->nret=1;S->retbuf[0]=VNUM((double)argStr(S,argv[0],"string.len")->len);return S->retbuf[0];}
-static Value st_supper(State*S,int argc,Value*argv){Str*s=argStr(S,argv[0],"string.upper");char*b=xalloc(S,s->len);for(size_t i=0;i<s->len;i++)b[i]=toupper((unsigned char)s->p[i]);S->nret=1;S->retbuf[0]=VSTR(newStr(S,b,s->len));return S->retbuf[0];}
-static Value st_slower(State*S,int argc,Value*argv){Str*s=argStr(S,argv[0],"string.lower");char*b=xalloc(S,s->len);for(size_t i=0;i<s->len;i++)b[i]=tolower((unsigned char)s->p[i]);S->nret=1;S->retbuf[0]=VSTR(newStr(S,b,s->len));return S->retbuf[0];}
+static Value st_supper(State*S,int argc,Value*argv){Str*s=argStr(S,argv[0],"string.upper");Str*r=newStrBuf(S,s->len);for(size_t i=0;i<s->len;i++)r->p[i]=toupper((unsigned char)s->p[i]);S->nret=1;S->retbuf[0]=VSTR(strSeal(r));return S->retbuf[0];}
+static Value st_slower(State*S,int argc,Value*argv){Str*s=argStr(S,argv[0],"string.lower");Str*r=newStrBuf(S,s->len);for(size_t i=0;i<s->len;i++)r->p[i]=tolower((unsigned char)s->p[i]);S->nret=1;S->retbuf[0]=VSTR(strSeal(r));return S->retbuf[0];}
 static Value st_ssub(State*S,int argc,Value*argv){Str*s=argStr(S,argv[0],"string.sub");int len=(int)s->len;int i=num2int(S,argv[1]);if(i<0)i+=len+1;if(i<1)i=1;int j=argc>2?num2int(S,argv[2]):-1;if(j<0)j+=len+1;if(j>len)j=len;S->nret=1;S->retbuf[0]=(i<=j)?VSTR(newStr(S,s->p+i-1,j-i+1)):VSTR(newStr(S,"",0));return S->retbuf[0];}
-static Value st_srep(State*S,int argc,Value*argv){Str*s=argStr(S,argv[0],"string.rep");int n=num2int(S,argv[1]);if(n<0)n=0;if(s->len>0&&(size_t)n>0xFFFFFFFu/s->len)lx_rt_error(S,"resulting string too large");char*b=xalloc(S,(size_t)n*s->len+1);for(int k=0;k<n;k++)memcpy(b+k*s->len,s->p,s->len);S->nret=1;S->retbuf[0]=VSTR(newStr(S,b,(size_t)n*s->len));return S->retbuf[0];}
+static Value st_srep(State*S,int argc,Value*argv){Str*s=argStr(S,argv[0],"string.rep");int n=num2int(S,argv[1]);if(n<0)n=0;if(s->len>0&&(size_t)n>0xFFFFFFFu/s->len)lx_rt_error(S,"resulting string too large");Str*r=newStrBuf(S,(size_t)n*s->len);for(int k=0;k<n;k++)memcpy(r->p+k*s->len,s->p,s->len);S->nret=1;S->retbuf[0]=VSTR(strSeal(r));return S->retbuf[0];}
 static Value st_tinsert(State*S,int argc,Value*argv){Table*t=argTab(S,argv[0],"table.insert");if(argc==2){int n=tlen(t);tset(S,t,VNUM(n+1),argv[1]);}else{int p=num2int(S,argv[1]);int n=tlen(t);for(int i=n;i>=p;i--)tset(S,t,VNUM(i+1),tget(t,VNUM(i)));tset(S,t,VNUM(p),argv[2]);}S->nret=0;return VNIL;}
 static Value st_tremove(State*S,int argc,Value*argv){Table*t=argTab(S,argv[0],"table.remove");int n=tlen(t);int p=argc>1?num2int(S,argv[1]):n;if(p<1)p=1;if(p>n){S->nret=1;S->retbuf[0]=VNIL;return VNIL;}Value v=tget(t,VNUM(p));for(int i=p;i<n;i++)tset(S,t,VNUM(i),tget(t,VNUM(i+1)));tset(S,t,VNUM(n),VNIL);S->nret=1;S->retbuf[0]=v;return v;}
 static Value st_tconcat(State*S,int argc,Value*argv){Table*t=argTab(S,argv[0],"table.concat");Str*sep=argc>1&&argv[1].tag==T_STR?argv[1].u.s:NULL;int i=argc>2?num2int(S,argv[2]):1;int j=argc>3?num2int(S,argv[3]):tlen(t);char*buf=NULL;size_t m=0,cap=0;for(;i<=j;i++){Value v=tget(t,VNUM(i));if(v.tag!=T_STR&&v.tag!=T_NUM)lx_rt_error(S,"invalid value (table.concat)");Str*s=toStrx(S,v);if(m+s->len>cap){cap=cap?cap*2:64;while(m+s->len>cap)cap*=2;buf=realloc(buf,cap);}memcpy(buf+m,s->p,s->len);m+=s->len;if(i<j&&sep){if(m+sep->len>cap){cap=cap?cap*2:64;while(m+sep->len>cap)cap*=2;buf=realloc(buf,cap);}memcpy(buf+m,sep->p,sep->len);m+=sep->len;}}S->nret=1;S->retbuf[0]=m?VSTR(newStr(S,buf,m)):VSTR(newStr(S,"",0));if(buf)free(buf);return S->retbuf[0];}
@@ -1915,15 +1920,15 @@ static Value st_sbyte(State*S,int argc,Value*argv){
   return S->nret?S->retbuf[0]:VNIL;
 }
 static Value st_schar(State*S,int argc,Value*argv){
-  char*b=xalloc(S,(size_t)argc+1);
-  for(int i=0;i<argc;i++){ int c=num2int(S,argv[i]); if(c<0||c>255)lx_rt_error(S,"bad argument #%d to 'string.char' (value out of range)",i+1); b[i]=(char)c; }
-  S->nret=1; S->retbuf[0]=VSTR(newStr(S,b,(size_t)argc)); return S->retbuf[0];
+  Str*r=newStrBuf(S,(size_t)argc);
+  for(int i=0;i<argc;i++){ int c=num2int(S,argv[i]); if(c<0||c>255)lx_rt_error(S,"bad argument #%d to 'string.char' (value out of range)",i+1); r->p[i]=(char)c; }
+  S->nret=1; S->retbuf[0]=VSTR(strSeal(r)); return S->retbuf[0];
 }
 static Value st_sreverse(State*S,int argc,Value*argv){
   Str*s=argStr(S,argv[0],"string.reverse");
-  char*b=xalloc(S,s->len?s->len:1);
-  for(size_t i=0;i<s->len;i++)b[i]=s->p[s->len-1-i];
-  S->nret=1; S->retbuf[0]=VSTR(newStr(S,b,s->len)); return S->retbuf[0];
+  Str*r=newStrBuf(S,s->len);
+  for(size_t i=0;i<s->len;i++)r->p[i]=s->p[s->len-1-i];
+  S->nret=1; S->retbuf[0]=VSTR(strSeal(r)); return S->retbuf[0];
 }
 /* vsnprintf into the growable output: a width like %9999d would overflow the
  * stack scratch buffer — snprintf reports the would-be length, and appending
