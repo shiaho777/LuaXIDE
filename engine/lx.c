@@ -1322,7 +1322,8 @@ static Proto* bc_build(State*S,Func*fn){
   p->vararg=fn->vararg;
   if(C.nsubs){ p->subs=xalloc(S,(size_t)C.nsubs*sizeof(Node*)); memcpy(p->subs,C.subs,(size_t)C.nsubs*sizeof(Node*)); p->nsubs=C.nsubs; }
   if(C.ndloc){ p->locm=xalloc(S,(size_t)C.ndloc*sizeof(*p->locm)); memcpy(p->locm,C.dloc,(size_t)C.ndloc*sizeof(*p->locm)); p->nlocm=C.ndloc; }
-  for(int i=0;i<p->ncode;i++) if(p->code[i].op==BC_GETENV||p->code[i].op==BC_SETENV){ p->ec=xcalloc(S,(size_t)p->ncode*sizeof(*p->ec)); break; }
+  for(int i=0;i<p->ncode;i++){ int o=p->code[i].op;
+    if(o==BC_GETENV||o==BC_SETENV||o==BC_GETGLOBAL||o==BC_SETGLOBAL||o==BC_GETFIELD||o==BC_SETFIELD){ p->ec=xcalloc(S,(size_t)p->ncode*sizeof(*p->ec)); break; } }
   free(C.code); free(C.lines); free(C.imm); free(C.k);
   return p;
 }
@@ -1351,6 +1352,9 @@ static bool bc_globals_still_global(State*S,Func*fn,Proto*p){
  * in sig is monotonically nondecreasing — so an identical sum proves zero
  * mutations anywhere in the chain since the entry was cached, i.e. the name
  * still resolves to the same (table, slot). */
+/* cached-slot key check: same Str object, or same content (hash + memcmp) */
+static int keyIs(Table*t,int slot,Str*st){ Value k=t->e[slot].k;
+  return k.tag==T_STR && (k.u.s==st || (k.u.s->h==st->h && strEq(k.u.s,st))); }
 static unsigned long envSig(State*S,Env*e){ unsigned long s=0;
   for(Env*p=e;p;p=p->parent) s+=p->gen+p->vars->gen;
   s+=S->globals->gen+S->globals->vars->gen; return s; }
@@ -1447,12 +1451,34 @@ static Value vm_call(State*S,Proto*p,Closure*cl,int argc,Value*argv){
     BC_OP(BC_LOADNIL): for(int i=0;i<in.b;i++) BVR(in.a+i)=VNIL; BC_NEXT();
     BC_OP(BC_LOADBOOL): BVR(in.a)=VBOOL(in.b?true:false); BC_NEXT();
     BC_OP(BC_MOVE): BVR(in.a)=BVR(in.b); BC_NEXT();
-    BC_OP(BC_GETGLOBAL): BVR(in.a)=tget(S->globals->vars,p->k[p->imm[pc]]); BC_NEXT();
-    BC_OP(BC_SETGLOBAL): tset(S,S->globals->vars,p->k[p->imm[pc]],BVR(in.a)); BC_NEXT();
+    BC_OP(BC_GETGLOBAL):{ Str*st=p->k[p->imm[pc]].u.s; __typeof__(*p->ec)*c=p->ec?&p->ec[pc]:NULL;
+      Table*gv=S->globals->vars;
+      if(c&&c->t==gv&&c->sig==gv->gen&&keyIs(gv,c->slot,st)){ BVR(in.a)=gv->e[c->slot].v; BC_NEXT(); }
+      BVR(in.a)=tget(gv,p->k[p->imm[pc]]);
+      if(c){ int ws=tfindi(gv,VSTR(st)); if(ws>=0){c->e0=NULL;c->t=gv;c->sig=gv->gen;c->slot=ws;} else c->t=NULL; }
+      BC_NEXT(); }
+    BC_OP(BC_SETGLOBAL):{ Str*st=p->k[p->imm[pc]].u.s; __typeof__(*p->ec)*c=p->ec?&p->ec[pc]:NULL;
+      Table*gv=S->globals->vars;
+      if(c&&c->t==gv&&c->sig==gv->gen&&keyIs(gv,c->slot,st)){ gv->e[c->slot].v=BVR(in.a); BC_NEXT(); }
+      tset(S,gv,p->k[p->imm[pc]],BVR(in.a));
+      if(c){ int ws=tfindi(gv,VSTR(st)); if(ws>=0){c->e0=NULL;c->t=gv;c->sig=gv->gen;c->slot=ws;} else c->t=NULL; }
+      BC_NEXT(); }
     BC_OP(BC_GETTABLE): BVR(in.a)=indexVal(S,BVR(in.b),BVR(in.c)); BC_NEXT();
     BC_OP(BC_SETTABLE): newIndex(S,BVR(in.a),BVR(in.b),BVR(in.c)); BC_NEXT();
-    BC_OP(BC_GETFIELD): BVR(in.a)=indexVal(S,BVR(in.b),p->k[p->imm[pc]]); BC_NEXT();
-    BC_OP(BC_SETFIELD): newIndex(S,BVR(in.a),p->k[p->imm[pc]],BVR(in.b)); BC_NEXT();
+    BC_OP(BC_GETFIELD):{ Value tv=BVR(in.b); Str*st=p->k[p->imm[pc]].u.s; __typeof__(*p->ec)*c=p->ec?&p->ec[pc]:NULL;
+      if(tv.tag==T_TAB){ Table*t=tv.u.t;
+        if(c&&c->t==t&&c->sig==t->gen&&keyIs(t,c->slot,st)&&t->e[c->slot].v.tag!=T_NIL){ BVR(in.a)=t->e[c->slot].v; BC_NEXT(); }
+        BVR(in.a)=indexVal(S,tv,p->k[p->imm[pc]]);
+        if(c){ int ws=tfindi(t,VSTR(st)); if(ws>=0){c->e0=NULL;c->t=t;c->sig=t->gen;c->slot=ws;} else c->t=NULL; }
+        BC_NEXT(); }
+      BVR(in.a)=indexVal(S,tv,p->k[p->imm[pc]]); BC_NEXT(); }
+    BC_OP(BC_SETFIELD):{ Value tv=BVR(in.a); Str*st=p->k[p->imm[pc]].u.s; __typeof__(*p->ec)*c=p->ec?&p->ec[pc]:NULL;
+      if(tv.tag==T_TAB){ Table*t=tv.u.t;
+        if(c&&c->t==t&&c->sig==t->gen&&keyIs(t,c->slot,st)&&t->e[c->slot].v.tag!=T_NIL){ t->e[c->slot].v=BVR(in.b); BC_NEXT(); }
+        newIndex(S,tv,p->k[p->imm[pc]],BVR(in.b));
+        if(c){ int ws=tfindi(t,VSTR(st)); if(ws>=0){c->e0=NULL;c->t=t;c->sig=t->gen;c->slot=ws;} else c->t=NULL; }
+        BC_NEXT(); }
+      newIndex(S,tv,p->k[p->imm[pc]],BVR(in.b)); BC_NEXT(); }
     BC_OP(BC_ADD): BC_OP(BC_SUB): BC_OP(BC_MUL): BC_OP(BC_DIV): BC_OP(BC_MOD): BC_OP(BC_POW): BC_OP(BC_IDIV):{
       double x=toNum(S,BVR(in.b)),y=toNum(S,BVR(in.c)),v=0;
       switch(in.op){case BC_ADD:v=x+y;break;case BC_SUB:v=x-y;break;case BC_MUL:v=x*y;break;case BC_DIV:v=x/y;break;
