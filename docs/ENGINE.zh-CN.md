@@ -16,6 +16,7 @@
 - **序列化**(`jnode`):树 → `{type, props, children}` JSON;函数 prop 注册进 `S->handlers[id]`,**每次树重建 id 重新分配**(宿主每轮重读);上限 1024。props 键序为哈希槽序 —— 测试断言只能用子串匹配。
 - **invoke 语义**:`lx_invoke` 用 `callValue` 的**直接返回值**(非 `S->retbuf`,避免被后续调用污染)判定 handler 是否返回新树;nil → 重序列化 `app_view`(view 函数会重调)。语言级契约见 LUAX.md §4.2。
 - **防护**:`STEP` 宏(取消 + 步数)插在语句/循环/VM 每指令;`lx_run` 清残留取消标志,`lx_invoke` 不清。
+- **数组段**:`Table` 的整数键 `1..acap` 独占存放在 `arr[]`;`tget`/`tset` 按键路由,`agrow` 倍增 `acap` 并迁移落入范围的哈希项(`acap` 2 倍以内的非 nil 写入触发增长;稀疏远键留在哈希侧)。`next` 先迭代数组段再迭代哈希;`ahi`/`tlen` 不变。序列密集循环提速 ~5×(100 万追加 + 300 万读取:0.31s → 0.06s)。
 - **长度前缀缓存**:`Table.ahi` 记录已验证的非 nil 整数前缀 `1..ahi`;`tlen` 从 `ahi+1` 续扫(结果与全量扫描相同——hint 永不虚报),`tset` 负责增长/收缩(在 `ahi+1` 写入非 nil → `ahi++`;对 `[1,ahi]` 内整数键写 nil → `ahi=k-1`)。`tset` 是唯一的裸写入口(`__newindex` 在其上层拦截),`t[#t+1]=v` 追加循环从 O(n²) 降为 O(n)——50 万次追加 >5min → ~0.6s。
 - **动态作用域防护**:VM 编译期把"按全局处理的名字"记入 `Proto->gk`,每次调用前 `bc_globals_still_global` 复验无遮蔽,命中即回退树遍历;命中定义处 Env 链的名字编译为 `GETENV`/`SETENV`(capmode 下局部驻留 env 供闭包捕获)——见 BYTECODE_VM.md。
 
