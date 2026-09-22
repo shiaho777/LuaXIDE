@@ -27,7 +27,11 @@ typedef struct Closure Closure; typedef struct CFn CFn; typedef struct State Sta
 struct Str    { size_t len; char* p; unsigned h; /* cached FNV — hash lookups never rescan the bytes */ };
 struct Value  { int tag; union { bool b; double num; Str* s; Table* t; Closure* f; CFn* c; } u; };
 struct Table  { int cap, n; struct TEntry { Value k, v; int used; } *e; Table* meta;
-  int ahi; /* verified non-nil integer prefix 1..ahi — tlen resumes at ahi+1 */ };
+  int ahi; /* verified non-nil integer prefix 1..ahi — tlen resumes at ahi+1 */
+  /* array part: integer keys 1..acap live ONLY in arr (T_NIL==0 so a fresh
+   * xcalloc'd arr reads as nils). Sparse integer keys beyond the density
+   * threshold stay in the hash; agrow migrates covered keys on growth. */
+  Value* arr; int acap; };
 struct Env    { Table* vars; Env* parent; };
 struct Func   { int nparam; char** params; bool vararg; Node* body; Env* env; int line; Proto* bc; signed char bc_tried; };
 struct Closure{ Func* f; };
@@ -182,16 +186,38 @@ static Value* tfind(Table*t,Value k){ unsigned h=hashVal(k)&(t->cap-1);
   for(int i=0;i<t->cap;i++){int j=(h+i)&(t->cap-1); if(!t->e[j].used)return NULL; if(valEq(t->e[j].k,k))return &t->e[j].v;} return NULL; }
 static void tresize(State*S,Table*t){ int oc=t->cap;t->cap*=2;struct TEntry*ne=xcalloc(S,t->cap*sizeof(*t->e));struct TEntry*oe=t->e;t->e=ne;t->n=0;
   for(int i=0;i<oc;i++)if(oe[i].used){Value k=oe[i].k,v=oe[i].v;unsigned h=hashVal(k)&(t->cap-1);while(t->e[h].used)h=(h+1)&(t->cap-1);t->e[h].k=k;t->e[h].v=v;t->e[h].used=1;t->n++;} /* oe is arena memory, not freed */ }
+static int isIntKey(Value k,double*d);
+static void agrow(State*S,Table*t,int need);
 static void tset(State*S,Table*t,Value k,Value v){ if(k.tag==T_NIL)lx_rt_error(S,"table index is nil");
   if(k.tag==T_NUM){ double d=k.u.num;
     /* maintain the prefix hint: extending at ahi+1 grows it, nil-ing inside
      * [1,ahi] shrinks it. All real writes funnel through here (newIndex calls
      * tset only for raw stores), so the hint never over-claims. */
     if(v.tag==T_NIL){ if(d>=1&&d<=(double)t->ahi&&d==floor(d)) t->ahi=(int)d-1; }
-    else if(d==(double)t->ahi+1) t->ahi=(int)d; }
+    else if(d==(double)t->ahi+1) t->ahi=(int)d;
+    /* array-part routing: covered keys go straight to arr; a non-nil write
+     * just beyond acap (within 2x) grows and migrates — sequential appends
+     * amortize to O(1). Sparse far keys stay in the hash. */
+    double dd; if(isIntKey(k,&dd)){ int ik=(int)dd;
+      if(ik<=t->acap){ t->arr[ik-1]=v; return; }
+      if(v.tag!=T_NIL&&ik<=2*(t->acap>4?t->acap:4)){ agrow(S,t,ik); t->arr[ik-1]=v; return; } } }
   Value*f=tfind(t,k); if(f){*f=v;return;} if(t->n*2>=t->cap)tresize(S,t); unsigned h=hashVal(k)&(t->cap-1);
   while(t->e[h].used)h=(h+1)&(t->cap-1); t->e[h].k=k;t->e[h].v=v;t->e[h].used=1;t->n++; }
-static Value tget(Table*t,Value k){ Value*f=tfind(t,k); return f?*f:VNIL; }
+static int isIntKey(Value k,double*d){ if(k.tag!=T_NUM)return 0; *d=k.u.num; return *d==floor(*d)&&*d>=1&&*d<2147483647.0; }
+static void agrow(State*S,Table*t,int need){
+  int nc=t->acap?t->acap:8; while(nc<need)nc*=2;
+  Value*na=xcalloc(S,(size_t)nc*sizeof(Value));
+  if(t->arr)memcpy(na,t->arr,(size_t)t->acap*sizeof(Value));
+  /* migrate hash entries whose int key now fits the array part */
+  struct TEntry*ne=xcalloc(S,t->cap*sizeof(*t->e)); int nn=0;
+  for(int i=0;i<t->cap;i++) if(t->e[i].used){ Value k2=t->e[i].k,v2=t->e[i].v; double d;
+    if(isIntKey(k2,&d)&&d<=(double)nc) na[(int)d-1]=v2;
+    else { unsigned h=hashVal(k2)&(t->cap-1); while(ne[h].used)h=(h+1)&(t->cap-1); ne[h].k=k2;ne[h].v=v2;ne[h].used=1;nn++; } }
+  t->e=ne; t->n=nn; t->arr=na; t->acap=nc;
+}
+static Value tget(Table*t,Value k){ double d;
+  if(isIntKey(k,&d)&&d<=(double)t->acap) return t->arr[(int)d-1];
+  Value*f=tfind(t,k); return f?*f:VNIL; }
 static int tlen(Table*t){ int n=t->ahi; while(tget(t,VNUM(n+1)).tag!=T_NIL)n++; t->ahi=n; return n; }
 
 /* ---------- lexer ---------- */
@@ -1512,7 +1538,16 @@ static Value st_type(State*S,int argc,Value*argv){ const char*n=lx_typename(argv
 static Value st_tostring(State*S,int argc,Value*argv){ S->nret=1; S->retbuf[0]=VSTR(toStrx(S,argv[0])); return S->retbuf[0]; }
 static Value st_tonumber(State*S,int argc,Value*argv){ Value v=argv[0]; if(v.tag==T_NUM){S->nret=1;S->retbuf[0]=v;return v;} if(v.tag==T_STR){char*e;double d=strtod(v.u.s->p,&e);if(e!=v.u.s->p){S->nret=1;S->retbuf[0]=VNUM(d);return S->retbuf[0];}} S->nret=1; S->retbuf[0]=VNIL; return VNIL; }
 static Value st_next(State*S,int argc,Value*argv){ Table*t=argTab(S,argv[0],"next"); Value k=argc>1?argv[1]:VNIL; int from=0;
-  if(k.tag!=T_NIL){ unsigned h=hashVal(k)&(t->cap-1); int found=-1; for(int i=0;i<t->cap;i++){int j=(h+i)&(t->cap-1);if(!t->e[j].used)break;if(valEq(t->e[j].k,k)){found=j;break;}} if(found<0)lx_rt_error(S,"invalid key to 'next'"); from=found+1; }
+  /* array part first (Lua-style): a prior arr key resumes the arr scan from
+   * its index; a hash-side key resumes inside the hash part. */
+  int ai = k.tag==T_NIL ? 0 : -1;
+  if(k.tag!=T_NIL){ double d;
+    if(isIntKey(k,&d)&&d<=(double)t->acap){ int ik=(int)d;
+      if(t->arr[ik-1].tag==T_NIL)lx_rt_error(S,"invalid key to 'next'");
+      ai=ik; }
+    else { unsigned h=hashVal(k)&(t->cap-1); int found=-1; for(int i=0;i<t->cap;i++){int j=(h+i)&(t->cap-1);if(!t->e[j].used)break;if(valEq(t->e[j].k,k)){found=j;break;}} if(found<0)lx_rt_error(S,"invalid key to 'next'"); from=found+1; ai=t->acap; }
+  }
+  if(ai>=0) for(int i=ai;i<t->acap;i++){ if(t->arr[i].tag!=T_NIL){ S->nret=2; S->retbuf[0]=VNUM(i+1); S->retbuf[1]=t->arr[i]; return S->retbuf[0]; } }
   for(int i=from;i<t->cap;i++){ if(t->e[i].used){ S->nret=2; S->retbuf[0]=t->e[i].k; S->retbuf[1]=t->e[i].v; return S->retbuf[0]; } } S->nret=1; S->retbuf[0]=VNIL; return VNIL; }
 static Value st_pairs(State*S,int argc,Value*argv){ S->nret=3; S->retbuf[0]=VCFN(mkCFn(S,"next",st_next)); S->retbuf[1]=argv[0]; S->retbuf[2]=VNIL; return S->retbuf[0]; }
 static Value st_ipiter(State*S,int argc,Value*argv){ Table*t=argTab(S,argv[0],"ipairs"); int i=(int)argv[1].u.num+1; Value v=tget(t,VNUM(i)); if(v.tag==T_NIL){S->nret=1;S->retbuf[0]=VNIL;return VNIL;} S->nret=2; S->retbuf[0]=VNUM(i); S->retbuf[1]=v; return S->retbuf[0]; }
