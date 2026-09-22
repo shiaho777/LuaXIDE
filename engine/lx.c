@@ -90,7 +90,7 @@ struct State {
    * report "line N: ...". */
   int parseLine;
   int curLine;
-  int debug_enabled;
+  int debug_enabled; int no_bc;
   int break_on_error;
   struct { int line; char cond[96]; char logmsg[128]; int log_only; } breakpoints[256];
   int nbp;
@@ -501,7 +501,9 @@ static void frame_name(char*buf,int line){ char*p=buf; *p++='f';*p++='n';
 static void dbg_push_frame(State*S,const char*name,int call_line,int def_line){
   if(!S||S->nstack>=64) return;
   int i=S->nstack++;
-  snprintf(S->call_stack[i].name,sizeof(S->call_stack[i].name),"%s",name&&name[0]?name:"fn");
+  const char*n=name&&name[0]?name:"fn"; int l=0;
+  while(n[l]&&l<(int)sizeof(S->call_stack[i].name)-1){S->call_stack[i].name[l]=n[l];l++;}
+  S->call_stack[i].name[l]=0;
   S->call_stack[i].line=call_line>0?call_line:S->curLine;
   S->call_stack[i].def_line=def_line>0?def_line:0;
 }
@@ -530,7 +532,7 @@ static Value callValue(State*S,Value f,int argc,Value*argv){
     /* Bytecode VM (Phase 1b v0): compile closure-free function bodies on first
      * call; anything else (debug sessions, varargs, nested defs, upvalues)
      * transparently uses the tree-walking path below. */
-    if(!getenv("LUAX_NO_BC")){
+    if(!S->no_bc){
       if(!fn->bc && !fn->bc_tried){ fn->bc=bc_build(S,fn); fn->bc_tried=1; }
       if(fn->bc){
         if(!bc_globals_still_global(S,fn,fn->bc)){ S->bc_fallbacks++; }
@@ -857,7 +859,7 @@ static struct Flow execChunk(State*S,Env*env,Node*chunk){
    * (loops, table building, module bodies, view defs) run on the VM too.
    * Falls back to the tree-walk below whenever the body is not compilable,
    * debugging is on, or LUAX_NO_BC is set — identical gates to callValue. */
-  if(env && !getenv("LUAX_NO_BC")){
+  if(env && !S->no_bc){
     Func df; memset(&df,0,sizeof(df));
     df.body=chunk; df.env=env; df.line=chunk&&chunk->line>0?chunk->line:1;
     Proto*p=bc_build(S,&df);
@@ -2402,7 +2404,7 @@ static void openLibs(State*S){
 }
 
 /* ---------- API ---------- */
-State* lx_new(void){ State*S=calloc(1,sizeof(State)); S->globals=xalloc(S,sizeof(Env)); S->globals->vars=newTable(S); S->globals->parent=NULL; S->step_limit=0; pthread_mutex_init(&S->dbg_mu,NULL); pthread_cond_init(&S->dbg_cv,NULL); S->dbg_inited=1; io_init(S); openLibs(S); return S; }
+State* lx_new(void){ State*S=calloc(1,sizeof(State)); S->globals=xalloc(S,sizeof(Env)); S->globals->vars=newTable(S); S->globals->parent=NULL; S->step_limit=0; S->no_bc=getenv("LUAX_NO_BC")!=NULL; pthread_mutex_init(&S->dbg_mu,NULL); pthread_cond_init(&S->dbg_cv,NULL); S->dbg_inited=1; io_init(S); openLibs(S); return S; }
 void lx_close(State*S){ if(!S)return; S->cancel_flag=1; if(getenv("LUAX_BC_STATS"))fprintf(stderr,"bc: %ld compiled calls, %ld fallbacks\n",S->bc_calls,S->bc_fallbacks); if(S->dbg_inited){ pthread_mutex_lock(&S->dbg_mu); S->dbg_cmd=3; S->dbg_paused=0; pthread_cond_broadcast(&S->dbg_cv); pthread_mutex_unlock(&S->dbg_mu); pthread_mutex_destroy(&S->dbg_mu); pthread_cond_destroy(&S->dbg_cv); } if(S->io_inited){ pthread_mutex_lock(&S->io_mu); pthread_cond_broadcast(&S->io_cv); pthread_mutex_unlock(&S->io_mu); pthread_mutex_destroy(&S->io_mu); pthread_cond_destroy(&S->io_cv); } for(int i=0;i<S->npages;i++)free(S->pages[i].p); free(S->pages); free(S->vstack); free(S->out); free(S->json); free(S->dbg_locals); free(S->dbg_stack); free(S->dbg_eval_buf); free(S->stdin_q); free(S); }
 int lx_dostring(State*S,const char*src,char*errbuf,int errlen){
   if(setjmp(S->err)){ S->call_depth=0; if(errbuf)snprintf(errbuf,errlen,"%s",S->errmsg); return 1; }
