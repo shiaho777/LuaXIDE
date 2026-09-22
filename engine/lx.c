@@ -157,7 +157,13 @@ static bool strEq(Str*a,Str*b){ return a==b||(a->len==b->len&&memcmp(a->p,b->p,a
 static Table* newTable(State* S){ Table*t=xcalloc(S,sizeof(Table)); t->cap=8; t->e=xcalloc(S,8*sizeof(*t->e)); return t; }
 static unsigned hashVal(Value v){ switch(v.tag){
   case T_NIL:return 0; case T_BOOL:return v.u.b?1:2;
-  case T_NUM:{uint64_t u;memcpy(&u,&v.u.num,8);return (unsigned)(u^(u>>32));}
+  case T_NUM:{uint64_t u;memcpy(&u,&v.u.num,8);
+    /* murmur3 fmix64: integer doubles ≥2^20 have zeroed low-32 bits, so a
+     * plain u^(u>>32) hash collapses sequential keys into the same bucket
+     * bands and linear probing degrades to O(n²). The finalizer spreads the
+     * entropy across all bits (~2ns, branch-free). */
+    u^=u>>33; u*=0xff51afd7ed558ccdULL; u^=u>>33; u*=0xc4ceb9fe1a85ec53ULL; u^=u>>33;
+    return (unsigned)u;}
   case T_STR:{unsigned h=2166136261u;for(size_t i=0;i<v.u.s->len;i++){h^=(unsigned char)v.u.s->p[i];h*=16777619u;}return h;}
   default:return (unsigned)(uintptr_t)v.u.t; } }
 static bool valEq(Value a,Value b){ if(a.tag!=b.tag)return false;
