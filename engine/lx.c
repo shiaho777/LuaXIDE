@@ -530,7 +530,7 @@ static Value callValue(State*S,Value f,int argc,Value*argv){
     /* Bytecode VM (Phase 1b v0): compile closure-free function bodies on first
      * call; anything else (debug sessions, varargs, nested defs, upvalues)
      * transparently uses the tree-walking path below. */
-    if(!S->debug_enabled && !getenv("LUAX_NO_BC")){
+    if(!getenv("LUAX_NO_BC")){
       if(!fn->bc && !fn->bc_tried){ fn->bc=bc_build(S,fn); fn->bc_tried=1; }
       if(fn->bc){
         if(!bc_globals_still_global(S,fn,fn->bc)){ S->bc_fallbacks++; }
@@ -857,7 +857,7 @@ static struct Flow execChunk(State*S,Env*env,Node*chunk){
    * (loops, table building, module bodies, view defs) run on the VM too.
    * Falls back to the tree-walk below whenever the body is not compilable,
    * debugging is on, or LUAX_NO_BC is set — identical gates to callValue. */
-  if(env && !S->debug_enabled && !getenv("LUAX_NO_BC")){
+  if(env && !getenv("LUAX_NO_BC")){
     Func df; memset(&df,0,sizeof(df));
     df.body=chunk; df.env=env; df.line=chunk&&chunk->line>0?chunk->line:1;
     Proto*p=bc_build(S,&df);
@@ -901,7 +901,7 @@ enum {
   BC_ENVOPEN,BC_ENVCLOSE,BC_DECL,BC_GETENV,BC_SETENV,BC_CLOSURE,BC_VARARG,BC_CONCATN
 };
 typedef struct { unsigned char op,a,b,c; } BIns;   /* 4-byte insn; immediates live in Proto.imm[pc] (u16: k-idx or i16 jump delta) */
-struct Proto { BIns* code; int ncode; unsigned short* imm; Value* k; int nk; int* lines; int* gk; int ngk; int nparam; int maxstack; int defline; int uses_env; int vararg; Node** subs; int nsubs; long gk_sig; int gk_state, gk_ok; };
+struct Proto { BIns* code; int ncode; unsigned short* imm; Value* k; int nk; int* lines; int* gk; int ngk; int nparam; int maxstack; int defline; int uses_env; int vararg; Node** subs; int nsubs; long gk_sig; int gk_state, gk_ok; struct { char*n; int r; int pc; }* locm; int nlocm; };
 
 #define BC_MAXREG 200
 typedef struct {
@@ -913,6 +913,7 @@ typedef struct {
   int gk[64]; int ngk;
   int reg,maxreg;
   struct { char*name; int reg; } loc[256]; int nloc;
+  struct { char*n; int r; int pc; } dloc[512]; int ndloc; /* every local decl ever (pc-stamped) — debug snapshot metadata */
   int scope[40]; int scopereg[40]; int depth;
   struct { int brk[32]; int nbrk; int envmark; } loops[16]; int nloops;
   int curline;
@@ -1132,7 +1133,7 @@ static void bc_stat(Bc*C,Node*st){
     for(int i=0;i<nv-(lastmulti?1:0);i++) bc_expr(C,V[i],base+i);
     if(lastmulti){ bc_expr_multi(C,V[nv-1],base+nv-1); bc_emit(C,BC_EXPAND,base+nv-1,nn-(nv-1),0,0); }
     else if(nv<nn) bc_emit(C,BC_LOADNIL,base+nv,nn-nv,0,0);
-    for(int i=0;i<nn;i++){ if(C->nloc<256){ C->loc[C->nloc].name=st->names[i]; C->loc[C->nloc].reg=base+i; C->nloc++; } }
+    for(int i=0;i<nn;i++){ if(C->nloc<256){ C->loc[C->nloc].name=st->names[i]; C->loc[C->nloc].reg=base+i; C->nloc++; if(C->ndloc<512){C->dloc[C->ndloc].n=st->names[i];C->dloc[C->ndloc].r=base+i;C->dloc[C->ndloc].pc=C->ncode;C->ndloc++;} } }
     if(C->capmode) for(int i=0;i<nn;i++) bc_emit(C,BC_DECL,base+i,0,0,bc_kstr(C,st->names[i]));
     break;}
   case K_ASSIGN:{
@@ -1220,7 +1221,7 @@ static void bc_stat(Bc*C,Node*st){
     int fp=bc_emit(C,BC_FORPREP,a,0,0,0);
     bc_scope(C);
     if(C->capmode) bc_emit(C,BC_DECL,a,0,0,bc_kstr(C,st->name));
-    if(C->nloc<256){ C->loc[C->nloc].name=st->name; C->loc[C->nloc].reg=a; C->nloc++; }
+    if(C->nloc<256){ C->loc[C->nloc].name=st->name; C->loc[C->nloc].reg=a; C->nloc++; if(C->ndloc<512){C->dloc[C->ndloc].n=st->name;C->dloc[C->ndloc].r=a;C->dloc[C->ndloc].pc=C->ncode;C->ndloc++;} }
     bc_block(C,st->body);
     bc_endscope(C);
     int fl=bc_emit(C,BC_FORLOOP,a,0,0,0);
@@ -1241,7 +1242,7 @@ static void bc_stat(Bc*C,Node*st){
     int gp=bc_emit(C,BC_GFORPREP,a,0,0,0);
     bc_scope(C);
     if(C->capmode) for(int i=0;i<st->nnames;i++) bc_emit(C,BC_DECL,a+3+i,0,0,bc_kstr(C,st->names[i]));
-    for(int i=0;i<st->nnames;i++){ if(C->nloc<256){ C->loc[C->nloc].name=st->names[i]; C->loc[C->nloc].reg=a+3+i; C->nloc++; } }
+    for(int i=0;i<st->nnames;i++){ if(C->nloc<256){ C->loc[C->nloc].name=st->names[i]; C->loc[C->nloc].reg=a+3+i; C->nloc++; if(C->ndloc<512){C->dloc[C->ndloc].n=st->names[i];C->dloc[C->ndloc].r=a+3+i;C->dloc[C->ndloc].pc=C->ncode;C->ndloc++;} } }
     bc_block(C,st->body);
     bc_endscope(C);
     int gl=bc_emit(C,BC_GFORLOOP,a,0,st->nnames,0);
@@ -1275,7 +1276,7 @@ static Proto* bc_build(State*S,Func*fn){
   Proto*p=xalloc(S,sizeof(Proto)); memset(p,0,sizeof(*p));
   bc_scope(&C);
   /* params own registers [0,nparam): seed them as the outermost locals */
-  for(int i=0;i<fn->nparam && C.nloc<256;i++){ C.loc[C.nloc].name=fn->params[i]; C.loc[C.nloc].reg=i; C.nloc++; }
+  for(int i=0;i<fn->nparam && C.nloc<256;i++){ C.loc[C.nloc].name=fn->params[i]; C.loc[C.nloc].reg=i; C.nloc++; if(C.ndloc<512){C.dloc[C.ndloc].n=fn->params[i];C.dloc[C.ndloc].r=i;C.dloc[C.ndloc].pc=0;C.ndloc++;} }
   C.reg=fn->nparam;
   bc_block(&C,fn->body);
   bc_endscope(&C);
@@ -1299,6 +1300,7 @@ static Proto* bc_build(State*S,Func*fn){
   p->uses_env=C.capmode;
   p->vararg=fn->vararg;
   if(C.nsubs){ p->subs=xalloc(S,(size_t)C.nsubs*sizeof(Node*)); memcpy(p->subs,C.subs,(size_t)C.nsubs*sizeof(Node*)); p->nsubs=C.nsubs; }
+  if(C.ndloc){ p->locm=xalloc(S,(size_t)C.ndloc*sizeof(*p->locm)); memcpy(p->locm,C.dloc,(size_t)C.ndloc*sizeof(*p->locm)); p->nlocm=C.ndloc; }
   free(C.code); free(C.lines); free(C.imm); free(C.k);
   return p;
 }
@@ -1323,6 +1325,30 @@ static bool bc_globals_still_global(State*S,Func*fn,Proto*p){
 }
 
 #define BVR(i) (S->vstack[base+(i)])
+/* Debug support inside the VM: on a source-line change with debugging on,
+ * build a snapshot env for register-resident locals (capmode protos already
+ * keep locals in `cur`), run the shared line hook, then write bindings back
+ * so eval-time assignment reaches the registers. Locals use the latest decl
+ * per name with pc <= current pc — shadowed/stale entries are skipped on
+ * writeback by checking no later decl of the same name is in effect. */
+static void vm_line_hit(State*S,Proto*p,Closure*cl,Env*cur,int base,int pc){
+  Env*e=cur; Env*snap=NULL;
+  if(!p->uses_env){
+    snap=newEnv(S,cur);
+    for(int i=0;i<p->nlocm;i++) if(p->locm[i].pc<=pc)
+      envDeclareFn(S,snap,p->locm[i].n,S->vstack[base+p->locm[i].r]);
+    e=snap;
+  }
+  S->cur_env=e;
+  lx_line_hook(S,e,S->curLine);
+  if(snap){
+    for(int i=0;i<p->nlocm;i++){ if(p->locm[i].pc>pc) continue;
+      int eff=1; for(int j=i+1;j<p->nlocm;j++) if(p->locm[j].pc<=pc&&!strcmp(p->locm[j].n,p->locm[i].n)){eff=0;break;}
+      if(!eff) continue;
+      Value*v=tfind(snap->vars,VSTR(internName(S,p->locm[i].n)));
+      if(v) S->vstack[base+p->locm[i].r]=*v; }
+  }
+}
 static Value vm_call(State*S,Proto*p,Closure*cl,int argc,Value*argv){
   int base=S->vtop;
   int need=base+p->maxstack+2;
@@ -1348,7 +1374,7 @@ static Value vm_call(State*S,Proto*p,Closure*cl,int argc,Value*argv){
     envDeclareFn(S,cur,"...",VTAB(va));
   }
   S->cur_env=cur;
-  int pc=0,mrc=0;
+  int pc=0,mrc=0,vline=0,vpc=0;
   Value ret=VNIL;
   BIns in={0,0,0,0};
 #if defined(__GNUC__)||defined(__clang__)
@@ -1368,7 +1394,7 @@ static Value vm_call(State*S,Proto*p,Closure*cl,int argc,Value*argv){
 #define BC_AGAIN() do{ \
     if(S->cancel_flag) lx_rt_error(S,"cancelled by user"); \
     if(S->step_limit>0 && ++S->steps>S->step_limit) lx_rt_error(S,"execution step limit exceeded (possible infinite loop)"); \
-    { int pl=p->lines[pc]; if(pl>0) S->curLine=pl; } \
+    { int pl=p->lines[pc]; if(pl>0){ S->curLine=pl; if(S->debug_enabled&&(pl!=vline||pc<vpc)){ vline=pl; vm_line_hit(S,p,cl,cur,base,pc); } } vpc=pc; } \
     in=p->code[pc]; goto *disp[in.op]; }while(0)
 #define BC_NEXT() do{ pc++; BC_AGAIN(); }while(0)
   BC_AGAIN();
@@ -1380,7 +1406,7 @@ static Value vm_call(State*S,Proto*p,Closure*cl,int argc,Value*argv){
     in=p->code[pc];
     if(S->cancel_flag) lx_rt_error(S,"cancelled by user");
     if(S->step_limit>0 && ++S->steps>S->step_limit) lx_rt_error(S,"execution step limit exceeded (possible infinite loop)");
-    { int pl=p->lines[pc]; if(pl>0) S->curLine=pl; }
+    { int pl=p->lines[pc]; if(pl>0){ S->curLine=pl; if(S->debug_enabled&&(pl!=vline||pc<vpc)){ vline=pl; vm_line_hit(S,p,cl,cur,base,pc); } } vpc=pc; }
     switch(in.op){
 #endif
     BC_OP(BC_LOADK): BVR(in.a)=p->k[p->imm[pc]]; BC_NEXT();
