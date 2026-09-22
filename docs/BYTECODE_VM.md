@@ -35,7 +35,7 @@ The chunk path deliberately shares the function-body machinery: `capmode` detect
 
 | Supported | Falls back |
 |---|---|
-| locals / assignment / multi-assign, call statements | vararg functions (`...`) |
+| locals / assignment / multi-assign, call statements, **vararg functions** (`...` packs into an env-bound `"..."` table at call entry; `BC_VARARG` expands it — nested functions see outer varargs through the env chain) | |
 | if/elseif/else, while, repeat (until sees in-body locals), numeric for, generic for | goto/label (the parser rejects these anyway) |
 | break, return (incl. multi-value expansion) | |
 | arithmetic/bitwise/comparison/concat, and/or short-circuit (value-preserving) | |
@@ -86,5 +86,6 @@ LUAX_NO_BC=1 ./engine/lx x.lua      # disable the VM entirely (troubleshooting)
 
 ## Roadmap (not done, ordered by value)
 
-1. vararg functions (`...`) — the only remaining hard fallback
-2. breakpoints lowered onto the bytecode line table (today a debug session falls back to tree-walking wholesale — functional but slow)
+1. breakpoints lowered onto the bytecode line table (today a debug session falls back to tree-walking wholesale — functional but slow)
+
+All statement/expression forms now compile — vararg functions included. The remaining fallbacks are *runtime* gates (debug sessions, `LUAX_NO_BC`) and oversize limits (u16 constant index, i16 jump delta, 200 registers).

@@ -125,7 +125,7 @@ local function passthru(...) return ... end
 local p1, p2 = passthru(two())
 eq(p2, 20, "tail multret through params")
 
--- varargs function stays tree-walked but must behave identically
+-- varargs compile onto the VM (BC_VARARG expands the env "..." table)
 local function va(...)
   local s = select("#", ...)
   local first = ...
@@ -134,6 +134,23 @@ end
 local vs, vf = va("A", "B", "C")
 eq(vs, 3, "vararg select#")
 eq(vf, "A", "vararg first")
+local function vall(...) return ... end
+eq(select("#", vall(7, 8, 9)), 3, "vararg return expands")
+local va1, va2 = vall(7, 8, 9)
+eq(va1 + va2, 15, "vararg multi assign")
+local function vpack(...) return {...} end
+eq(#vpack(1, 2, 3, 4), 4, "vararg table ctor")
+local function vcall(...) return select("#", 0, ...) end
+eq(vcall(5, 6), 3, "vararg as call args")
+local function vouter(...)
+  local function inner() return select("#", ...) end
+  return inner()
+end
+eq(vouter(1, 2, 3, 4), 4, "nested fn sees outer varargs")
+local function vtrunc(...) return (...) end
+eq(vtrunc(9, 8, 7), 9, "parens truncate varargs")
+local function vempty(...) return select("#", ...) end
+eq(vempty(), 0, "empty varargs")
 
 -- a function reading a top-level local captures it via the chunk's env
 -- (capmode): the same name resolves identically on both engine paths
@@ -375,12 +392,12 @@ local function whilecap()
 end
 eq(whilecap(), 203, "do-block capture inside while + break")
 
--- nested vararg fn still falls back to tree-walk transparently
+-- nested vararg fn also compiles and reads its own "..."
 local function hasvararg()
   local f = function(...) return select('#', ...) end
   return f(1, 2, 3)
 end
-eq(hasvararg(), 3, "vararg nested fn falls back")
+eq(hasvararg(), 3, "nested vararg fn")
 
 -- ===== top-level chunk on the VM (Phase 1b) =====
 -- Everything above already ran on the VM when compilable; these cases pin the

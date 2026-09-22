@@ -847,10 +847,10 @@ enum {
   BC_UNM,BC_BNOT,BC_NOT,BC_LEN,BC_CONCAT,BC_EQ,BC_LT,BC_LE,
   BC_TEST,BC_TESTN,BC_JMP,BC_CALL,BC_RETURN,BC_EXPAND,BC_NEWTABLE,BC_TSETMULT,BC_INC,
   BC_FORPREP,BC_FORLOOP,BC_GFORPREP,BC_GFORLOOP,
-  BC_ENVOPEN,BC_ENVCLOSE,BC_DECL,BC_GETENV,BC_SETENV,BC_CLOSURE
+  BC_ENVOPEN,BC_ENVCLOSE,BC_DECL,BC_GETENV,BC_SETENV,BC_CLOSURE,BC_VARARG
 };
 typedef struct { unsigned char op,a,b,c; } BIns;   /* 4-byte insn; immediates live in Proto.imm[pc] (u16: k-idx or i16 jump delta) */
-struct Proto { BIns* code; int ncode; unsigned short* imm; Value* k; int nk; int* lines; int* gk; int ngk; int nparam; int maxstack; int defline; int uses_env; Node** subs; int nsubs; };
+struct Proto { BIns* code; int ncode; unsigned short* imm; Value* k; int nk; int* lines; int* gk; int ngk; int nparam; int maxstack; int defline; int uses_env; int vararg; Node** subs; int nsubs; };
 
 #define BC_MAXREG 200
 typedef struct {
@@ -874,7 +874,7 @@ static const char* bc_opname(int op){
   static const char* N[]={"LOADK","LOADNIL","LOADBOOL","MOVE","GETGLOBAL","SETGLOBAL","GETTABLE","SETTABLE","GETFIELD","SETFIELD",
     "ADD","SUB","MUL","DIV","MOD","POW","IDIV","BAND","BOR","BXOR","SHL","SHR","UNM","BNOT","NOT","LEN","CONCAT","EQ","LT","LE",
     "TEST","TESTN","JMP","CALL","RETURN","EXPAND","NEWTABLE","TSETMULT","INC","FORPREP","FORLOOP","GFORPREP","GFORLOOP",
-    "ENVOPEN","ENVCLOSE","DECL","GETENV","SETENV","CLOSURE"};
+    "ENVOPEN","ENVCLOSE","DECL","GETENV","SETENV","CLOSURE","VARARG"};
   return op>=0&&(size_t)op<sizeof(N)/sizeof(*N)?N[op]:"?";
 }
 static int bc_emit(Bc*C,int op,int a,int b,int c,int imm){
@@ -921,7 +921,7 @@ static int bc_has_nested(Node*n){
 }
 /* multi-value producers in trailing position expand (matches evalInto):
  * plain calls and method calls — VARARG joins once vararg compiles */
-static int bc_ismulti(Node*e){ return e&&(e->kind==K_CALL||e->kind==K_METHODCALL); }
+static int bc_ismulti(Node*e){ return e&&(e->kind==K_CALL||e->kind==K_METHODCALL||e->kind==K_VARARG); }
 
 static void bc_expr(Bc*C,Node*e,int dst);
 static void bc_expr_multi(Bc*C,Node*e,int dst);
@@ -964,6 +964,7 @@ static void bc_call_compile(Bc*C,Node*e,int base,int mode){
 }
 static void bc_expr_multi(Bc*C,Node*e,int dst){
   if(e->kind==K_CALL||e->kind==K_METHODCALL) bc_call_compile(C,e,dst,1);
+  else if(e->kind==K_VARARG){ bc_emit(C,BC_VARARG,dst,0,0,bc_kstr(C,"...")); bc_raise(C,dst+64); }
   else bc_expr(C,e,dst);
 }
 static void bc_expr(Bc*C,Node*e,int dst){
@@ -993,6 +994,7 @@ static void bc_expr(Bc*C,Node*e,int dst){
     else{ int t=bc_reg(C),kk=bc_reg(C); bc_expr(C,e->a,t); bc_expr(C,e->b,kk); bc_emit(C,BC_GETTABLE,dst,t,kk,0); }
     break;}
   case K_CALL: case K_METHODCALL: bc_call_compile(C,e,dst,0); break;
+  case K_VARARG: bc_emit(C,BC_VARARG,dst,2,0,bc_kstr(C,"...")); break;
   case K_FUNC: bc_emit(C,BC_CLOSURE,dst,0,0,bc_sub(C,e)); break;
   case K_TABLE:{
     bc_emit(C,BC_NEWTABLE,dst,0,0,0);
@@ -1207,7 +1209,7 @@ static void bc_stat(Bc*C,Node*st){
 static void bc_block(Bc*C,Node*blk){ if(blk)for(int i=0;i<blk->nlist;i++) bc_stat(C,blk->list[i]); }
 
 static Proto* bc_build(State*S,Func*fn){
-  if(!fn||!fn->body||fn->vararg) return NULL;
+  if(!fn||!fn->body) return NULL;
   Bc C; memset(&C,0,sizeof(C)); C.S=S; C.fn=fn;
   C.capmode=bc_has_nested(fn->body);
   if(fn->body->line>0)C.curline=fn->body->line;
@@ -1236,6 +1238,7 @@ static Proto* bc_build(State*S,Func*fn){
   p->maxstack=C.maxreg+1;
   p->defline=fn->line;
   p->uses_env=C.capmode;
+  p->vararg=fn->vararg;
   if(C.nsubs){ p->subs=xalloc(S,(size_t)C.nsubs*sizeof(Node*)); memcpy(p->subs,C.subs,(size_t)C.nsubs*sizeof(Node*)); p->nsubs=C.nsubs; }
   free(C.code); free(C.lines); free(C.imm); free(C.k);
   return p;
@@ -1266,6 +1269,16 @@ static Value vm_call(State*S,Proto*p,Closure*cl,int argc,Value*argv){
     cur=newEnv(S,cur);
     if(cl&&cl->f) for(int i=0;i<p->nparam;i++) envDeclareFn(S,cur,cl->f->params[i], i<argc?argv[i]:VNIL);
   }
+  if(p->vararg){
+    /* mirror the tree-walk prologue: pack argv[nparam..] into a table bound
+     * as "..." in a per-call env. Non-capmode protos open an env just for it
+     * (must not touch the shared definition env); nested functions then see
+     * "..." through the env chain exactly like the tree-walker. */
+    if(!p->uses_env) cur=newEnv(S,cur);
+    Table*va=newTable(S);
+    for(int i=p->nparam;i<argc;i++) tset(S,va,VNUM(i-p->nparam+1),argv[i]);
+    envDeclareFn(S,cur,"...",VTAB(va));
+  }
   S->cur_env=cur;
   int pc=0,mrc=0;
   Value ret=VNIL;
@@ -1282,7 +1295,7 @@ static Value vm_call(State*S,Proto*p,Closure*cl,int argc,Value*argv){
     &&L_BC_UNM,&&L_BC_BNOT,&&L_BC_NOT,&&L_BC_LEN,&&L_BC_CONCAT,&&L_BC_EQ,&&L_BC_LT,&&L_BC_LE,
     &&L_BC_TEST,&&L_BC_TESTN,&&L_BC_JMP,&&L_BC_CALL,&&L_BC_RETURN,&&L_BC_EXPAND,&&L_BC_NEWTABLE,&&L_BC_TSETMULT,&&L_BC_INC,
     &&L_BC_FORPREP,&&L_BC_FORLOOP,&&L_BC_GFORPREP,&&L_BC_GFORLOOP,
-    &&L_BC_ENVOPEN,&&L_BC_ENVCLOSE,&&L_BC_DECL,&&L_BC_GETENV,&&L_BC_SETENV,&&L_BC_CLOSURE};
+    &&L_BC_ENVOPEN,&&L_BC_ENVCLOSE,&&L_BC_DECL,&&L_BC_GETENV,&&L_BC_SETENV,&&L_BC_CLOSURE,&&L_BC_VARARG};
 #define BC_OP(n) L_##n
 #define BC_AGAIN() do{ \
     if(S->cancel_flag) lx_rt_error(S,"cancelled by user"); \
@@ -1403,6 +1416,15 @@ static Value vm_call(State*S,Proto*p,Closure*cl,int argc,Value*argv){
       fn->bc=NULL; fn->bc_tried=0;
       Closure*c2=xalloc(S,sizeof(Closure)); c2->f=fn;
       BVR(in.a)=VFN(c2); BC_NEXT();}
+    BC_OP(BC_VARARG):{
+      /* b mirrors CALL's result mode: 0 -> expand all into mrc,
+       * >=1 -> write b-1 values (nil-padded). Table comes from the env
+       * "..." binding, so a nested function sees its outer's varargs. */
+      Value tv=envGetS(S,cur,p->k[p->imm[pc]].u.s);
+      int n= tv.tag==T_TAB ? (int)tlen(tv.u.t) : 0; if(n>64)n=64;
+      if(in.b){ int want=in.b-1; for(int i=0;i<want;i++) BVR(in.a+i)= i<n?tget(tv.u.t,VNUM(i+1)):VNIL; mrc=want; }
+      else { for(int i=0;i<n;i++) BVR(in.a+i)=tget(tv.u.t,VNUM(i+1)); mrc=n; }
+      BC_NEXT();}
     BC_OP(BC_RETURN):{
       int n2=in.b-1+(p->imm[pc]?mrc:0);
       if(n2>64)n2=64;
