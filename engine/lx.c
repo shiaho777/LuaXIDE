@@ -538,8 +538,20 @@ static Value eval(State*S,Env*env,Node*e){
   case K_BINOP:{ int op=e->op;
     if(op==T_AND){ Value a=eval(S,env,e->a); if(!toBool(a))return a; return eval(S,env,e->b); }
     if(op==T_OR){ Value a=eval(S,env,e->a); if(toBool(a))return a; return eval(S,env,e->b); }
+    if(op==T_CONCAT){
+      /* fuse the right-assoc spine into one pass: a..(b..(c..d)) evaluates
+       * a,b,c,d strictly left-to-right — identical side-effect order to the
+       * pairwise form — and concat is associative, so one flat alloc+memcpy
+       * produces the same string. Spines deeper than 63 recurse once. */
+      Node*ops[64]; int n=0; Node*cc=e;
+      while(cc->kind==K_BINOP&&cc->op==T_CONCAT&&n<63){ops[n++]=cc->a;cc=cc->b;}
+      ops[n++]=cc;
+      Str*ss[64]; size_t tot=0;
+      for(int i=0;i<n;i++){ ss[i]=toStrx(S,eval(S,env,ops[i])); tot+=ss[i]->len; }
+      char*buf=xalloc(S,tot+1); size_t off=0;
+      for(int i=0;i<n;i++){ memcpy(buf+off,ss[i]->p,ss[i]->len); off+=ss[i]->len; }
+      return VSTR(newStr(S,buf,tot)); }
     Value a=eval(S,env,e->a), b=eval(S,env,e->b);
-    if(op==T_CONCAT){ Str*sa=toStrx(S,a),*sb=toStrx(S,b); char*buf=xalloc(S,sa->len+sb->len+1); memcpy(buf,sa->p,sa->len); memcpy(buf+sa->len,sb->p,sb->len); return VSTR(newStr(S,buf,sa->len+sb->len)); }
     if(op==T_EQ||op==T_NE){ bool eq=valEq(a,b); if(op==T_EQ)return VBOOL(eq); return VBOOL(!eq); }
     if(op=='<'||op=='>'||op==T_LE||op==T_GE){ double x=toNum(S,a),y=toNum(S,b); switch(op){case'<':return VBOOL(x<y);case'>':return VBOOL(x>y);case T_LE:return VBOOL(x<=y);case T_GE:return VBOOL(x>=y);} }
     if(op=='^'){return VNUM(pow(toNum(S,a),toNum(S,b)));}
@@ -854,7 +866,7 @@ enum {
   BC_UNM,BC_BNOT,BC_NOT,BC_LEN,BC_CONCAT,BC_EQ,BC_LT,BC_LE,
   BC_TEST,BC_TESTN,BC_JMP,BC_CALL,BC_RETURN,BC_EXPAND,BC_NEWTABLE,BC_TSETMULT,BC_INC,
   BC_FORPREP,BC_FORLOOP,BC_GFORPREP,BC_GFORLOOP,
-  BC_ENVOPEN,BC_ENVCLOSE,BC_DECL,BC_GETENV,BC_SETENV,BC_CLOSURE,BC_VARARG
+  BC_ENVOPEN,BC_ENVCLOSE,BC_DECL,BC_GETENV,BC_SETENV,BC_CLOSURE,BC_VARARG,BC_CONCATN
 };
 typedef struct { unsigned char op,a,b,c; } BIns;   /* 4-byte insn; immediates live in Proto.imm[pc] (u16: k-idx or i16 jump delta) */
 struct Proto { BIns* code; int ncode; unsigned short* imm; Value* k; int nk; int* lines; int* gk; int ngk; int nparam; int maxstack; int defline; int uses_env; int vararg; Node** subs; int nsubs; };
@@ -881,7 +893,7 @@ static const char* bc_opname(int op){
   static const char* N[]={"LOADK","LOADNIL","LOADBOOL","MOVE","GETGLOBAL","SETGLOBAL","GETTABLE","SETTABLE","GETFIELD","SETFIELD",
     "ADD","SUB","MUL","DIV","MOD","POW","IDIV","BAND","BOR","BXOR","SHL","SHR","UNM","BNOT","NOT","LEN","CONCAT","EQ","LT","LE",
     "TEST","TESTN","JMP","CALL","RETURN","EXPAND","NEWTABLE","TSETMULT","INC","FORPREP","FORLOOP","GFORPREP","GFORLOOP",
-    "ENVOPEN","ENVCLOSE","DECL","GETENV","SETENV","CLOSURE","VARARG"};
+    "ENVOPEN","ENVCLOSE","DECL","GETENV","SETENV","CLOSURE","VARARG","CONCATN"};
   return op>=0&&(size_t)op<sizeof(N)/sizeof(*N)?N[op]:"?";
 }
 static int bc_emit(Bc*C,int op,int a,int b,int c,int imm){
@@ -1033,11 +1045,19 @@ static void bc_expr(Bc*C,Node*e,int dst){
       else if(op=='>')v=VBOOL(x>y); else if(op==T_GE)v=VBOOL(x>=y);
       else ok=0;
       if(ok){ bc_emit(C,BC_LOADK,dst,0,0,bc_k(C,v)); break; } }
-    if(e->a->kind==K_STR&&e->b->kind==K_STR&&op==T_CONCAT){
-      Str*sa=e->a->str,*sb=e->b->str;
-      char*buf=xalloc(C->S,sa->len+sb->len+1);
-      memcpy(buf,sa->p,sa->len); memcpy(buf+sa->len,sb->p,sb->len);
-      bc_emit(C,BC_LOADK,dst,0,0,bc_k(C,VSTR(newStr(C->S,buf,sa->len+sb->len)))); break; }
+    if(op==T_CONCAT){
+      /* flatten the right-assoc spine; all-string chains fold to one LOADK,
+       * the rest emit operand evals left-to-right then one CONCATN. */
+      Node*ops[64]; int n=0; Node*cc=e;
+      while(cc->kind==K_BINOP&&cc->op==T_CONCAT&&n<60){ops[n++]=cc->a;cc=cc->b;}
+      ops[n++]=cc;
+      int allstr=1; size_t tot=0;
+      for(int i=0;i<n;i++){ if(ops[i]->kind!=K_STR){allstr=0;break;} tot+=ops[i]->str->len; }
+      if(allstr){ char*buf=xalloc(C->S,tot+1); size_t off=0;
+        for(int i=0;i<n;i++){memcpy(buf+off,ops[i]->str->p,ops[i]->str->len);off+=ops[i]->str->len;}
+        bc_emit(C,BC_LOADK,dst,0,0,bc_k(C,VSTR(newStr(C->S,buf,tot)))); break; }
+      for(int i=0;i<n;i++){ bc_expr(C,ops[i],dst+i); bc_raise(C,dst+i+1); }
+      bc_emit(C,BC_CONCATN,dst,n,0,0); break; }
     int ra=bc_reg(C),rb=bc_reg(C);
     bc_expr(C,e->a,ra); bc_expr(C,e->b,rb);
     int o = op=='+'?BC_ADD: op=='-'?BC_SUB: op=='*'?BC_MUL: op=='/'?BC_DIV: op=='%'?BC_MOD: op=='^'?BC_POW: op==T_IDIV?BC_IDIV:
@@ -1302,7 +1322,7 @@ static Value vm_call(State*S,Proto*p,Closure*cl,int argc,Value*argv){
     &&L_BC_UNM,&&L_BC_BNOT,&&L_BC_NOT,&&L_BC_LEN,&&L_BC_CONCAT,&&L_BC_EQ,&&L_BC_LT,&&L_BC_LE,
     &&L_BC_TEST,&&L_BC_TESTN,&&L_BC_JMP,&&L_BC_CALL,&&L_BC_RETURN,&&L_BC_EXPAND,&&L_BC_NEWTABLE,&&L_BC_TSETMULT,&&L_BC_INC,
     &&L_BC_FORPREP,&&L_BC_FORLOOP,&&L_BC_GFORPREP,&&L_BC_GFORLOOP,
-    &&L_BC_ENVOPEN,&&L_BC_ENVCLOSE,&&L_BC_DECL,&&L_BC_GETENV,&&L_BC_SETENV,&&L_BC_CLOSURE,&&L_BC_VARARG};
+    &&L_BC_ENVOPEN,&&L_BC_ENVCLOSE,&&L_BC_DECL,&&L_BC_GETENV,&&L_BC_SETENV,&&L_BC_CLOSURE,&&L_BC_VARARG,&&L_BC_CONCATN};
 #define BC_OP(n) L_##n
 #define BC_AGAIN() do{ \
     if(S->cancel_flag) lx_rt_error(S,"cancelled by user"); \
@@ -1357,6 +1377,12 @@ static Value vm_call(State*S,Proto*p,Closure*cl,int argc,Value*argv){
       char*buf=xalloc(S,sa->len+sb->len+1);
       memcpy(buf,sa->p,sa->len); memcpy(buf+sa->len,sb->p,sb->len);
       BVR(in.a)=VSTR(newStr(S,buf,sa->len+sb->len)); BC_NEXT();}
+    BC_OP(BC_CONCATN):{ /* fused a..b..c.. — operands sit in consecutive regs */
+      int n=in.b; size_t tot=0; Str*ss[64];
+      for(int i=0;i<n;i++){ ss[i]=toStrx(S,BVR(in.a+i)); tot+=ss[i]->len; }
+      char*buf=xalloc(S,tot+1); size_t off=0;
+      for(int i=0;i<n;i++){ memcpy(buf+off,ss[i]->p,ss[i]->len); off+=ss[i]->len; }
+      BVR(in.a)=VSTR(newStr(S,buf,tot)); BC_NEXT();}
     BC_OP(BC_EQ): BVR(in.a)=VBOOL(valEq(BVR(in.b),BVR(in.c))); BC_NEXT();
     BC_OP(BC_LT): BVR(in.a)=VBOOL(toNum(S,BVR(in.b))<toNum(S,BVR(in.c))); BC_NEXT();
     BC_OP(BC_LE): BVR(in.a)=VBOOL(toNum(S,BVR(in.b))<=toNum(S,BVR(in.c))); BC_NEXT();
