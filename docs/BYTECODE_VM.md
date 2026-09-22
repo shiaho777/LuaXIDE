@@ -8,19 +8,28 @@
 
 ```
 callValue(T_FN)
-  ├─ debugger off && LUAX_NO_BC unset?
+  ├─ LUAX_NO_BC unset?
   │    ├─ first call: bc_build() tries to compile the body
   │    │    ├─ success → per-call global-name shadowing check → vm_call() runs bytecode
   │    │    └─ failure → mark bc_tried, tree-walk forever
   │    └─ Proto exists → check → vm_call()
-  └─ otherwise (debug session / disabled) → tree-walking path (original logic unchanged)
+  └─ otherwise (LUAX_NO_BC) → tree-walking path (original logic unchanged)
 
 execChunk(chunk)                       # lx_run / lx_dostring / lx_repl / require
-  ├─ debugger off && LUAX_NO_BC unset?
+  ├─ LUAX_NO_BC unset?
   │    ├─ wrap chunk in synthetic Func{env=fresh chunk env} → bc_build()
   │    │    ├─ success + globals check → vm_call(); S->nret/retbuf rebuild the Flow
   │    │    └─ failure → fall through to the tree-walk loop
-  └─ otherwise (debug session / disabled) → tree-walking path
+  └─ otherwise (LUAX_NO_BC) → tree-walking path
+
+Debugging no longer forces tree-walking: with `debug_enabled` the VM keeps a
+per-frame "last hooked line" and fires `vm_line_hit` whenever the executing
+instruction's line changes or control jumps backwards (loop iteration). For
+register-resident protos it synthesizes a snapshot Env from `Proto.locm`
+(every local decl recorded as name/reg/pc at compile time); capmode protos
+already keep locals in `cur`, so the debugger sees them live. After the pause
+the snapshot is written back to registers, so `eval` assignments behave the
+same as on the tree-walk path.
 ```
 
 The chunk path deliberately shares the function-body machinery: `capmode` detection puts top-level locals into `Env` scopes whenever any nested function exists (so closures capture them correctly); a chunk without nested functions keeps locals in registers. A `break` outside a loop soft-fails the compile exactly like inside function bodies and runs tree-walked — the parser still treats `break` as a block terminator, so surviving semantics are unchanged.
@@ -84,8 +93,8 @@ LUAX_NO_BC=1 ./engine/lx x.lua      # disable the VM entirely (troubleshooting)
 | string concat/len ×60k | ~0.36s | ~0.31s | ~1.2x (C string ops dominate) |
 | build 200k-row table + pairs sum | ~0.13s | ~0.051s | **~2.6x** |
 
-## Roadmap (not done, ordered by value)
+## Status
 
-1. breakpoints lowered onto the bytecode line table (today a debug session falls back to tree-walking wholesale — functional but slow)
+All statement/expression forms now compile — vararg functions included — and debug sessions (breakpoints, conditional breakpoints, logpoints, step/step-out, break-on-error, locals view, frame eval) run on the VM via the per-frame line hook described above. The remaining fallbacks are `LUAX_NO_BC` and oversize limits (u16 constant index, i16 jump delta, 200 registers).
 
-All statement/expression forms now compile — vararg functions included. The remaining fallbacks are *runtime* gates (debug sessions, `LUAX_NO_BC`) and oversize limits (u16 constant index, i16 jump delta, 200 registers).
+Caveat: a snapshot local shows the *most recent* decl for its register with `pc <=` the pause pc — an out-of-scope name may linger visually until its register is reused; eval writes land only on the currently-effective decl.
