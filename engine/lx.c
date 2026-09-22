@@ -27,6 +27,7 @@ typedef struct Closure Closure; typedef struct CFn CFn; typedef struct State Sta
 struct Str    { size_t len; char* p; unsigned h; /* cached FNV — hash lookups never rescan the bytes */ };
 struct Value  { int tag; union { bool b; double num; Str* s; Table* t; Closure* f; CFn* c; } u; };
 struct Table  { int cap, n; struct TEntry { Value k, v; int used; } *e; Table* meta;
+  unsigned gen; /* structural version: bumped on hash insert/resize/migration — env-slot cache invalidation key */
   int ahi; /* verified non-nil integer prefix 1..ahi — tlen resumes at ahi+1 */
   /* array part: integer keys 1..acap live ONLY in arr (T_NIL==0 so a fresh
    * xcalloc'd arr reads as nils). Sparse integer keys beyond the density
@@ -189,7 +190,11 @@ static bool valEq(Value a,Value b){ if(a.tag!=b.tag)return false;
   case T_STR:return strEq(a.u.s,b.u.s);default:return a.u.t==b.u.t;} }
 static Value* tfind(Table*t,Value k){ unsigned h=hashVal(k)&(t->cap-1);
   for(int i=0;i<t->cap;i++){int j=(h+i)&(t->cap-1); if(!t->e[j].used)return NULL; if(valEq(t->e[j].k,k))return &t->e[j].v;} return NULL; }
-static void tresize(State*S,Table*t){ int oc=t->cap;t->cap*=2;struct TEntry*ne=xcalloc(S,t->cap*sizeof(*t->e));struct TEntry*oe=t->e;t->e=ne;t->n=0;
+/* slot index of key k in t->e, or -1 — the env-slot cache remembers WHERE a
+ * name resolved, not just the value. */
+static int tfindi(Table*t,Value k){ unsigned h=hashVal(k)&(t->cap-1);
+  for(int i=0;i<t->cap;i++){int j=(h+i)&(t->cap-1); if(!t->e[j].used)return -1; if(valEq(t->e[j].k,k))return j;} return -1; }
+static void tresize(State*S,Table*t){ int oc=t->cap;t->cap*=2;struct TEntry*ne=xcalloc(S,t->cap*sizeof(*t->e));struct TEntry*oe=t->e;t->e=ne;t->n=0;t->gen++;
   for(int i=0;i<oc;i++)if(oe[i].used){Value k=oe[i].k,v=oe[i].v;unsigned h=hashVal(k)&(t->cap-1);while(t->e[h].used)h=(h+1)&(t->cap-1);t->e[h].k=k;t->e[h].v=v;t->e[h].used=1;t->n++;} /* oe is arena memory, not freed */ }
 static int isIntKey(Value k,double*d);
 static void agrow(State*S,Table*t,int need);
@@ -207,7 +212,7 @@ static void tset(State*S,Table*t,Value k,Value v){ S->twrites++; if(k.tag==T_NIL
       if(ik<=t->acap){ t->arr[ik-1]=v; return; }
       if(v.tag!=T_NIL&&ik<=2*(t->acap>4?t->acap:4)){ agrow(S,t,ik); t->arr[ik-1]=v; return; } } }
   Value*f=tfind(t,k); if(f){*f=v;return;} if(t->n*2>=t->cap)tresize(S,t); unsigned h=hashVal(k)&(t->cap-1);
-  while(t->e[h].used)h=(h+1)&(t->cap-1); t->e[h].k=k;t->e[h].v=v;t->e[h].used=1;t->n++; }
+  while(t->e[h].used)h=(h+1)&(t->cap-1); t->e[h].k=k;t->e[h].v=v;t->e[h].used=1;t->n++;t->gen++; }
 static int isIntKey(Value k,double*d){ if(k.tag!=T_NUM)return 0; *d=k.u.num; return *d==floor(*d)&&*d>=1&&*d<2147483647.0; }
 static void agrow(State*S,Table*t,int need){
   int nc=t->acap?t->acap:8; while(nc<need)nc*=2;
@@ -218,7 +223,7 @@ static void agrow(State*S,Table*t,int need){
   for(int i=0;i<t->cap;i++) if(t->e[i].used){ Value k2=t->e[i].k,v2=t->e[i].v; double d;
     if(isIntKey(k2,&d)&&d<=(double)nc) na[(int)d-1]=v2;
     else { unsigned h=hashVal(k2)&(t->cap-1); while(ne[h].used)h=(h+1)&(t->cap-1); ne[h].k=k2;ne[h].v=v2;ne[h].used=1;nn++; } }
-  t->e=ne; t->n=nn; t->arr=na; t->acap=nc;
+  t->e=ne; t->n=nn; t->arr=na; t->acap=nc; t->gen++;
 }
 static Value tget(Table*t,Value k){ double d;
   if(isIntKey(k,&d)&&d<=(double)t->acap) return t->arr[(int)d-1];
@@ -917,7 +922,7 @@ enum {
   BC_ENVOPEN,BC_ENVCLOSE,BC_DECL,BC_GETENV,BC_SETENV,BC_CLOSURE,BC_VARARG,BC_CONCATN
 };
 typedef struct { unsigned char op,a,b,c; } BIns;   /* 4-byte insn; immediates live in Proto.imm[pc] (u16: k-idx or i16 jump delta) */
-struct Proto { BIns* code; int ncode; unsigned short* imm; Value* k; int nk; int* lines; int* gk; int ngk; int nparam; int maxstack; int defline; int uses_env; int vararg; Node** subs; int nsubs; long gk_sig; int gk_state, gk_ok; struct { char*n; int r; int pc; }* locm; int nlocm; };
+struct Proto { BIns* code; int ncode; unsigned short* imm; Value* k; int nk; int* lines; int* gk; int ngk; int nparam; int maxstack; int defline; int uses_env; int vararg; Node** subs; int nsubs; long gk_sig; int gk_state, gk_ok; struct { char*n; int r; int pc; }* locm; int nlocm; struct { Env*e0; unsigned long sig; Table*t; int slot; }* ec; };
 
 #define BC_MAXREG 200
 typedef struct {
@@ -927,7 +932,7 @@ typedef struct {
   int* imm;
   Value* k; int nk,capk;
   int gk[64]; int ngk;
-  int reg,maxreg;
+  int reg,maxreg; int hasenv;
   struct { char*name; int reg; } loc[256]; int nloc;
   struct { char*n; int r; int pc; } dloc[512]; int ndloc; /* every local decl ever (pc-stamped) — debug snapshot metadata */
   int scope[40]; int scopereg[40]; int depth;
@@ -1317,6 +1322,7 @@ static Proto* bc_build(State*S,Func*fn){
   p->vararg=fn->vararg;
   if(C.nsubs){ p->subs=xalloc(S,(size_t)C.nsubs*sizeof(Node*)); memcpy(p->subs,C.subs,(size_t)C.nsubs*sizeof(Node*)); p->nsubs=C.nsubs; }
   if(C.ndloc){ p->locm=xalloc(S,(size_t)C.ndloc*sizeof(*p->locm)); memcpy(p->locm,C.dloc,(size_t)C.ndloc*sizeof(*p->locm)); p->nlocm=C.ndloc; }
+  for(int i=0;i<p->ncode;i++) if(p->code[i].op==BC_GETENV||p->code[i].op==BC_SETENV){ p->ec=xcalloc(S,(size_t)p->ncode*sizeof(*p->ec)); break; }
   free(C.code); free(C.lines); free(C.imm); free(C.k);
   return p;
 }
@@ -1341,6 +1347,18 @@ static bool bc_globals_still_global(State*S,Func*fn,Proto*p){
 }
 
 #define BVR(i) (S->vstack[base+(i)])
+/* env-slot cache: for a fixed `cur` the parent chain is fixed, and every term
+ * in sig is monotonically nondecreasing — so an identical sum proves zero
+ * mutations anywhere in the chain since the entry was cached, i.e. the name
+ * still resolves to the same (table, slot). */
+static unsigned long envSig(State*S,Env*e){ unsigned long s=0;
+  for(Env*p=e;p;p=p->parent) s+=p->gen+p->vars->gen;
+  s+=S->globals->gen+S->globals->vars->gen; return s; }
+/* chain walk that also reports the winning table + slot */
+static Value envGetSlot(State*S,Env*e,Str*st,Table**wt,int*wslot){
+  for(Env*p=e;p;p=p->parent){ int i=tfindi(p->vars,VSTR(st)); if(i>=0){*wt=p->vars;*wslot=i;return p->vars->e[i].v;} }
+  int i=tfindi(S->globals->vars,VSTR(st)); if(i>=0){*wt=S->globals->vars;*wslot=i;return S->globals->vars->e[i].v;}
+  *wt=NULL;*wslot=-1;return VNIL; }
 /* Debug support inside the VM: on a source-line change with debugging on,
  * build a snapshot env for register-resident locals (capmode protos already
  * keep locals in `cur`), run the shared line hook, then write bindings back
@@ -1521,8 +1539,17 @@ static Value vm_call(State*S,Proto*p,Closure*cl,int argc,Value*argv){
     BC_OP(BC_ENVOPEN): cur=newEnv(S,cur); S->cur_env=cur; BC_NEXT();
     BC_OP(BC_ENVCLOSE): cur=cur->parent?cur->parent:cur; S->cur_env=cur; BC_NEXT();
     BC_OP(BC_DECL): envDeclS(S,cur,p->k[p->imm[pc]].u.s,BVR(in.a)); BC_NEXT();
-    BC_OP(BC_GETENV): BVR(in.a)=envGetS(S,cur,p->k[p->imm[pc]].u.s); BC_NEXT();
-    BC_OP(BC_SETENV): envAssignS(S,cur,p->k[p->imm[pc]].u.s,BVR(in.a)); BC_NEXT();
+    BC_OP(BC_GETENV):{ Str*st=p->k[p->imm[pc]].u.s; __typeof__(*p->ec)*c=p->ec?&p->ec[pc]:NULL;
+      if(c&&c->e0==cur&&c->sig==envSig(S,cur)){ BVR(in.a)=c->t->e[c->slot].v; BC_NEXT(); }
+      Table*wt;int ws; BVR(in.a)=envGetSlot(S,cur,st,&wt,&ws);
+      if(c&&wt){c->e0=cur;c->sig=envSig(S,cur);c->t=wt;c->slot=ws;}
+      BC_NEXT(); }
+    BC_OP(BC_SETENV):{ Str*st=p->k[p->imm[pc]].u.s; __typeof__(*p->ec)*c=p->ec?&p->ec[pc]:NULL;
+      if(c&&c->e0==cur&&c->sig==envSig(S,cur)){ c->t->e[c->slot].v=BVR(in.a); BC_NEXT(); }
+      envAssignS(S,cur,st,BVR(in.a));
+      Table*wt;int ws; envGetSlot(S,cur,st,&wt,&ws); /* winner after the write */
+      if(c&&wt){c->e0=cur;c->sig=envSig(S,cur);c->t=wt;c->slot=ws;}
+      BC_NEXT(); }
     BC_OP(BC_CLOSURE):{
       Node*e=p->subs[p->imm[pc]];
       Func*fn=xalloc(S,sizeof(Func));
