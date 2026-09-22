@@ -423,7 +423,16 @@ static Str* toStrx(State*S,Value v){
   if(v.tag==T_TAB&&v.u.t->meta){Value m=tget(v.u.t->meta,VSTR(mmStr(S,&S->k_tostring,"__tostring")));if(m.tag!=T_NIL){Value a=callValue(S,m,1,&v);if(a.tag==T_STR)return a.u.s;}}
   char buf[64];
   switch(v.tag){case T_NIL:return newStr(S,"nil",3);case T_BOOL:return newStr(S,v.u.b?"true":"false",v.u.b?4:5);
-    case T_NUM:{int n=snprintf(buf,sizeof(buf),"%.14g",v.u.num);return newStr(S,buf,n);}
+    case T_NUM:{ double d=v.u.num;
+      /* %.14g renders integral doubles below 1e14 as plain digits — emit them
+       * directly and skip the libc locale path. -0.0 keeps its '-' via signbit;
+       * |d|>=1e14 switches to exponent form so it stays on snprintf. */
+      if(d==floor(d)&&fabs(d)<1e14){ uint64_t u=(uint64_t)fabs(d); char t[16]; int m=0,n=0;
+        do{t[m++]=(char)('0'+u%10);u/=10;}while(u);
+        if(signbit(d))buf[n++]='-';
+        while(m)buf[n++]=t[--m];
+        return newStr(S,buf,n); }
+      int n=snprintf(buf,sizeof(buf),"%.14g",d);return newStr(S,buf,n);}
     case T_TAB:snprintf(buf,sizeof(buf),"table: %p",(void*)v.u.t);break;
     case T_FN:snprintf(buf,sizeof(buf),"function: %p",(void*)v.u.f);break;
     case T_CFN:snprintf(buf,sizeof(buf),"function: %p",(void*)v.u.c);break;}
