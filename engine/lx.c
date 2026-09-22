@@ -26,7 +26,8 @@ typedef struct Closure Closure; typedef struct CFn CFn; typedef struct State Sta
 
 struct Str    { size_t len; char* p; unsigned h; /* cached FNV — hash lookups never rescan the bytes */ };
 struct Value  { int tag; union { bool b; double num; Str* s; Table* t; Closure* f; CFn* c; } u; };
-struct Table  { int cap, n; struct TEntry { Value k, v; int used; } *e; Table* meta; };
+struct Table  { int cap, n; struct TEntry { Value k, v; int used; } *e; Table* meta;
+  int ahi; /* verified non-nil integer prefix 1..ahi — tlen resumes at ahi+1 */ };
 struct Env    { Table* vars; Env* parent; };
 struct Func   { int nparam; char** params; bool vararg; Node* body; Env* env; int line; Proto* bc; signed char bc_tried; };
 struct Closure{ Func* f; };
@@ -179,10 +180,16 @@ static Value* tfind(Table*t,Value k){ unsigned h=hashVal(k)&(t->cap-1);
 static void tresize(State*S,Table*t){ int oc=t->cap;t->cap*=2;struct TEntry*ne=xcalloc(S,t->cap*sizeof(*t->e));struct TEntry*oe=t->e;t->e=ne;t->n=0;
   for(int i=0;i<oc;i++)if(oe[i].used){Value k=oe[i].k,v=oe[i].v;unsigned h=hashVal(k)&(t->cap-1);while(t->e[h].used)h=(h+1)&(t->cap-1);t->e[h].k=k;t->e[h].v=v;t->e[h].used=1;t->n++;} /* oe is arena memory, not freed */ }
 static void tset(State*S,Table*t,Value k,Value v){ if(k.tag==T_NIL)lx_rt_error(S,"table index is nil");
+  if(k.tag==T_NUM){ double d=k.u.num;
+    /* maintain the prefix hint: extending at ahi+1 grows it, nil-ing inside
+     * [1,ahi] shrinks it. All real writes funnel through here (newIndex calls
+     * tset only for raw stores), so the hint never over-claims. */
+    if(v.tag==T_NIL){ if(d>=1&&d<=(double)t->ahi&&d==floor(d)) t->ahi=(int)d-1; }
+    else if(d==(double)t->ahi+1) t->ahi=(int)d; }
   Value*f=tfind(t,k); if(f){*f=v;return;} if(t->n*2>=t->cap)tresize(S,t); unsigned h=hashVal(k)&(t->cap-1);
   while(t->e[h].used)h=(h+1)&(t->cap-1); t->e[h].k=k;t->e[h].v=v;t->e[h].used=1;t->n++; }
 static Value tget(Table*t,Value k){ Value*f=tfind(t,k); return f?*f:VNIL; }
-static int tlen(Table*t){ int n=0; while(tget(t,VNUM(n+1)).tag!=T_NIL)n++; return n; }
+static int tlen(Table*t){ int n=t->ahi; while(tget(t,VNUM(n+1)).tag!=T_NIL)n++; t->ahi=n; return n; }
 
 /* ---------- lexer ---------- */
 enum { T_EOF=256,T_NAME,TK_NUM,TK_STR,T_AND,T_BREAK,T_DO,T_ELSE,T_ELSEIF,T_END,T_FALSE,T_FOR,
