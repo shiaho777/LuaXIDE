@@ -75,7 +75,7 @@ struct State {
   /* event handler registry, rebuilt on each serialization */
   Value handlers[LX_MAX_HANDLERS]; int nhandlers;
   /* runaway-execution guard */
-  long steps; long step_limit;
+  long steps; long step_limit; long twrites; /* bumped by every tset — event-time mutation signal */
   /* C-recursion guard: every callValue frame consumes real C stack, so
    * unbounded script recursion must become a catchable error, not a SIGSEGV. */
   int call_depth;
@@ -193,7 +193,7 @@ static void tresize(State*S,Table*t){ int oc=t->cap;t->cap*=2;struct TEntry*ne=x
   for(int i=0;i<oc;i++)if(oe[i].used){Value k=oe[i].k,v=oe[i].v;unsigned h=hashVal(k)&(t->cap-1);while(t->e[h].used)h=(h+1)&(t->cap-1);t->e[h].k=k;t->e[h].v=v;t->e[h].used=1;t->n++;} /* oe is arena memory, not freed */ }
 static int isIntKey(Value k,double*d);
 static void agrow(State*S,Table*t,int need);
-static void tset(State*S,Table*t,Value k,Value v){ if(k.tag==T_NIL)lx_rt_error(S,"table index is nil");
+static void tset(State*S,Table*t,Value k,Value v){ S->twrites++; if(k.tag==T_NIL)lx_rt_error(S,"table index is nil");
   if(k.tag==T_NUM){ double d=k.u.num;
     /* maintain the prefix hint: extending at ahi+1 grows it, nil-ing inside
      * [1,ahi] shrinks it. All real writes funnel through here (newIndex calls
@@ -2504,13 +2504,19 @@ int lx_invoke(State*S,int handler_id,const char*arg,char*errbuf,int errlen){
   }
   Value argv[1]; int argc=0;
   if(arg){ argv[0]=VSTR(newStr(S,arg,strlen(arg))); argc=1; }
+  Value pre=S->app_view; long w0=S->twrites;
   Value r=callValue(S,h,argc,argv);
   if(r.tag==T_TAB){
     Value uv=tget(r.u.t,VSTR(mmStr(S,&S->k_ui,"__ui")));
     if(uv.tag==T_STR) S->app_view=r;
   }
-  lx_build_tree(S);
-  free(sj);
+  /* Zero table writes + same static view table ⇒ the serialized tree is
+   * byte-identical (and its __handler ids still resolve against the kept
+   * handler table) — reattach the detached buffer and skip the jnode walk.
+   * Function views always re-run. */
+  if(S->app_view.tag==T_TAB && pre.tag==T_TAB && S->app_view.u.t==pre.u.t && S->twrites==w0){
+    free(S->json); S->json=sj; S->jsonsz=ssz; S->jsonused=su;
+  } else { lx_build_tree(S); free(sj); }
   free(hs);
   return 0;
 }
