@@ -24,7 +24,7 @@ typedef struct Str Str; typedef struct Table Table; typedef struct Value Value;
 typedef struct Node Node; typedef struct Env Env; typedef struct Func Func;
 typedef struct Closure Closure; typedef struct CFn CFn; typedef struct State State; typedef struct Proto Proto;
 
-struct Str    { size_t len; char* p; };
+struct Str    { size_t len; char* p; unsigned h; /* cached FNV — hash lookups never rescan the bytes */ };
 struct Value  { int tag; union { bool b; double num; Str* s; Table* t; Closure* f; CFn* c; } u; };
 struct Table  { int cap, n; struct TEntry { Value k, v; int used; } *e; Table* meta; };
 struct Env    { Table* vars; Env* parent; };
@@ -114,6 +114,10 @@ struct State {
   int stdin_waiting;
   char rootfs[512];
   char modroot[1024];
+  /* name interning for the tree-walk path: Node names are arena-allocated
+   * stable char* pointers, so memoize char* -> Str* by pointer identity -
+   * repeat visits (loop bodies!) cost one pointer probe, no strlen/FNV/alloc. */
+  struct { const char* name; Str* s; }* names; int names_cap, names_n;
 };
 
 /* dynamic byte-buffer append (malloc-backed, not arena) */
@@ -152,7 +156,8 @@ static void lx_rt_error(State* S,const char* fmt,...){
   longjmp(S->err,1);
 }
 
-static Str* newStr(State* S,const char* s,size_t n){ Str*st=xalloc(S,sizeof(Str)); st->len=n; st->p=xstrndup(S,s,n); return st; }
+static unsigned strHash(const char*p,size_t n){ unsigned h=2166136261u; for(size_t i=0;i<n;i++){h^=(unsigned char)p[i];h*=16777619u;} return h; }
+static Str* newStr(State* S,const char* s,size_t n){ Str*st=xalloc(S,sizeof(Str)); st->len=n; st->h=strHash(s,n); st->p=xstrndup(S,s,n); return st; }
 static bool strEq(Str*a,Str*b){ return a==b||(a->len==b->len&&memcmp(a->p,b->p,a->len)==0); }
 static Table* newTable(State* S){ Table*t=xcalloc(S,sizeof(Table)); t->cap=8; t->e=xcalloc(S,8*sizeof(*t->e)); return t; }
 static unsigned hashVal(Value v){ switch(v.tag){
@@ -164,7 +169,7 @@ static unsigned hashVal(Value v){ switch(v.tag){
      * entropy across all bits (~2ns, branch-free). */
     u^=u>>33; u*=0xff51afd7ed558ccdULL; u^=u>>33; u*=0xc4ceb9fe1a85ec53ULL; u^=u>>33;
     return (unsigned)u;}
-  case T_STR:{unsigned h=2166136261u;for(size_t i=0;i<v.u.s->len;i++){h^=(unsigned char)v.u.s->p[i];h*=16777619u;}return h;}
+  case T_STR:return v.u.s->h;
   default:return (unsigned)(uintptr_t)v.u.t; } }
 static bool valEq(Value a,Value b){ if(a.tag!=b.tag)return false;
   switch(a.tag){case T_NIL:return true;case T_BOOL:return a.u.b==b.u.b;case T_NUM:return a.u.num==b.u.num;
@@ -347,9 +352,20 @@ static double toNum(State*S,Value v){if(v.tag==T_NUM)return v.u.num;if(v.tag==T_
    (plain (int) casts of huge doubles are UB and differ between arm64 and x86-64) */
 static int num2int(State*S,Value v){double d=toNum(S,v);if(d!=d)return 0;if(d>=2147483648.0)return 2147483647;if(d<=-2147483649.0)return -2147483647-1;return (int)d;}
 static bool toBool(Value v){return !(v.tag==T_NIL||(v.tag==T_BOOL&&!v.u.b)); }
-static void envDeclareFn(State*S,Env*e,const char*name,Value v){ Str*st=newStr(S,name,strlen(name)); tset(S,e->vars,VSTR(st),v); }
-static void envAssignFn(State*S,Env*e,const char*name,Value v){ Str*st=newStr(S,name,strlen(name)); for(Env*p=e;p;p=p->parent){Value*f=tfind(p->vars,VSTR(st));if(f){*f=v;return;}} tset(S,S->globals->vars,VSTR(st),v); }
-static Value envGetFn(State*S,Env*e,const char*name){ Str*st=newStr(S,name,strlen(name)); for(Env*p=e;p;p=p->parent){Value*f=tfind(p->vars,VSTR(st));if(f)return *f;} Value*f=tfind(S->globals->vars,VSTR(st)); return f?*f:VNIL; }
+static Str* internName(State*S,const char*name){
+  if(S->names_n*10>=S->names_cap*7){ int oc=S->names_cap; S->names_cap=oc?oc*2:64;
+    __typeof__(*S->names)*ne=xcalloc(S,S->names_cap*sizeof(*ne));
+    for(int i=0;i<oc;i++) if(S->names[i].name){ unsigned h=(unsigned)(uintptr_t)S->names[i].name>>4; while(ne[h&(S->names_cap-1)].name)h++; ne[h&(S->names_cap-1)]=S->names[i]; }
+    S->names=ne; }
+  unsigned h=(unsigned)(uintptr_t)name>>4;
+  while(S->names[h&(S->names_cap-1)].name){ if(S->names[h&(S->names_cap-1)].name==name) return S->names[h&(S->names_cap-1)].s; h++; }
+  Str*st=newStr(S,name,strlen(name));
+  S->names[h&(S->names_cap-1)].name=name; S->names[h&(S->names_cap-1)].s=st; S->names_n++;
+  return st;
+}
+static void envDeclareFn(State*S,Env*e,const char*name,Value v){ tset(S,e->vars,VSTR(internName(S,name)),v); }
+static void envAssignFn(State*S,Env*e,const char*name,Value v){ Str*st=internName(S,name); for(Env*p=e;p;p=p->parent){Value*f=tfind(p->vars,VSTR(st));if(f){*f=v;return;}} tset(S,S->globals->vars,VSTR(st),v); }
+static Value envGetFn(State*S,Env*e,const char*name){ Str*st=internName(S,name); for(Env*p=e;p;p=p->parent){Value*f=tfind(p->vars,VSTR(st));if(f)return *f;} Value*f=tfind(S->globals->vars,VSTR(st)); return f?*f:VNIL; }
 /* Str*-keyed variants for the VM env ops — same semantics minus the per-access alloc */
 static void envDeclS(State*S,Env*e,Str*st,Value v){ tset(S,e->vars,VSTR(st),v); }
 static void envAssignS(State*S,Env*e,Str*st,Value v){ for(Env*p=e;p;p=p->parent){Value*f=tfind(p->vars,VSTR(st));if(f){*f=v;return;}} tset(S,S->globals->vars,VSTR(st),v); }
@@ -888,7 +904,7 @@ static void bc_poploop(Bc*C,int exitat){ C->nloops--; for(int i=0;i<C->loops[C->
 static int bc_local(Bc*C,const char*name){ if(C->capmode)return -1; for(int i=C->nloc-1;i>=0;i--) if(!strcmp(C->loc[i].name,name)) return C->loc[i].reg; return -1; }
 static int bc_sub(Bc*C,Node*e){ if(C->nsubs>=64){C->failed=1;return 0;} C->subs[C->nsubs]=e; return C->nsubs++; }
 static int bc_is_upvalue(Bc*C,const char*name){
-  Str tmp; tmp.len=strlen(name); tmp.p=(char*)name;
+  Str tmp; tmp.len=strlen(name); tmp.p=(char*)name; tmp.h=strHash(name,tmp.len);
   Value k; k.tag=T_STR; k.u.s=&tmp;
   for(Env*e=C->fn->env;e;e=e->parent){ if(e==C->S->globals)break; if(tfind(e->vars,k))return 1; }
   return 0;
