@@ -32,7 +32,7 @@ struct Table  { int cap, n; struct TEntry { Value k, v; int used; } *e; Table* m
    * xcalloc'd arr reads as nils). Sparse integer keys beyond the density
    * threshold stay in the hash; agrow migrates covered keys on growth. */
   Value* arr; int acap; };
-struct Env    { Table* vars; Env* parent; };
+struct Env    { Table* vars; Env* parent; unsigned gen; /* bumped on every name decl — shadow memo key */ };
 struct Func   { int nparam; char** params; bool vararg; Node* body; Env* env; int line; Proto* bc; signed char bc_tried; };
 struct Closure{ Func* f; };
 struct CFn    { Value (*fn)(State*, int, Value*); const char* name; };
@@ -381,7 +381,7 @@ static Node* parse(State*S,const char*src,size_t n){P p;p.S=S;lexInit(&p.L,S,src
 
 /* ---------- interpreter ---------- */
 #define F_NORMAL ((struct Flow){0,0,{0}})
-static Env* newEnv(State*S,Env*parent){Env*e=xalloc(S,sizeof(Env));e->vars=newTable(S);e->parent=parent;return e;}
+static Env* newEnv(State*S,Env*parent){Env*e=xalloc(S,sizeof(Env));e->vars=newTable(S);e->parent=parent;e->gen=0;return e;}
 static const char* lx_typename(Value v){switch(v.tag){case T_NIL:return "nil";case T_BOOL:return "boolean";case T_NUM:return "number";case T_STR:return "string";case T_TAB:return "table";default:return "function";}}
 static double toNum(State*S,Value v){if(v.tag==T_NUM)return v.u.num;if(v.tag==T_STR){char*e;double d=strtod(v.u.s->p,&e);if(e==v.u.s->p)lx_rt_error(S,"cannot convert string '%s' to number",v.u.s->p);return d;}lx_rt_error(S,"attempt to perform arithmetic on a %s value",lx_typename(v));return 0;}
 /* double->int with defined behavior everywhere: NaN->0, out-of-range saturates
@@ -400,11 +400,11 @@ static Str* internName(State*S,const char*name){
   return st;
 }
 static Str* mmStr(State*S,Str**slot,const char*s){ if(!*slot)*slot=newStr(S,s,strlen(s)); return *slot; }
-static void envDeclareFn(State*S,Env*e,const char*name,Value v){ tset(S,e->vars,VSTR(internName(S,name)),v); }
+static void envDeclareFn(State*S,Env*e,const char*name,Value v){ tset(S,e->vars,VSTR(internName(S,name)),v); e->gen++; }
 static void envAssignFn(State*S,Env*e,const char*name,Value v){ Str*st=internName(S,name); for(Env*p=e;p;p=p->parent){Value*f=tfind(p->vars,VSTR(st));if(f){*f=v;return;}} tset(S,S->globals->vars,VSTR(st),v); }
 static Value envGetFn(State*S,Env*e,const char*name){ Str*st=internName(S,name); for(Env*p=e;p;p=p->parent){Value*f=tfind(p->vars,VSTR(st));if(f)return *f;} Value*f=tfind(S->globals->vars,VSTR(st)); return f?*f:VNIL; }
 /* Str*-keyed variants for the VM env ops — same semantics minus the per-access alloc */
-static void envDeclS(State*S,Env*e,Str*st,Value v){ tset(S,e->vars,VSTR(st),v); }
+static void envDeclS(State*S,Env*e,Str*st,Value v){ tset(S,e->vars,VSTR(st),v); e->gen++; }
 static void envAssignS(State*S,Env*e,Str*st,Value v){ for(Env*p=e;p;p=p->parent){Value*f=tfind(p->vars,VSTR(st));if(f){*f=v;return;}} tset(S,S->globals->vars,VSTR(st),v); }
 static Value envGetS(State*S,Env*e,Str*st){ for(Env*p=e;p;p=p->parent){Value*f=tfind(p->vars,VSTR(st));if(f)return *f;} Value*f=tfind(S->globals->vars,VSTR(st)); return f?*f:VNIL; }
 
@@ -495,6 +495,9 @@ static void mvList(State*S,Env*env,Node**exprs,int n,Value*out,int cap,int*pn){
     else eval(S,env,exprs[i]);
   }
 }
+static void frame_name(char*buf,int line){ char*p=buf; *p++='f';*p++='n';
+  if(line>0){ *p++='@'; int m=0; char tmp[10]; while(line){tmp[m++]=(char)('0'+line%10);line/=10;} while(m)*p++=tmp[--m]; }
+  *p=0; }
 static void dbg_push_frame(State*S,const char*name,int call_line,int def_line){
   if(!S||S->nstack>=64) return;
   int i=S->nstack++;
@@ -535,8 +538,7 @@ static Value callValue(State*S,Value f,int argc,Value*argv){
       } else S->bc_fallbacks++;
     }
     Env*e=newEnv(S,fn->env);
-    char nm[48];
-    if(fn->line>0) snprintf(nm,sizeof(nm),"fn@%d",fn->line); else snprintf(nm,sizeof(nm),"fn");
+    char nm[48]; frame_name(nm,fn->line);
     if(S->nstack>0) dbg_touch_top(S,S->curLine);
     dbg_push_frame(S,nm,S->curLine,fn->line);
     S->cur_env=e;
@@ -899,7 +901,7 @@ enum {
   BC_ENVOPEN,BC_ENVCLOSE,BC_DECL,BC_GETENV,BC_SETENV,BC_CLOSURE,BC_VARARG,BC_CONCATN
 };
 typedef struct { unsigned char op,a,b,c; } BIns;   /* 4-byte insn; immediates live in Proto.imm[pc] (u16: k-idx or i16 jump delta) */
-struct Proto { BIns* code; int ncode; unsigned short* imm; Value* k; int nk; int* lines; int* gk; int ngk; int nparam; int maxstack; int defline; int uses_env; int vararg; Node** subs; int nsubs; };
+struct Proto { BIns* code; int ncode; unsigned short* imm; Value* k; int nk; int* lines; int* gk; int ngk; int nparam; int maxstack; int defline; int uses_env; int vararg; Node** subs; int nsubs; long gk_sig; int gk_state, gk_ok; };
 
 #define BC_MAXREG 200
 typedef struct {
@@ -1303,11 +1305,21 @@ static Proto* bc_build(State*S,Func*fn){
 /* per-call guard: a name compiled as global must not have been captured by a
  * local declared later in an enclosing tree-walk scope (dynamic scoping) */
 static bool bc_globals_still_global(State*S,Func*fn,Proto*p){
-  for(int i=0;i<p->ngk;i++){
+  if(!p->ngk) return true;
+  /* memoize by chain-generation signature: a shadow can only appear when a
+   * NEW name is declared into an env on the definition chain — decls bump
+   * Env.gen, assigns only overwrite existing keys (or fall to globals,
+   * which this check excludes). gens are monotonic, so an equal sum means
+   * no decl happened; nil-valued entries still count (used slot stays). */
+  long sig=0; for(Env*e=fn->env;e&&e!=S->globals;e=e->parent) sig+=(long)e->gen;
+  if(p->gk_state&&p->gk_sig==sig) return p->gk_ok;
+  int ok=1;
+  for(int i=0;i<p->ngk&&ok;i++){
     Value k=p->k[p->gk[i]];
-    for(Env*e=fn->env;e;e=e->parent){ if(e==S->globals)break; if(tfind(e->vars,k))return false; }
+    for(Env*e=fn->env;e;e=e->parent){ if(e==S->globals)break; if(tfind(e->vars,k)){ok=0;break;} }
   }
-  return true;
+  p->gk_sig=sig; p->gk_state=1; p->gk_ok=ok;
+  return ok;
 }
 
 #define BVR(i) (S->vstack[base+(i)])
@@ -1317,8 +1329,7 @@ static Value vm_call(State*S,Proto*p,Closure*cl,int argc,Value*argv){
   if(S->vstack_sz<need){ int ns=S->vstack_sz?S->vstack_sz*2:256; while(ns<need)ns*=2; S->vstack=realloc(S->vstack,(size_t)ns*sizeof(Value)); S->vstack_sz=ns; }
   S->vtop=base+p->maxstack;
   for(int i=0;i<p->maxstack;i++) BVR(i)= i<p->nparam ? (i<argc?argv[i]:VNIL) : VNIL;
-  char nm[48];
-  if(p->defline>0) snprintf(nm,sizeof(nm),"fn@%d",p->defline); else snprintf(nm,sizeof(nm),"fn");
+  char nm[48]; frame_name(nm,p->defline);
   if(S->nstack>0) dbg_touch_top(S,S->curLine);
   dbg_push_frame(S,nm,S->curLine,p->defline);
   Env*cur=cl&&cl->f&&cl->f->env?cl->f->env:S->globals;
