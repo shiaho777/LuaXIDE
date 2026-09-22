@@ -563,7 +563,7 @@ static Value eval(State*S,Env*env,Node*e){
   case K_PAREN:{ Value v=eval(S,env,e->a); S->nret=1; S->retbuf[0]=v; return v; }
   case K_INDEX:{ Value t=eval(S,env,e->a); Value k=eval(S,env,e->b); return indexVal(S,t,k); }
   case K_CALL:{ Value f=eval(S,env,e->a); Value argv[LX_MAX_ARGS]; int na=buildArgs(S,env,e->list,e->nlist,argv,LX_MAX_ARGS); return callValue(S,f,na,argv); }
-  case K_METHODCALL:{ Value o=eval(S,env,e->a); Value f=indexVal(S,o,VSTR(newStr(S,e->method,strlen(e->method)))); Value argv[LX_MAX_ARGS]; argv[0]=o; int na=1+buildArgs(S,env,e->list,e->nlist,argv+1,LX_MAX_ARGS-1); return callValue(S,f,na,argv); }
+  case K_METHODCALL:{ Value o=eval(S,env,e->a); Value f=indexVal(S,o,VSTR(internName(S,e->method))); Value argv[LX_MAX_ARGS]; argv[0]=o; int na=1+buildArgs(S,env,e->list,e->nlist,argv+1,LX_MAX_ARGS-1); return callValue(S,f,na,argv); }
   case K_FUNC:{ Func*fn=xalloc(S,sizeof(Func)); fn->nparam=e->nnames; fn->params=e->names; fn->vararg=e->vararg; fn->body=e->body; fn->env=env; fn->line=e->line>0?e->line:(e->body&&e->body->line>0?e->body->line:S->curLine); fn->bc=NULL; fn->bc_tried=0; Closure*cl=xalloc(S,sizeof(Closure)); cl->f=fn; return VFN(cl); }
   case K_TABLE:{ Table*t=newTable(S); int idx=1; for(int i=0;i<e->nlist;i++){ Node*f=e->list[i]; if(f->isKv){ tset(S,t,eval(S,env,f->a),eval(S,env,f->b)); } else { int m; Value tmp[64]; evalInto(S,env,f->a,tmp,&m); for(int j=0;j<m;j++)tset(S,t,VNUM(idx++),tmp[j]); if(m==0)idx++; } } return VTAB(t); }
   case K_UNOP:{ Value a=eval(S,env,e->a); switch(e->op){ case'-':return VNUM(-toNum(S,a)); case'#':{ if(a.tag==T_STR)return VNUM((double)a.u.s->len); if(a.tag==T_TAB){ if(a.u.t->meta){Value m=tget(a.u.t->meta,VSTR(mmStr(S,&S->k_len,"__len")));if(m.tag!=T_NIL)return callValue(S,m,1,&a);} return VNUM((double)tlen(a.u.t));} lx_rt_error(S,"attempt to get length of a %s value",lx_typename(a)); } case T_NOT:return VBOOL(!toBool(a)); case'~':return VNUM((double)(~(int64_t)toNum(S,a))); } return VNIL; }
@@ -2058,9 +2058,9 @@ static Value ui_ctor(State*S,const char*type,int argc,Value*argv){
   Table*t;
   if(argc>0 && argv[0].tag==T_STR && strcmp(type,"text")==0){
     t=newTable(S);
-    tset(S,t,VSTR(newStr(S,"text",4)),argv[0]);
+    tset(S,t,VSTR(internName(S,"text")),argv[0]);
   } else t = (argc>0 && argv[0].tag==T_TAB) ? argv[0].u.t : newTable(S);
-  tset(S,t,VSTR(mmStr(S,&S->k_ui,"__ui")),VSTR(newStr(S,type,strlen(type))));
+  tset(S,t,VSTR(mmStr(S,&S->k_ui,"__ui")),VSTR(internName(S,type)));
   S->nret=1; S->retbuf[0]=VTAB(t); return S->retbuf[0];
 }
 #define UICTOR(NM) static Value ui_##NM(State*S,int argc,Value*argv){ return ui_ctor(S,#NM,argc,argv); }
