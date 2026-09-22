@@ -19,6 +19,12 @@
 - **数组段**:`Table` 的整数键 `1..acap` 独占存放在 `arr[]`;`tget`/`tset` 按键路由,`agrow` 倍增 `acap` 并迁移落入范围的哈希项(`acap` 2 倍以内的非 nil 写入触发增长;稀疏远键留在哈希侧)。`next` 先迭代数组段再迭代哈希;`ahi`/`tlen` 不变。序列密集循环提速 ~5×(100 万追加 + 300 万读取:0.31s → 0.06s)。
 - **长度前缀缓存**:`Table.ahi` 记录已验证的非 nil 整数前缀 `1..ahi`;`tlen` 从 `ahi+1` 续扫(结果与全量扫描相同——hint 永不虚报),`tset` 负责增长/收缩(在 `ahi+1` 写入非 nil → `ahi++`;对 `[1,ahi]` 内整数键写 nil → `ahi=k-1`)。`tset` 是唯一的裸写入口(`__newindex` 在其上层拦截),`t[#t+1]=v` 追加循环从 O(n²) 降为 O(n)——50 万次追加 >5min → ~0.6s。
 - **动态作用域防护**:VM 编译期把"按全局处理的名字"记入 `Proto->gk`,每次调用前 `bc_globals_still_global` 复验无遮蔽,命中即回退树遍历;命中定义处 Env 链的名字编译为 `GETENV`/`SETENV`(capmode 下局部驻留 env 供闭包捕获)——见 BYTECODE_VM.md。
+- **槽位缓存**(`Proto->ec`,按 pc):`GETENV`/`SETENV` 缓存 `{cur-env, 链签名, table, slot}`;`GETGLOBAL`/`SETGLOBAL`/`GETFIELD`/`SETFIELD` 缓存 `{table, gen, slot}`。**不变量**:任何改变哈希结构的写入必须 `Table.gen++` —— 插入、`tresize`、`agrow`;原地写值不 bump(缓存命中时重读 `.v`)。env 签名 `sum(env->gen + env->vars->gen)` 对固定链是精确判据,不是启发式。字段命中只服务"存在且非 nil"的槽位 —— nil 值槽位必须照旧走 `__index`/`__newindex`。
+- **`S->twrites`** 在 `tset`(唯一裸写入口)内自增;`lx_invoke` 在事件零写且 `app_view` 为同一静态表时跳过 `lx_build_tree` —— 保留的 JSON 与 handler id 表仍然有效。
+- **`internName` 按指针驻留**(`char*` 身份而非内容):不同 AST 位置的同名得到不同 Str —— 因此槽位缓存的 `keyIs` 在指针比较后还有哈希+memcmp 兜底。
+- **`newStrBuf`/`strSeal`**:自建字节的 builtin(`string.upper/rep/char/reverse`、拼接融合)直接写 Str 缓冲再 seal 哈希 —— 省掉临时缓冲 + 二次拷贝。
+- **`toStrx` 整数快路径**:`|d|<1e14` 的整数直接输出数字(与 `%.14g` 逐字节一致);`-0.0` 由 `signbit` 保号;更大/非整数仍走 snprintf。
+- **`S->no_bc`**:`LUAX_NO_BC` 在 `lx_new` 读一次 —— 它是进程级配置,不是每次调用判断。
 
 ## 3. 测试工作流
 
