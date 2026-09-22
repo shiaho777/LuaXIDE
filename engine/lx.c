@@ -123,6 +123,9 @@ struct State {
    * stable char* pointers, so memoize char* -> Str* by pointer identity -
    * repeat visits (loop bodies!) cost one pointer probe, no strlen/FNV/alloc. */
   struct { const char* name; Str* s; }* names; int names_cap, names_n;
+  /* lazily-interned fixed keys: metamethod names, "__ui", "string" —
+   * avoids newStr+strlen+FNV on every metatable hit / UI node read */
+  Str *k_index, *k_newindex, *k_len, *k_tostring, *k_ui, *k_string, *k_uilib;
 };
 
 /* dynamic byte-buffer append (malloc-backed, not arena) */
@@ -396,6 +399,7 @@ static Str* internName(State*S,const char*name){
   S->names[h&(S->names_cap-1)].name=name; S->names[h&(S->names_cap-1)].s=st; S->names_n++;
   return st;
 }
+static Str* mmStr(State*S,Str**slot,const char*s){ if(!*slot)*slot=newStr(S,s,strlen(s)); return *slot; }
 static void envDeclareFn(State*S,Env*e,const char*name,Value v){ tset(S,e->vars,VSTR(internName(S,name)),v); }
 static void envAssignFn(State*S,Env*e,const char*name,Value v){ Str*st=internName(S,name); for(Env*p=e;p;p=p->parent){Value*f=tfind(p->vars,VSTR(st));if(f){*f=v;return;}} tset(S,S->globals->vars,VSTR(st),v); }
 static Value envGetFn(State*S,Env*e,const char*name){ Str*st=internName(S,name); for(Env*p=e;p;p=p->parent){Value*f=tfind(p->vars,VSTR(st));if(f)return *f;} Value*f=tfind(S->globals->vars,VSTR(st)); return f?*f:VNIL; }
@@ -416,7 +420,7 @@ static bool bc_globals_still_global(State*S,Func*fn,Proto*p);
 
 static Str* toStrx(State*S,Value v){
   if(v.tag==T_STR)return v.u.s;
-  if(v.tag==T_TAB&&v.u.t->meta){Value m=tget(v.u.t->meta,VSTR(newStr(S,"__tostring",10)));if(m.tag!=T_NIL){Value a=callValue(S,m,1,&v);if(a.tag==T_STR)return a.u.s;}}
+  if(v.tag==T_TAB&&v.u.t->meta){Value m=tget(v.u.t->meta,VSTR(mmStr(S,&S->k_tostring,"__tostring")));if(m.tag!=T_NIL){Value a=callValue(S,m,1,&v);if(a.tag==T_STR)return a.u.s;}}
   char buf[64];
   switch(v.tag){case T_NIL:return newStr(S,"nil",3);case T_BOOL:return newStr(S,v.u.b?"true":"false",v.u.b?4:5);
     case T_NUM:{int n=snprintf(buf,sizeof(buf),"%.14g",v.u.num);return newStr(S,buf,n);}
@@ -431,9 +435,9 @@ static Value indexVal(State*S,Value t,Value k){
    * otherwise hang the interpreter; 1024 is far beyond any sane prototype
    * chain. Lua itself raises "loop in gettable" on cycles. */
   for(int depth=0;depth<1024;depth++){
-    if(t.tag==T_TAB){Value v=tget(t.u.t,k);if(v.tag!=T_NIL)return v;if(t.u.t->meta){Value mt=tget(t.u.t->meta,VSTR(newStr(S,"__index",7)));if(mt.tag==T_TAB){t=mt;continue;}if(mt.tag!=T_NIL){Value args[2]={t,k};return callValue(S,mt,2,args);}}return VNIL;}
+    if(t.tag==T_TAB){Value v=tget(t.u.t,k);if(v.tag!=T_NIL)return v;if(t.u.t->meta){Value mt=tget(t.u.t->meta,VSTR(mmStr(S,&S->k_index,"__index")));if(mt.tag==T_TAB){t=mt;continue;}if(mt.tag!=T_NIL){Value args[2]={t,k};return callValue(S,mt,2,args);}}return VNIL;}
     if(t.tag==T_STR){ /* method sugar: ("x"):upper() — strings index the string lib */
-      Value st=tget(S->globals->vars,VSTR(newStr(S,"string",6)));
+      Value st=tget(S->globals->vars,VSTR(mmStr(S,&S->k_string,"string")));
       if(st.tag==T_TAB){Value v=tget(st.u.t,k);if(v.tag!=T_NIL)return v;}
       return VNIL;
     }
@@ -447,7 +451,7 @@ static void newIndex(State*S,Value t,Value k,Value v){
    * (setmetatable(t,{__newindex=t})) must not recurse the C stack forever;
    * the same 1024-deep cap as indexVal guards it. */
   for(int depth=0;depth<1024;depth++){
-    if(t.tag==T_TAB){ if(tget(t.u.t,k).tag!=T_NIL){tset(S,t.u.t,k,v);return;} if(t.u.t->meta){Value mt=tget(t.u.t->meta,VSTR(newStr(S,"__newindex",10)));if(mt.tag==T_TAB){t=mt;continue;}if(mt.tag!=T_NIL){Value args[3]={t,k,v};callValue(S,mt,3,args);return;}} tset(S,t.u.t,k,v);return; }
+    if(t.tag==T_TAB){ if(tget(t.u.t,k).tag!=T_NIL){tset(S,t.u.t,k,v);return;} if(t.u.t->meta){Value mt=tget(t.u.t->meta,VSTR(mmStr(S,&S->k_newindex,"__newindex")));if(mt.tag==T_TAB){t=mt;continue;}if(mt.tag!=T_NIL){Value args[3]={t,k,v};callValue(S,mt,3,args);return;}} tset(S,t.u.t,k,v);return; }
     lx_rt_error(S,"attempt to index a %s value",lx_typename(t));
   }
   lx_rt_error(S,"'__newindex' chain too long; possible loop");
@@ -560,7 +564,7 @@ static Value eval(State*S,Env*env,Node*e){
   case K_METHODCALL:{ Value o=eval(S,env,e->a); Value f=indexVal(S,o,VSTR(newStr(S,e->method,strlen(e->method)))); Value argv[LX_MAX_ARGS]; argv[0]=o; int na=1+buildArgs(S,env,e->list,e->nlist,argv+1,LX_MAX_ARGS-1); return callValue(S,f,na,argv); }
   case K_FUNC:{ Func*fn=xalloc(S,sizeof(Func)); fn->nparam=e->nnames; fn->params=e->names; fn->vararg=e->vararg; fn->body=e->body; fn->env=env; fn->line=e->line>0?e->line:(e->body&&e->body->line>0?e->body->line:S->curLine); fn->bc=NULL; fn->bc_tried=0; Closure*cl=xalloc(S,sizeof(Closure)); cl->f=fn; return VFN(cl); }
   case K_TABLE:{ Table*t=newTable(S); int idx=1; for(int i=0;i<e->nlist;i++){ Node*f=e->list[i]; if(f->isKv){ tset(S,t,eval(S,env,f->a),eval(S,env,f->b)); } else { int m; Value tmp[64]; evalInto(S,env,f->a,tmp,&m); for(int j=0;j<m;j++)tset(S,t,VNUM(idx++),tmp[j]); if(m==0)idx++; } } return VTAB(t); }
-  case K_UNOP:{ Value a=eval(S,env,e->a); switch(e->op){ case'-':return VNUM(-toNum(S,a)); case'#':{ if(a.tag==T_STR)return VNUM((double)a.u.s->len); if(a.tag==T_TAB){ if(a.u.t->meta){Value m=tget(a.u.t->meta,VSTR(newStr(S,"__len",5)));if(m.tag!=T_NIL)return callValue(S,m,1,&a);} return VNUM((double)tlen(a.u.t));} lx_rt_error(S,"attempt to get length of a %s value",lx_typename(a)); } case T_NOT:return VBOOL(!toBool(a)); case'~':return VNUM((double)(~(int64_t)toNum(S,a))); } return VNIL; }
+  case K_UNOP:{ Value a=eval(S,env,e->a); switch(e->op){ case'-':return VNUM(-toNum(S,a)); case'#':{ if(a.tag==T_STR)return VNUM((double)a.u.s->len); if(a.tag==T_TAB){ if(a.u.t->meta){Value m=tget(a.u.t->meta,VSTR(mmStr(S,&S->k_len,"__len")));if(m.tag!=T_NIL)return callValue(S,m,1,&a);} return VNUM((double)tlen(a.u.t));} lx_rt_error(S,"attempt to get length of a %s value",lx_typename(a)); } case T_NOT:return VBOOL(!toBool(a)); case'~':return VNUM((double)(~(int64_t)toNum(S,a))); } return VNIL; }
   case K_BINOP:{ int op=e->op;
     if(op==T_AND){ Value a=eval(S,env,e->a); if(!toBool(a))return a; return eval(S,env,e->b); }
     if(op==T_OR){ Value a=eval(S,env,e->a); if(toBool(a))return a; return eval(S,env,e->b); }
@@ -1374,7 +1378,7 @@ static Value vm_call(State*S,Proto*p,Closure*cl,int argc,Value*argv){
     BC_OP(BC_LEN):{ Value a=BVR(in.b); Value r;
       if(a.tag==T_STR)r=VNUM((double)a.u.s->len);
       else if(a.tag==T_TAB){
-        if(a.u.t->meta){Value m=tget(a.u.t->meta,VSTR(newStr(S,"__len",5)));r=m.tag!=T_NIL?callValue(S,m,1,&a):VNUM((double)tlen(a.u.t));}
+        if(a.u.t->meta){Value m=tget(a.u.t->meta,VSTR(mmStr(S,&S->k_len,"__len")));r=m.tag!=T_NIL?callValue(S,m,1,&a):VNUM((double)tlen(a.u.t));}
         else r=VNUM((double)tlen(a.u.t)); }
       else lx_rt_error(S,"attempt to get length of a %s value",lx_typename(a));
       BVR(in.a)=r; BC_NEXT();}
@@ -2019,7 +2023,7 @@ static Value ui_ctor(State*S,const char*type,int argc,Value*argv){
     t=newTable(S);
     tset(S,t,VSTR(newStr(S,"text",4)),argv[0]);
   } else t = (argc>0 && argv[0].tag==T_TAB) ? argv[0].u.t : newTable(S);
-  tset(S,t,VSTR(newStr(S,"__ui",4)),VSTR(newStr(S,type,strlen(type))));
+  tset(S,t,VSTR(mmStr(S,&S->k_ui,"__ui")),VSTR(newStr(S,type,strlen(type))));
   S->nret=1; S->retbuf[0]=VTAB(t); return S->retbuf[0];
 }
 #define UICTOR(NM) static Value ui_##NM(State*S,int argc,Value*argv){ return ui_ctor(S,#NM,argc,argv); }
@@ -2090,7 +2094,7 @@ static Value st_require(State*S,int argc,Value*argv){
   const char* name=argv[0].u.s->p;
   size_t nlen=argv[0].u.s->len;
   if(nlen==2 && memcmp(name,"ui",2)==0){
-    S->nret=1; S->retbuf[0]=tget(S->globals->vars,VSTR(newStr(S,"ui",2))); return S->retbuf[0];
+    S->nret=1; S->retbuf[0]=tget(S->globals->vars,VSTR(mmStr(S,&S->k_uilib,"ui"))); return S->retbuf[0];
   }
   Table*loaded=package_loaded(S);
   Value key=VSTR(newStr(S,name,nlen));
@@ -2162,7 +2166,7 @@ static void jvalue(State*S,Value v,int depth){
       int id=S->nhandlers<LX_MAX_HANDLERS ? S->nhandlers++ : -1; if(id>=0)S->handlers[id]=v;
       int n=snprintf(buf,sizeof(buf),"{\"__handler\":%d}",id); jappend(S,buf,n); } break;
     case T_TAB:{
-      Str*ut=NULL; Value uv=tget(v.u.t,VSTR(newStr(S,"__ui",4))); if(uv.tag==T_STR)ut=uv.u.s;
+      Str*ut=NULL; Value uv=tget(v.u.t,VSTR(mmStr(S,&S->k_ui,"__ui"))); if(uv.tag==T_STR)ut=uv.u.s;
       if(ut){ jnode(S,v.u.t,depth+1); }
       else { /* plain table → json array of its sequence part */
         int len=tlen(v.u.t); jappend(S,"[",1);
@@ -2174,7 +2178,7 @@ static void jvalue(State*S,Value v,int depth){
 }
 static void jnode(State*S,Table*t,int depth){
   if(depth>LX_MAX_JSON_DEPTH) lx_rt_error(S,"ui tree too deep (possible cycle)");
-  Value uv=tget(t,VSTR(newStr(S,"__ui",4)));
+  Value uv=tget(t,VSTR(mmStr(S,&S->k_ui,"__ui")));
   jappend(S,"{\"type\":",8);
   if(uv.tag==T_STR)jstr(S,uv.u.s->p,uv.u.s->len); else jappend(S,"\"unknown\"",9);
   /* props: string keys except __ui and except node-valued (those go to children implicitly? keep as props if named) */
@@ -2199,7 +2203,7 @@ static void jnode(State*S,Table*t,int depth){
       continue;
     }
     if(c.tag!=T_TAB)continue;
-    Value cu=tget(c.u.t,VSTR(newStr(S,"__ui",4))); if(cu.tag!=T_STR)continue;
+    Value cu=tget(c.u.t,VSTR(mmStr(S,&S->k_ui,"__ui"))); if(cu.tag!=T_STR)continue;
     if(!cfirst)jappend(S,",",1); cfirst=0; jnode(S,c.u.t,depth+1);
   }
   jappend(S,"]}",2);
@@ -2366,7 +2370,7 @@ static void lx_build_tree(State*S){
   S->jsonused=0; if(S->json)S->json[0]=0; S->nhandlers=0;
   Value v=S->app_view;
   if(v.tag==T_FN||v.tag==T_CFN){ v=callValue(S,v,0,NULL); }
-  if(v.tag==T_TAB){ Value uv=tget(v.u.t,VSTR(newStr(S,"__ui",4)));
+  if(v.tag==T_TAB){ Value uv=tget(v.u.t,VSTR(mmStr(S,&S->k_ui,"__ui")));
     if(uv.tag==T_STR){ jnode(S,v.u.t,0); return; } }
   jappend(S,"null",4);
 }
@@ -2423,7 +2427,7 @@ int lx_invoke(State*S,int handler_id,const char*arg,char*errbuf,int errlen){
   if(arg){ argv[0]=VSTR(newStr(S,arg,strlen(arg))); argc=1; }
   Value r=callValue(S,h,argc,argv);
   if(r.tag==T_TAB){
-    Value uv=tget(r.u.t,VSTR(newStr(S,"__ui",4)));
+    Value uv=tget(r.u.t,VSTR(mmStr(S,&S->k_ui,"__ui")));
     if(uv.tag==T_STR) S->app_view=r;
   }
   lx_build_tree(S);
