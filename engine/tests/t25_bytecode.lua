@@ -222,6 +222,22 @@ eq(ay, 1, "assign multi keeps call result")
 local mobj = { n = function(self, ...) return select("#", ...) end }
 local function methcall(o) return o:n(10, two()) end
 eq(methcall(mobj), 3, "method arg expands last call")
+
+-- a method call in a multi-value position expands too (was silently
+-- truncated to one value by the VM — bc_ismulti missed K_METHODCALL)
+local mthree = { m = function(self) return 7, 8, 9 end }
+local function mcount(...) return select("#", ...) end
+eq(mcount(mthree:m()), 3, "call arg expands method call")
+eq(select("#", mthree:m()), 3, "select counts method multi")
+local mt = {mthree:m()}
+eq(#mt, 3, "ctor expands method call")
+eq(mt[2], 8, "ctor method expansion value")
+local mra, mrb = mthree:m()
+eq(mra + mrb, 15, "local multi assigns method results")
+local function retmeth() return mthree:m() end
+eq(select("#", retmeth()), 3, "return expands method call")
+-- non-last position still truncates to one value, like real Lua
+eq(select("#", mthree:m(), 0), 2, "non-last method call truncates")
 local function ctormulti() return {two(), 9} end
 local tt = ctormulti()
 eq(#tt, 3, "ctor expands call positional")

@@ -903,9 +903,12 @@ static int bc_has_nested(Node*n){
   for(int i=0;i<n->nlist2;i++)if(bc_has_nested(n->list2[i]))return 1;
   return 0;
 }
-static int bc_ismulti(Node*e){ return e&&e->kind==K_CALL; } /* METHODCALL yields one value; VARARG pre-bailed */
+/* multi-value producers in trailing position expand (matches evalInto):
+ * plain calls and method calls — VARARG joins once vararg compiles */
+static int bc_ismulti(Node*e){ return e&&(e->kind==K_CALL||e->kind==K_METHODCALL); }
 
 static void bc_expr(Bc*C,Node*e,int dst);
+static void bc_expr_multi(Bc*C,Node*e,int dst);
 /* mode: 1 = multret (c=0, results counted by mrc), 0 = single result (c=2),
  * 2 = discard (c=1, like Lua's CALL with 0 results) */
 static void bc_call_compile(Bc*C,Node*e,int base,int mode){
@@ -927,7 +930,7 @@ static void bc_call_compile(Bc*C,Node*e,int base,int mode){
     Node**A=e->list;int n=e->nlist;
     int lastmulti=n>0&&bc_ismulti(A[n-1]);
     for(int i=0;i<n-(lastmulti?1:0);i++){ bc_expr(C,A[i],base+2+i); bc_raise(C,base+3+i); }
-    if(lastmulti){ bc_call_compile(C,A[n-1],base+2+n-1,1); bc_raise(C,C->reg+64); }
+    if(lastmulti){ bc_expr_multi(C,A[n-1],base+2+n-1); bc_raise(C,C->reg+64); }
     bc_emit(C,BC_CALL,base,(n-(lastmulti?1:0))+2,cres,lastmulti);
     return;
   }
@@ -940,7 +943,7 @@ static void bc_call_compile(Bc*C,Node*e,int base,int mode){
   bc_raise(C,base+1);
   int lastmulti=n>0&&bc_ismulti(A[n-1]);
   for(int i=0;i<n-(lastmulti?1:0);i++){ bc_expr(C,A[i],base+1+i); bc_raise(C,base+2+i); }
-  if(lastmulti){ bc_call_compile(C,A[n-1],base+1+n-1,1); bc_raise(C,C->reg+64); }
+  if(lastmulti){ bc_expr_multi(C,A[n-1],base+1+n-1); bc_raise(C,C->reg+64); }
   bc_emit(C,BC_CALL,base,(n-(lastmulti?1:0))+1,cres,lastmulti);
 }
 static void bc_expr_multi(Bc*C,Node*e,int dst){
