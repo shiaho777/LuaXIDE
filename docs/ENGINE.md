@@ -25,6 +25,7 @@
 - **`S->twrites`** bumps inside `tset` (the single raw-write funnel); `lx_invoke` skips `lx_build_tree` when an event performs zero writes and `app_view` is the same static table — retained JSON + handler ids stay valid.
 - **`internName` is pointer-keyed** (`char*` identity, not content): two identical names from different AST sites get different Strs — slot-cache `keyIs` therefore falls back to hash+memcmp after the pointer compare.
 - **`newStrBuf`/`strSeal`**: builtins that generate bytes (`string.upper/rep/char/reverse`, concat fusion) write directly into the Str buffer then seal the hash — no temp-buffer double copy.
+- **Lazy concat (rope)**: `..` produces a `StrRope` (`base.p==NULL` marks it; `len` is eager; `h` stays 0 until flattened) instead of copying bytes — `s = s..x` loops are O(1) per step. **Invariant**: every `->p`/`->h` read on a `Str` that can carry a runtime value must follow `sflat()`; `->len` is always safe. `sflat` materializes the bytes iteratively — an append loop leaves a spine n deep, so recursion would blow the C stack — and takes no `State*` because the rope embeds `owner` (the arena State), which is what lets the `State`-free table core (`strEq`/`hashVal`/`tfind`) call it. `sconcat` keeps results ≤64B flat and folds empty operands away.
 - **`toStrx` int fast path**: integral `|d|<1e14` emits digits directly (identical to `%.14g`); `-0.0` keeps its sign via `signbit`; larger/non-integral values stay on snprintf.
 - **`S->no_bc`**: `LUAX_NO_BC` is read once at `lx_new` — it is process-level config, not per-call.
 
@@ -32,7 +33,7 @@
 
 ```bash
 make -C engine test          # must print ALL TESTS PASSED; includes:
-                             #   t1–t28 functional/contract tests, bc-diff differential (11 scripts),
+                             #   t1–t29 functional/contract tests, bc-diff differential (12 scripts),
                              #   bc-fuzz (seeded generated programs, VM on/off output diff),
                              #   doc-check (every LUAX.md code block actually run), CLI smoke
 ./engine/lx --ui foo.lua      # prints ---OUTPUT--- / ---TREE---
