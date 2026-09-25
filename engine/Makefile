@@ -17,7 +17,8 @@ DRIVERS = t9-debug t10-debug t11-watch t12-err t13-log \
 
 # scripts whose output must be identical with the bytecode VM on and off
 BC_DIFF_SCRIPTS = t1_hello t2_arith t3_control t4_funcs t5_tables \
-                  t6_strings t7_meta t14_lang t16_modules t25_bytecode t27_patterns
+                  t6_strings t7_meta t14_lang t16_modules t25_bytecode t27_patterns \
+                  t29_concat
 
 # deterministic program fuzzing for VM/tree-walk divergence (see tests/fuzz_gen.py)
 FUZZ_N ?= 60
@@ -52,7 +53,8 @@ test: $(LX) $(DRIVERS)
 	@echo "=== t26 invoke tree ===" && ./t26-invoke-tree
 	@echo "=== t27 patterns ==="   && ./$(LX) tests/t27_patterns.lua
 	@echo "=== t28 hardening ==="  && ./t28-hardening
-	@echo "=== fail-grep ==="       && ! ./$(LX) tests/t25_bytecode.lua | grep -q "^FAIL " && ! ./$(LX) tests/t27_patterns.lua | grep -q "^FAIL " || { echo "silent FAIL line in assert-script output"; exit 1; }
+	@echo "=== t29 concat ==="      && ./$(LX) tests/t29_concat.lua
+	@echo "=== fail-grep ==="       && ! ./$(LX) tests/t25_bytecode.lua | grep -q "^FAIL " && ! ./$(LX) tests/t27_patterns.lua | grep -q "^FAIL " && ! ./$(LX) tests/t29_concat.lua | grep -q "^FAIL " || { echo "silent FAIL line in assert-script output"; exit 1; }
 	@echo "=== bc engagement ==="   && LUAX_BC_STATS=1 ./$(LX) tests/t25_bytecode.lua >/dev/null 2>.bc_stats; grep -qE "bc: [1-9][0-9]* compiled" .bc_stats || { echo "bytecode VM did not engage:"; cat .bc_stats; rm -f .bc_stats; exit 1; }; rm -f .bc_stats; echo "vm engaged"
 	@echo "=== bc differential ===" && for t in $(BC_DIFF_SCRIPTS); do ./$(LX) tests/$$t.lua 2>&1 | sed -E -e 's/0x[0-9a-f]+/0xADDR/g' -e 's/line [0-9]+: execution step limit/line N: execution step limit/' >/tmp/.lx_bc_a; LUAX_NO_BC=1 ./$(LX) tests/$$t.lua 2>&1 | sed -E -e 's/0x[0-9a-f]+/0xADDR/g' -e 's/line [0-9]+: execution step limit/line N: execution step limit/' >/tmp/.lx_bc_b; diff /tmp/.lx_bc_a /tmp/.lx_bc_b >/dev/null || { echo "BC DIVERGENCE in $$t:"; diff /tmp/.lx_bc_a /tmp/.lx_bc_b | head -10; rm -f /tmp/.lx_bc_a /tmp/.lx_bc_b; exit 1; }; done; rm -f /tmp/.lx_bc_a /tmp/.lx_bc_b; echo "bc-diff ok ($(words $(BC_DIFF_SCRIPTS)) scripts)"
 	@echo "=== bc fuzz ==="        && $(MAKE) -s bc-fuzz

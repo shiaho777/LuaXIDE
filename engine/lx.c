@@ -25,6 +25,15 @@ typedef struct Node Node; typedef struct Env Env; typedef struct Func Func;
 typedef struct Closure Closure; typedef struct CFn CFn; typedef struct State State; typedef struct Proto Proto;
 
 struct Str    { size_t len; char* p; unsigned h; /* cached FNV — hash lookups never rescan the bytes */ };
+/* lazy concat node: `a..b` stores operand pointers instead of copying bytes,
+ * so `s = s..x` loops cost O(1) per step instead of O(len). p==NULL marks a
+ * rope; len is eager (`#s` stays O(1)); h stays 0 until sflat() materializes
+ * the bytes. owner is the owning State for the arena alloc at flatten time —
+ * embedded so sflat needs no State parameter and can run inside the State-free
+ * table core (strEq/hashVal/tfind). Flat Strs stay small: ropes allocate this
+ * larger type and hand out &base. */
+typedef struct StrRope StrRope;
+struct StrRope{ Str base; State* owner; Str *l, *r; };
 struct Value  { int tag; union { bool b; double num; Str* s; Table* t; Closure* f; CFn* c; } u; };
 struct Table  { int cap, n; struct TEntry { Value k, v; int used; } *e; Table* meta;
   unsigned gen; /* structural version: bumped on hash insert/resize/migration — env-slot cache invalidation key */
@@ -172,7 +181,39 @@ static Str* newStr(State* S,const char* s,size_t n){ Str*st=xalloc(S,sizeof(Str)
  * temp-buffer + newStr double copy. */
 static Str* newStrBuf(State* S,size_t n){ Str*st=xalloc(S,sizeof(Str)); st->len=n; st->p=xalloc(S,n+1); st->p[n]=0; st->h=0; return st; }
 static Str* strSeal(Str*st){ st->h=strHash(st->p,st->len); return st; }
-static bool strEq(Str*a,Str*b){ return a==b||(a->len==b->len&&memcmp(a->p,b->p,a->len)==0); }
+/* materialize a rope in place: iterative in-order leaf copy — a `s=s..x` loop
+ * leaves a spine n deep, so recursion here would blow the C stack. Afterwards
+ * the node is indistinguishable from a flat string; l/r stay as dead arena
+ * refs. h is written before p is published — p!=NULL is the "flat" flag. */
+static void sflat(Str*st){
+  if(st->p)return;
+  StrRope*ro=(StrRope*)st;
+  size_t n=st->len;
+  char*buf=xalloc(ro->owner,n+1);
+  struct{Str*s;size_t off;}*stk=malloc(16*sizeof(*stk)); int top=0,cap=16;
+  stk[top].s=st; stk[top].off=0; top++;
+  while(top){
+    top--; Str*nd=stk[top].s; size_t off=stk[top].off;
+    if(nd->p){ memcpy(buf+off,nd->p,nd->len); continue; }
+    StrRope*c=(StrRope*)nd;
+    if(top+2>cap){ cap*=2; stk=realloc(stk,(size_t)cap*sizeof(*stk)); }
+    stk[top].s=c->r; stk[top].off=off+c->l->len; top++;
+    stk[top].s=c->l; stk[top].off=off; top++;
+  }
+  free(stk);
+  buf[n]=0; st->h=strHash(buf,n); st->p=buf;
+}
+/* concat constructor: empty operands fold away; tiny results stay flat (one
+ * alloc, no deferral tax); anything larger becomes a rope — O(1) now, the
+ * byte copy happens once at first read via sflat. */
+static Str* sconcat(State*S,Str*a,Str*b){
+  if(!a->len)return b; if(!b->len)return a;
+  if(a->len+b->len<=64){ sflat(a); sflat(b);
+    Str*r=newStrBuf(S,a->len+b->len); memcpy(r->p,a->p,a->len); memcpy(r->p+a->len,b->p,b->len); return strSeal(r); }
+  StrRope*r=xalloc(S,sizeof(StrRope)); r->base.len=a->len+b->len; r->base.p=NULL; r->base.h=0;
+  r->owner=S; r->l=a; r->r=b; return &r->base;
+}
+static bool strEq(Str*a,Str*b){ if(a==b)return true; if(a->len!=b->len)return false; sflat(a);sflat(b); return memcmp(a->p,b->p,a->len)==0; }
 static Table* newTable(State* S){ Table*t=xcalloc(S,sizeof(Table)); t->cap=8; t->e=xcalloc(S,8*sizeof(*t->e)); return t; }
 static unsigned hashVal(Value v){ switch(v.tag){
   case T_NIL:return 0; case T_BOOL:return v.u.b?1:2;
@@ -183,7 +224,7 @@ static unsigned hashVal(Value v){ switch(v.tag){
      * entropy across all bits (~2ns, branch-free). */
     u^=u>>33; u*=0xff51afd7ed558ccdULL; u^=u>>33; u*=0xc4ceb9fe1a85ec53ULL; u^=u>>33;
     return (unsigned)u;}
-  case T_STR:return v.u.s->h;
+  case T_STR:{ sflat(v.u.s); return v.u.s->h; }
   default:return (unsigned)(uintptr_t)v.u.t; } }
 static bool valEq(Value a,Value b){ if(a.tag!=b.tag)return false;
   switch(a.tag){case T_NIL:return true;case T_BOOL:return a.u.b==b.u.b;case T_NUM:return a.u.num==b.u.num;
@@ -393,7 +434,7 @@ static Node* parse(State*S,const char*src,size_t n){P p;p.S=S;lexInit(&p.L,S,src
 #define F_NORMAL ((struct Flow){0,0,{0}})
 static Env* newEnv(State*S,Env*parent){Env*e=xalloc(S,sizeof(Env));e->vars=newTable(S);e->parent=parent;e->gen=0;return e;}
 static const char* lx_typename(Value v){switch(v.tag){case T_NIL:return "nil";case T_BOOL:return "boolean";case T_NUM:return "number";case T_STR:return "string";case T_TAB:return "table";default:return "function";}}
-static double toNum(State*S,Value v){if(v.tag==T_NUM)return v.u.num;if(v.tag==T_STR){char*e;double d=strtod(v.u.s->p,&e);if(e==v.u.s->p)lx_rt_error(S,"cannot convert string '%s' to number",v.u.s->p);return d;}lx_rt_error(S,"attempt to perform arithmetic on a %s value",lx_typename(v));return 0;}
+static double toNum(State*S,Value v){if(v.tag==T_NUM)return v.u.num;if(v.tag==T_STR){Str*st=v.u.s;sflat(st);char*e;double d=strtod(st->p,&e);if(e==st->p)lx_rt_error(S,"cannot convert string '%s' to number",st->p);return d;}lx_rt_error(S,"attempt to perform arithmetic on a %s value",lx_typename(v));return 0;}
 /* double->int with defined behavior everywhere: NaN->0, out-of-range saturates
    (plain (int) casts of huge doubles are UB and differ between arm64 and x86-64) */
 static int num2int(State*S,Value v){double d=toNum(S,v);if(d!=d)return 0;if(d>=2147483648.0)return 2147483647;if(d<=-2147483649.0)return -2147483647-1;return (int)d;}
@@ -599,11 +640,11 @@ static Value eval(State*S,Env*env,Node*e){
       Node*ops[64]; int n=0; Node*cc=e;
       while(cc->kind==K_BINOP&&cc->op==T_CONCAT&&n<63){ops[n++]=cc->a;cc=cc->b;}
       ops[n++]=cc;
-      Str*ss[64]; size_t tot=0;
-      for(int i=0;i<n;i++){ ss[i]=toStrx(S,eval(S,env,ops[i])); tot+=ss[i]->len; }
-      char*buf=xalloc(S,tot+1); size_t off=0;
-      for(int i=0;i<n;i++){ memcpy(buf+off,ss[i]->p,ss[i]->len); off+=ss[i]->len; }
-      return VSTR(newStr(S,buf,tot)); }
+      /* fold into a left-leaning rope: `s = s..x` costs O(1) per step; the
+       * bytes materialize once at the first real read (sflat). */
+      Str*acc=toStrx(S,eval(S,env,ops[0]));
+      for(int i=1;i<n;i++) acc=sconcat(S,acc,toStrx(S,eval(S,env,ops[i])));
+      return VSTR(acc); }
     Value a=eval(S,env,e->a), b=eval(S,env,e->b);
     if(op==T_EQ||op==T_NE){ bool eq=valEq(a,b); if(op==T_EQ)return VBOOL(eq); return VBOOL(!eq); }
     if(op=='<'||op=='>'||op==T_LE||op==T_GE){ double x=toNum(S,a),y=toNum(S,b); switch(op){case'<':return VBOOL(x<y);case'>':return VBOOL(x>y);case T_LE:return VBOOL(x<=y);case T_GE:return VBOOL(x>=y);} }
@@ -692,7 +733,7 @@ static void dbg_append_value(State*S,char**buf,size_t*sz,size_t*used,Value v,int
     case T_NUM:{ char b[64]; int n=snprintf(b,sizeof(b),"%.14g",v.u.num); buf_append(buf,sz,used,b,n); } break;
     case T_STR:{
       buf_append(buf,sz,used,"\"",1);
-      dbg_json_escape(buf,sz,used,v.u.s->p,v.u.s->len);
+      sflat(v.u.s); dbg_json_escape(buf,sz,used,v.u.s->p,v.u.s->len);
       buf_append(buf,sz,used,"\"",1);
     } break;
     case T_TAB:{
@@ -704,7 +745,7 @@ static void dbg_append_value(State*S,char**buf,size_t*sz,size_t*used,Value v,int
         Value k=v.u.t->e[i].k; if(k.tag!=T_STR) continue;
         if(!first) buf_append(buf,sz,used,",",1); first=0; count++;
         buf_append(buf,sz,used,"\"",1);
-        dbg_json_escape(buf,sz,used,k.u.s->p,k.u.s->len);
+        sflat(k.u.s); dbg_json_escape(buf,sz,used,k.u.s->p,k.u.s->len);
         buf_append(buf,sz,used,"\":",2);
         dbg_append_value(S,buf,sz,used,v.u.t->e[i].v,depth-1);
       }
@@ -778,7 +819,7 @@ static void dbg_capture_locals(State*S,Env*env){
       Value k=t->e[i].k; if(k.tag!=T_STR) continue;
       if(!first) buf_append(&buf,&sz,&used,",",1); first=0; count++;
       buf_append(&buf,&sz,&used,"{\"name\":\"",9);
-      dbg_json_escape(&buf,&sz,&used,k.u.s->p,k.u.s->len);
+      sflat(k.u.s); dbg_json_escape(&buf,&sz,&used,k.u.s->p,k.u.s->len);
       buf_append(&buf,&sz,&used,"\",\"value\":",10);
       dbg_append_value(S,&buf,&sz,&used,t->e[i].v,2);
       buf_append(&buf,&sz,&used,"}",1);
@@ -1354,7 +1395,8 @@ static bool bc_globals_still_global(State*S,Func*fn,Proto*p){
  * still resolves to the same (table, slot). */
 /* cached-slot key check: same Str object, or same content (hash + memcmp) */
 static int keyIs(Table*t,int slot,Str*st){ Value k=t->e[slot].k;
-  return k.tag==T_STR && (k.u.s==st || (k.u.s->h==st->h && strEq(k.u.s,st))); }
+  if(k.tag!=T_STR)return 0; sflat(k.u.s); sflat(st);
+  return k.u.s==st || (k.u.s->h==st->h && strEq(k.u.s,st)); }
 static unsigned long envSig(State*S,Env*e){ unsigned long s=0;
   for(Env*p=e;p;p=p->parent) s+=p->gen+p->vars->gen;
   s+=S->globals->gen+S->globals->vars->gen; return s; }
@@ -1501,15 +1543,13 @@ static Value vm_call(State*S,Proto*p,Closure*cl,int argc,Value*argv){
       BVR(in.a)=r; BC_NEXT();}
     BC_OP(BC_CONCAT):{
       Str*sa=toStrx(S,BVR(in.b)),*sb=toStrx(S,BVR(in.c));
-      char*buf=xalloc(S,sa->len+sb->len+1);
-      memcpy(buf,sa->p,sa->len); memcpy(buf+sa->len,sb->p,sb->len);
-      BVR(in.a)=VSTR(newStr(S,buf,sa->len+sb->len)); BC_NEXT();}
-    BC_OP(BC_CONCATN):{ /* fused a..b..c.. — operands sit in consecutive regs */
-      int n=in.b; size_t tot=0; Str*ss[64];
-      for(int i=0;i<n;i++){ ss[i]=toStrx(S,BVR(in.a+i)); tot+=ss[i]->len; }
-      char*buf=xalloc(S,tot+1); size_t off=0;
-      for(int i=0;i<n;i++){ memcpy(buf+off,ss[i]->p,ss[i]->len); off+=ss[i]->len; }
-      BVR(in.a)=VSTR(newStr(S,buf,tot)); BC_NEXT();}
+      BVR(in.a)=VSTR(sconcat(S,sa,sb)); BC_NEXT();}
+    BC_OP(BC_CONCATN):{ /* fused a..b..c.. — operands sit in consecutive regs;
+       * folding into ropes keeps `s=s..x` appends O(1); the byte copy defers
+       * to the first real read (sflat). */
+      int n=in.b; Str*acc=toStrx(S,BVR(in.a));
+      for(int i=1;i<n;i++) acc=sconcat(S,acc,toStrx(S,BVR(in.a+i)));
+      BVR(in.a)=VSTR(acc); BC_NEXT();}
     BC_OP(BC_EQ): BVR(in.a)=VBOOL(valEq(BVR(in.b),BVR(in.c))); BC_NEXT();
     BC_OP(BC_LT): BVR(in.a)=VBOOL(toNum(S,BVR(in.b))<toNum(S,BVR(in.c))); BC_NEXT();
     BC_OP(BC_LE): BVR(in.a)=VBOOL(toNum(S,BVR(in.b))<=toNum(S,BVR(in.c))); BC_NEXT();
@@ -1641,7 +1681,7 @@ int lx_bc_disassemble(lx_State*S,const char*src,char*errbuf,int errlen){
     printf("  params=%d maxstack=%d consts=%d insns=%d\n",p->nparam,p->maxstack,p->nk,p->ncode);
     for(int j=0;j<p->nk;j++){ char b[80]; Value v=p->k[j];
       if(v.tag==T_NUM)snprintf(b,sizeof(b),"%.14g",v.u.num);
-      else if(v.tag==T_STR)snprintf(b,sizeof(b),"\"%.*s\"",(int)v.u.s->len,v.u.s->p);
+      else if(v.tag==T_STR){ sflat(v.u.s); snprintf(b,sizeof(b),"\"%.*s\"",(int)v.u.s->len,v.u.s->p); }
       else snprintf(b,sizeof(b),"?");
       printf("    K%d = %s\n",j,b); }
     for(int j=0;j<p->ncode;j++){ int o=p->code[j].op;
@@ -1660,15 +1700,15 @@ static CFn* mkCFn(State*S,const char*name,Value(*fn)(State*,int,Value*)){CFn*c=x
 /* type guards: stdlib functions used to dereference argv[].u.* unconditionally,
  * so string/table functions segfaulted on bad argument types (e.g. string.len(5)
  * or table.insert(5,1)). These match Lua 5.1's luaL_checktype behavior instead. */
-static Str*   argStr(State*S,Value v,const char*fn){ if(v.tag!=T_STR)lx_rt_error(S,"bad argument #1 to '%s' (string expected, got %s)",fn,lx_typename(v)); return v.u.s; }
+static Str*   argStr(State*S,Value v,const char*fn){ if(v.tag!=T_STR)lx_rt_error(S,"bad argument #1 to '%s' (string expected, got %s)",fn,lx_typename(v)); Str*s=v.u.s; sflat(s); return s; }
 static Table* argTab(State*S,Value v,const char*fn){ if(v.tag!=T_TAB)lx_rt_error(S,"bad argument #1 to '%s' (table expected, got %s)",fn,lx_typename(v)); return v.u.t; }
 static Value st_next(State*S,int argc,Value*argv);
 static Value st_ipiter(State*S,int argc,Value*argv);
 
-static Value st_print(State*S,int argc,Value*argv){ for(int i=0;i<argc;i++){ Str*st=toStrx(S,argv[i]); if(i){fputs("\t",stdout); buf_append(&S->out,&S->outsz,&S->outused,"\t",1);} fwrite(st->p,1,st->len,stdout); buf_append(&S->out,&S->outsz,&S->outused,st->p,st->len);} fputc('\n',stdout); buf_append(&S->out,&S->outsz,&S->outused,"\n",1); S->nret=0; return VNIL; }
+static Value st_print(State*S,int argc,Value*argv){ for(int i=0;i<argc;i++){ Str*st=toStrx(S,argv[i]); sflat(st); if(i){fputs("\t",stdout); buf_append(&S->out,&S->outsz,&S->outused,"\t",1);} fwrite(st->p,1,st->len,stdout); buf_append(&S->out,&S->outsz,&S->outused,st->p,st->len);} fputc('\n',stdout); buf_append(&S->out,&S->outsz,&S->outused,"\n",1); S->nret=0; return VNIL; }
 static Value st_type(State*S,int argc,Value*argv){ const char*n=lx_typename(argv[0]); S->nret=1; S->retbuf[0]=VSTR(internName(S,n)); return S->retbuf[0]; }
 static Value st_tostring(State*S,int argc,Value*argv){ S->nret=1; S->retbuf[0]=VSTR(toStrx(S,argv[0])); return S->retbuf[0]; }
-static Value st_tonumber(State*S,int argc,Value*argv){ Value v=argv[0]; if(v.tag==T_NUM){S->nret=1;S->retbuf[0]=v;return v;} if(v.tag==T_STR){char*e;double d=strtod(v.u.s->p,&e);if(e!=v.u.s->p){S->nret=1;S->retbuf[0]=VNUM(d);return S->retbuf[0];}} S->nret=1; S->retbuf[0]=VNIL; return VNIL; }
+static Value st_tonumber(State*S,int argc,Value*argv){ Value v=argv[0]; if(v.tag==T_NUM){S->nret=1;S->retbuf[0]=v;return v;} if(v.tag==T_STR){Str*st=v.u.s;sflat(st);char*e;double d=strtod(st->p,&e);if(e!=st->p){S->nret=1;S->retbuf[0]=VNUM(d);return S->retbuf[0];}} S->nret=1; S->retbuf[0]=VNIL; return VNIL; }
 static Value st_next(State*S,int argc,Value*argv){ Table*t=argTab(S,argv[0],"next"); Value k=argc>1?argv[1]:VNIL; int from=0;
   /* array part first (Lua-style): a prior arr key resumes the arr scan from
    * its index; a hash-side key resumes inside the hash part. */
@@ -1689,14 +1729,14 @@ static Value st_getmt(State*S,int argc,Value*argv){ Table*m=argv[0].tag==T_TAB?a
 static Value st_rawget(State*S,int argc,Value*argv){ S->nret=1; S->retbuf[0]=tget(argTab(S,argv[0],"rawget"),argv[1]); return S->retbuf[0]; }
 static Value st_rawset(State*S,int argc,Value*argv){ tset(S,argTab(S,argv[0],"rawset"),argv[1],argv[2]); S->nret=1; S->retbuf[0]=argv[0]; return S->retbuf[0]; }
 static Value st_raweq(State*S,int argc,Value*argv){ S->nret=1; S->retbuf[0]=VBOOL(valEq(argv[0],argv[1])); return S->retbuf[0]; }
-static Value st_assert(State*S,int argc,Value*argv){ if(!toBool(argv[0]))lx_rt_error(S,argc>1&&argv[1].tag==T_STR?argv[1].u.s->p:"assertion failed!"); for(int i=0;i<argc&&i<64;i++)S->retbuf[i]=argv[i]; S->nret=argc; return argc?argv[0]:VNIL; }
-static Value st_error(State*S,int argc,Value*argv){ Str*st=toStrx(S,argv[0]); lx_rt_error(S,"%.*s",(int)st->len,st->p); return VNIL; }
+static Value st_assert(State*S,int argc,Value*argv){ if(!toBool(argv[0])){ if(argc>1&&argv[1].tag==T_STR)sflat(argv[1].u.s); lx_rt_error(S,argc>1&&argv[1].tag==T_STR?argv[1].u.s->p:"assertion failed!"); } for(int i=0;i<argc&&i<64;i++)S->retbuf[i]=argv[i]; S->nret=argc; return argc?argv[0]:VNIL; }
+static Value st_error(State*S,int argc,Value*argv){ Str*st=toStrx(S,argv[0]); sflat(st); lx_rt_error(S,"%.*s",(int)st->len,st->p); return VNIL; }
 static Value st_pcall(State*S,int argc,Value*argv){ Value f=argv[0]; jmp_buf outer; memcpy(&outer,&S->err,sizeof(outer));
   int depth=S->nstack; int vdepth=S->vtop; int cdepth=S->call_depth;
   if(setjmp(S->err)==0){ Value r=callValue(S,f,argc-1,argv+1); int n=S->nret; Value tmp[64]; tmp[0]=r; for(int i=1;i<n&&i<64;i++)tmp[i]=S->retbuf[i];
     memcpy(&S->err,&outer,sizeof(outer)); S->nstack=depth; S->vtop=vdepth; S->call_depth=cdepth; S->retbuf[0]=VBOOL(1); for(int i=0;i<n&&i<63;i++)S->retbuf[1+i]=tmp[i]; S->nret=n+1; return S->retbuf[0]; }
   memcpy(&S->err,&outer,sizeof(outer)); S->nstack=depth; S->vtop=vdepth; S->call_depth=cdepth; S->retbuf[0]=VBOOL(0); S->retbuf[1]=VSTR(newStr(S,S->errmsg,strlen(S->errmsg))); S->nret=2; return S->retbuf[0]; }
-static Value st_select(State*S,int argc,Value*argv){ if(argv[0].tag==T_STR&&argv[0].u.s->len==1&&argv[0].u.s->p[0]=='#'){S->nret=1;S->retbuf[0]=VNUM(argc-1);return S->retbuf[0];} int n=num2int(S,argv[0]); if(n<0)n=argc+n; else if(n==0)lx_rt_error(S,"bad argument #1 to 'select'"); if(n<1)lx_rt_error(S,"bad argument #1 to 'select' (index out of range)"); if(n>argc){S->nret=0;return VNIL;} S->nret=argc-n; for(int i=0;i+n<argc;i++)S->retbuf[i]=argv[n+i]; return S->nret?S->retbuf[0]:VNIL; }
+static Value st_select(State*S,int argc,Value*argv){ if(argv[0].tag==T_STR){Str*s=argv[0].u.s;sflat(s);if(s->len==1&&s->p[0]=='#'){S->nret=1;S->retbuf[0]=VNUM(argc-1);return S->retbuf[0];}} int n=num2int(S,argv[0]); if(n<0)n=argc+n; else if(n==0)lx_rt_error(S,"bad argument #1 to 'select'"); if(n<1)lx_rt_error(S,"bad argument #1 to 'select' (index out of range)"); if(n>argc){S->nret=0;return VNIL;} S->nret=argc-n; for(int i=0;i+n<argc;i++)S->retbuf[i]=argv[n+i]; return S->nret?S->retbuf[0]:VNIL; }
 static Value st_unpack(State*S,int argc,Value*argv){ Table*t=argTab(S,argv[0],"table.unpack"); int i=argc>1?num2int(S,argv[1]):1; int j=argc>2?num2int(S,argv[2]):tlen(t); if(i<=j && (long)j-(long)i+1>64)lx_rt_error(S,"too many results to unpack"); S->nret=0; for(;i<=j;i++)S->retbuf[S->nret++]=tget(t,VNUM(i)); return S->nret?S->retbuf[0]:VNIL; }
 static Value st_slen(State*S,int argc,Value*argv){S->nret=1;S->retbuf[0]=VNUM((double)argStr(S,argv[0],"string.len")->len);return S->retbuf[0];}
 static Value st_supper(State*S,int argc,Value*argv){Str*s=argStr(S,argv[0],"string.upper");Str*r=newStrBuf(S,s->len);for(size_t i=0;i<s->len;i++)r->p[i]=toupper((unsigned char)s->p[i]);S->nret=1;S->retbuf[0]=VSTR(strSeal(r));return S->retbuf[0];}
@@ -1705,7 +1745,7 @@ static Value st_ssub(State*S,int argc,Value*argv){Str*s=argStr(S,argv[0],"string
 static Value st_srep(State*S,int argc,Value*argv){Str*s=argStr(S,argv[0],"string.rep");int n=num2int(S,argv[1]);if(n<0)n=0;if(s->len>0&&(size_t)n>0xFFFFFFFu/s->len)lx_rt_error(S,"resulting string too large");Str*r=newStrBuf(S,(size_t)n*s->len);for(int k=0;k<n;k++)memcpy(r->p+k*s->len,s->p,s->len);S->nret=1;S->retbuf[0]=VSTR(strSeal(r));return S->retbuf[0];}
 static Value st_tinsert(State*S,int argc,Value*argv){Table*t=argTab(S,argv[0],"table.insert");if(argc==2){int n=tlen(t);tset(S,t,VNUM(n+1),argv[1]);}else{int p=num2int(S,argv[1]);int n=tlen(t);for(int i=n;i>=p;i--)tset(S,t,VNUM(i+1),tget(t,VNUM(i)));tset(S,t,VNUM(p),argv[2]);}S->nret=0;return VNIL;}
 static Value st_tremove(State*S,int argc,Value*argv){Table*t=argTab(S,argv[0],"table.remove");int n=tlen(t);int p=argc>1?num2int(S,argv[1]):n;if(p<1)p=1;if(p>n){S->nret=1;S->retbuf[0]=VNIL;return VNIL;}Value v=tget(t,VNUM(p));for(int i=p;i<n;i++)tset(S,t,VNUM(i),tget(t,VNUM(i+1)));tset(S,t,VNUM(n),VNIL);S->nret=1;S->retbuf[0]=v;return v;}
-static Value st_tconcat(State*S,int argc,Value*argv){Table*t=argTab(S,argv[0],"table.concat");Str*sep=argc>1&&argv[1].tag==T_STR?argv[1].u.s:NULL;int i=argc>2?num2int(S,argv[2]):1;int j=argc>3?num2int(S,argv[3]):tlen(t);char*buf=NULL;size_t m=0,cap=0;for(;i<=j;i++){Value v=tget(t,VNUM(i));if(v.tag!=T_STR&&v.tag!=T_NUM)lx_rt_error(S,"invalid value (table.concat)");Str*s=toStrx(S,v);if(m+s->len>cap){cap=cap?cap*2:64;while(m+s->len>cap)cap*=2;buf=realloc(buf,cap);}memcpy(buf+m,s->p,s->len);m+=s->len;if(i<j&&sep){if(m+sep->len>cap){cap=cap?cap*2:64;while(m+sep->len>cap)cap*=2;buf=realloc(buf,cap);}memcpy(buf+m,sep->p,sep->len);m+=sep->len;}}S->nret=1;S->retbuf[0]=m?VSTR(newStr(S,buf,m)):VSTR(newStr(S,"",0));if(buf)free(buf);return S->retbuf[0];}
+static Value st_tconcat(State*S,int argc,Value*argv){Table*t=argTab(S,argv[0],"table.concat");Str*sep=argc>1&&argv[1].tag==T_STR?argv[1].u.s:NULL;if(sep)sflat(sep);int i=argc>2?num2int(S,argv[2]):1;int j=argc>3?num2int(S,argv[3]):tlen(t);char*buf=NULL;size_t m=0,cap=0;for(;i<=j;i++){Value v=tget(t,VNUM(i));if(v.tag!=T_STR&&v.tag!=T_NUM)lx_rt_error(S,"invalid value (table.concat)");Str*s=toStrx(S,v);sflat(s);if(m+s->len>cap){cap=cap?cap*2:64;while(m+s->len>cap)cap*=2;buf=realloc(buf,cap);}memcpy(buf+m,s->p,s->len);m+=s->len;if(i<j&&sep){if(m+sep->len>cap){cap=cap?cap*2:64;while(m+sep->len>cap)cap*=2;buf=realloc(buf,cap);}memcpy(buf+m,sep->p,sep->len);m+=sep->len;}}S->nret=1;S->retbuf[0]=m?VSTR(newStr(S,buf,m)):VSTR(newStr(S,"",0));if(buf)free(buf);return S->retbuf[0];}
 
 /* ---------- pattern matching (Lua 5.1 semantics, original implementation) ----------
  * Byte-oriented, like Lua 5.1: classes and '.' match single bytes (a UTF-8
@@ -1914,7 +1954,7 @@ static Value st_smatch(State*S,int argc,Value*argv){
 }
 static void gsub_rep(State*S,PMS*ms,Value repl,const char*mp,size_t mlen,char**buf,size_t*bsz,size_t*used){
   if(repl.tag==T_STR){
-    Str*rs=repl.u.s;
+    Str*rs=repl.u.s; sflat(rs);
     for(size_t i=0;i<rs->len;i++){
       char c=rs->p[i];
       if(c!='%'){ buf_append(buf,bsz,used,&c,1); continue; }
@@ -1925,7 +1965,7 @@ static void gsub_rep(State*S,PMS*ms,Value repl,const char*mp,size_t mlen,char**b
       int k=d-'0';
       if(k==0){ buf_append(buf,bsz,used,mp,mlen); continue; }
       if(k>ms->level)lx_rt_error(S,"invalid capture index %%%d in replacement string",k);
-      Value cv=p_capval(ms,k-1); Str*cs=toStrx(S,cv);
+      Value cv=p_capval(ms,k-1); Str*cs=toStrx(S,cv); sflat(cs);
       buf_append(buf,bsz,used,cs->p,cs->len);
     }
   } else if(repl.tag==T_TAB||repl.tag==T_FN||repl.tag==T_CFN){
@@ -1933,7 +1973,7 @@ static void gsub_rep(State*S,PMS*ms,Value repl,const char*mp,size_t mlen,char**b
     if(ms->level==0){ args[0]=VSTR(newStr(S,mp,mlen)); na=1; }
     else { for(int i=0;i<ms->level;i++)args[i]=p_capval(ms,i); na=ms->level; }
     Value r=(repl.tag==T_TAB)?tget(repl.u.t,args[0]):callValue(S,repl,na,args);
-    if(r.tag==T_STR||r.tag==T_NUM){ Str*rs=toStrx(S,r); buf_append(buf,bsz,used,rs->p,rs->len); }
+    if(r.tag==T_STR||r.tag==T_NUM){ Str*rs=toStrx(S,r); sflat(rs); buf_append(buf,bsz,used,rs->p,rs->len); }
     else buf_append(buf,bsz,used,mp,mlen); /* nil/false keeps the original match */
   } else {
     lx_rt_error(S,"bad argument #3 to 'gsub' (string/function/table expected)");
@@ -2022,7 +2062,7 @@ static Value st_sformat(State*S,int argc,Value*argv){
     if(conv=='%'){ buf_append(&buf,&bsz,&bu,"%",1); i=j; continue; }
     if(conv=='q'){
       if(argi>=argc)lx_rt_error(S,"bad argument #%d to 'format' (no value)",argi);
-      Str*s=toStrx(S,argv[argi++]);
+      Str*s=toStrx(S,argv[argi++]); sflat(s);
       buf_append(&buf,&bsz,&bu,"\"",1);
       for(size_t k=0;k<s->len;k++){
         unsigned char c=(unsigned char)s->p[k]; char e[8];
@@ -2037,7 +2077,7 @@ static Value st_sformat(State*S,int argc,Value*argv){
     }
     if(conv=='s'){
       if(argi>=argc)lx_rt_error(S,"bad argument #%d to 'format' (no value)",argi);
-      Str*s=toStrx(S,argv[argi++]);
+      Str*s=toStrx(S,argv[argi++]); sflat(s);
       size_t n=s->len;
       const char*dot=strchr(spec,'.');
       if(dot&&dot[1]>='0'&&dot[1]<='9'){ long p=0; const char*q=dot+1; while(*q>='0'&&*q<='9'){ p=p*10+(*q-'0'); q++; } if((size_t)p<n)n=(size_t)p; }
@@ -2103,7 +2143,7 @@ static Value ma_randomseed(State*S,int argc,Value*argv){ S->rng=(argc>0)?(unsign
 static int sort_less(State*S,Value a,Value b,Value comp){
   if(comp.tag==T_FN||comp.tag==T_CFN){ Value args[2]={a,b}; return toBool(callValue(S,comp,2,args)); }
   if(a.tag==T_NUM&&b.tag==T_NUM)return a.u.num<b.u.num;
-  if(a.tag==T_STR&&b.tag==T_STR){ size_t n=a.u.s->len<b.u.s->len?a.u.s->len:b.u.s->len; int c=memcmp(a.u.s->p,b.u.s->p,n); if(c)return c<0; return a.u.s->len<b.u.s->len; }
+  if(a.tag==T_STR&&b.tag==T_STR){ sflat(a.u.s); sflat(b.u.s); size_t n=a.u.s->len<b.u.s->len?a.u.s->len:b.u.s->len; int c=memcmp(a.u.s->p,b.u.s->p,n); if(c)return c<0; return a.u.s->len<b.u.s->len; }
   lx_rt_error(S,"attempt to compare %s with %s",lx_typename(a),lx_typename(b));
   return 0;
 }
@@ -2223,6 +2263,7 @@ static int load_file_text(const char*path,char**out,size_t*outlen){
 }
 static Value st_require(State*S,int argc,Value*argv){
   if(argc<1 || argv[0].tag!=T_STR) lx_rt_error(S,"bad argument #1 to 'require' (string expected)");
+  sflat(argv[0].u.s);
   const char* name=argv[0].u.s->p;
   size_t nlen=argv[0].u.s->len;
   if(nlen==2 && memcmp(name,"ui",2)==0){
@@ -2293,7 +2334,7 @@ static void jvalue(State*S,Value v,int depth){
     case T_NIL: jappend(S,"null",4); break;
     case T_BOOL: if(v.u.b)jappend(S,"true",4); else jappend(S,"false",5); break;
     case T_NUM:{ int n=snprintf(buf,sizeof(buf),"%.14g",v.u.num); jappend(S,buf,n); } break;
-    case T_STR: jstr(S,v.u.s->p,v.u.s->len); break;
+    case T_STR:{ Str*s=v.u.s; sflat(s); jstr(S,s->p,s->len); } break;
     case T_FN: case T_CFN:{ /* register handler, emit reference */
       int id=S->nhandlers<LX_MAX_HANDLERS ? S->nhandlers++ : -1; if(id>=0)S->handlers[id]=v;
       int n=snprintf(buf,sizeof(buf),"{\"__handler\":%d}",id); jappend(S,buf,n); } break;
@@ -2312,12 +2353,12 @@ static void jnode(State*S,Table*t,int depth){
   if(depth>LX_MAX_JSON_DEPTH) lx_rt_error(S,"ui tree too deep (possible cycle)");
   Value uv=tget(t,VSTR(mmStr(S,&S->k_ui,"__ui")));
   jappend(S,"{\"type\":",8);
-  if(uv.tag==T_STR)jstr(S,uv.u.s->p,uv.u.s->len); else jappend(S,"\"unknown\"",9);
+  if(uv.tag==T_STR){ sflat(uv.u.s); jstr(S,uv.u.s->p,uv.u.s->len); } else jappend(S,"\"unknown\"",9);
   /* props: string keys except __ui and except node-valued (those go to children implicitly? keep as props if named) */
   jappend(S,",\"props\":{",10);
   int first=1;
   for(int i=0;i<t->cap;i++){ if(!t->e[i].used)continue; Value k=t->e[i].k;
-    if(k.tag!=T_STR)continue; if(k.u.s->len==4 && memcmp(k.u.s->p,"__ui",4)==0)continue;
+    if(k.tag!=T_STR)continue; sflat(k.u.s); if(k.u.s->len==4 && memcmp(k.u.s->p,"__ui",4)==0)continue;
     if(!first)jappend(S,",",1); first=0;
     jstr(S,k.u.s->p,k.u.s->len); jappend(S,":",1); jvalue(S,t->e[i].v,depth+1);
   }
@@ -2330,7 +2371,7 @@ static void jnode(State*S,Table*t,int depth){
     if(c.tag==T_STR){
       if(!cfirst)jappend(S,",",1); cfirst=0;
       jappend(S,"{\"type\":\"text\",\"props\":{\"text\":",(int)sizeof("{\"type\":\"text\",\"props\":{\"text\":")-1);
-      jstr(S,c.u.s->p,c.u.s->len);
+      sflat(c.u.s); jstr(S,c.u.s->p,c.u.s->len);
       jappend(S,"},\"children\":[]}",(int)sizeof("},\"children\":[]}")-1);
       continue;
     }
@@ -2407,7 +2448,7 @@ static Value st_io_read(State*S,int argc,Value*argv){
 }
 static Value st_io_write(State*S,int argc,Value*argv){
   for(int i=0;i<argc;i++){
-    Str*st=toStrx(S,argv[i]);
+    Str*st=toStrx(S,argv[i]); sflat(st);
     buf_append(&S->out,&S->outsz,&S->outused,st->p,st->len);
     fwrite(st->p,1,st->len,stdout);
   }
@@ -2416,7 +2457,7 @@ static Value st_io_write(State*S,int argc,Value*argv){
 static Value st_io_flush(State*S,int argc,Value*argv){ (void)argc;(void)argv; fflush(stdout); S->nret=0; return VNIL; }
 static Value st_input(State*S,int argc,Value*argv){
   if(argc>=1){
-    Str*st=toStrx(S,argv[0]);
+    Str*st=toStrx(S,argv[0]); sflat(st);
     buf_append(&S->out,&S->outsz,&S->outused,st->p,st->len);
     fwrite(st->p,1,st->len,stdout);
   }
@@ -2424,7 +2465,7 @@ static Value st_input(State*S,int argc,Value*argv){
 }
 static Value st_os_getenv(State*S,int argc,Value*argv){
   if(argc<1){ S->nret=1; S->retbuf[0]=VNIL; return VNIL; }
-  Str*k=toStrx(S,argv[0]);
+  Str*k=toStrx(S,argv[0]); sflat(k);
   const char* v=getenv(k->p);
   S->nret=1;
   if(!v){ S->retbuf[0]=VNIL; return VNIL; }
@@ -2600,7 +2641,7 @@ int lx_repl(lx_State*S,const char*src,char*errbuf,int errlen){
   /* if chunk returned values and printed nothing, print first return */
   if(fl.kind==1 && fl.nret>0 && S->outused==0){
     for(int i=0;i<fl.nret;i++){
-      Str*st=toStrx(S,fl.rets[i]);
+      Str*st=toStrx(S,fl.rets[i]); sflat(st);
       if(i) buf_append(&S->out,&S->outsz,&S->outused,"\t",1);
       buf_append(&S->out,&S->outsz,&S->outused,st->p,st->len);
     }

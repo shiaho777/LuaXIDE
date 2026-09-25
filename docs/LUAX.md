@@ -53,6 +53,8 @@ return view   -- 返回 view 函数 = 每次点击后自动重渲染(§4)
 
 **Pattern matching**: byte-oriented (same as Lua 5.1), see §3.2.
 
+**Performance note**: `..` is internally lazy — `s = s .. x` accumulation loops are O(1) per step, not quadratic; the bytes materialize on the first real read (`#s`, printing, table keys, `string.*`). `table.concat` remains the idiomatic choice for joining many parts with a separator.
+
 ## 3. Standard library
 
 ### 3.1 Base
