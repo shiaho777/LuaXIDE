@@ -23,6 +23,7 @@
 - **`S->twrites`** 在 `tset`(唯一裸写入口)内自增;`lx_invoke` 在事件零写且 `app_view` 为同一静态表时跳过 `lx_build_tree` —— 保留的 JSON 与 handler id 表仍然有效。
 - **`internName` 按指针驻留**(`char*` 身份而非内容):不同 AST 位置的同名得到不同 Str —— 因此槽位缓存的 `keyIs` 在指针比较后还有哈希+memcmp 兜底。
 - **`newStrBuf`/`strSeal`**:自建字节的 builtin(`string.upper/rep/char/reverse`、拼接融合)直接写 Str 缓冲再 seal 哈希 —— 省掉临时缓冲 + 二次拷贝。
+- **惰性拼接(rope)**:`..` 产出 `StrRope`(`base.p==NULL` 为标记;`len` 急切;`h` 推迟到物化),不再复制字节 —— `s = s..x` 循环每步 O(1)。**不变量**:凡是对可能携带运行时值的 `Str` 读 `->p`/`->h`,必须先 `sflat()`;`->len` 永远安全。`sflat` 用迭代式填充物化字节 —— 追加循环留下 n 层深脊柱,递归会爆 C 栈 —— 且不需要 `State*`(rope 内嵌 `owner` 持有 arena State),所以无 State 的表核心(`strEq`/`hashVal`/`tfind`)也能调用它。`sconcat` 让 ≤64B 的小结果仍走平字符串,空操作数直接折叠。
 - **`toStrx` 整数快路径**:`|d|<1e14` 的整数直接输出数字(与 `%.14g` 逐字节一致);`-0.0` 由 `signbit` 保号;更大/非整数仍走 snprintf。
 - **`S->no_bc`**:`LUAX_NO_BC` 在 `lx_new` 读一次 —— 它是进程级配置,不是每次调用判断。
 
@@ -30,7 +31,7 @@
 
 ```bash
 make -C engine test          # 必须输出 ALL TESTS PASSED;含:
-                             #   t1–t28 功能/契约测试、bc-diff 差分(11 脚本)、
+                             #   t1–t29 功能/契约测试、bc-diff 差分(12 脚本)、
                              #   bc-fuzz(种子化生成程序,VM 开/关输出比对)、
                              #   doc-check(LUAX.md 代码块逐个实跑)、CLI 冒烟
 ./engine/lx --ui foo.lua      # 打印 ---OUTPUT--- / ---TREE---
