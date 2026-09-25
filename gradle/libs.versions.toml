@@ -4,7 +4,7 @@ kotlin = "2.4.20"
 coreKtx = "1.19.0"
 lifecycle = "2.8.7"
 activityCompose = "1.9.3"
-composeBom = "2024.12.01"
+composeBom = "2026.09.00"
 securityCrypto = "1.1.0"
 junit = "4.13.2"
 
