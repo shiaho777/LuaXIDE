@@ -1,9 +1,10 @@
-/* lx.c — LuaX engine, Phase 1a: tree-walking interpreter (corrected).
+/* lx.c — LuaX engine: tree-walking interpreter + bytecode VM.
  * Subset: locals/assign/multi-assign, arithmetic/comparison/logical/bitwise/concat/len,
  * if/elseif/else, while, repeat, numeric for, generic for (pairs/ipairs/next),
  * functions/closures/upvalues via env capture, varargs, multi-return, tables,
  * strings, metatables (__index/__newindex/__tostring/__len), pcall.
- * No GC. Bytecode VM = Phase 1b.
+ * UI is an HTML document the host renders. Scripts queue DOM ops (html.setText
+ * and the rest) and register element handlers (html.on). No GC.
  */
 #include "lx.h"
 #include <stdio.h>
@@ -78,9 +79,13 @@ struct State {
   struct { char* p; size_t sz; }* pages; int npages;
   /* captured print output (survives across arena; owned by malloc) */
   char* out; size_t outsz, outused;
-  /* last serialized UI tree JSON */
+  /* pending HTML DOM ops, comma-separated JSON objects (no wrapping brackets) */
   char* json; size_t jsonsz, jsonused;
-  /* declarative UI: the value the chunk returned (a view function or a node) */
+  /* formatted "[...]" view of the ops buffer; rebuilt by lx_last_json */
+  char* hview; size_t hviewsz, hviewused;
+  /* html.on registrations: key is id "\x1f" event, value is the handler */
+  Table* html_on;
+  /* retained so older call sites keep a stable State layout; LuaX no longer builds a UI tree */
   Value app_view; bool has_view;
   /* event handler registry, rebuilt on each serialization */
   Value handlers[LX_MAX_HANDLERS]; int nhandlers;
@@ -2186,24 +2191,83 @@ static const char* STRING_PRELUDE =
   "end\n";
 static void regFn(State*S,Table*t,const char*name,Value(*fn)(State*,int,Value*)){tset(S,t,VSTR(newStr(S,name,strlen(name))),VCFN(mkCFn(S,name,fn)));}
 
-/* ---------- declarative ui library ---------- */
-/* ui.<type>{ props..., children... } → tags a table with __ui=<type> and returns it. */
-static Value ui_ctor(State*S,const char*type,int argc,Value*argv){
-  /* Only ui.text accepts string shorthand; other constructors keep their contract. */
-  Table*t;
-  if(argc>0 && argv[0].tag==T_STR && strcmp(type,"text")==0){
-    t=newTable(S);
-    tset(S,t,VSTR(internName(S,"text")),argv[0]);
-  } else t = (argc>0 && argv[0].tag==T_TAB) ? argv[0].u.t : newTable(S);
-  tset(S,t,VSTR(mmStr(S,&S->k_ui,"__ui")),VSTR(internName(S,type)));
-  S->nret=1; S->retbuf[0]=VTAB(t); return S->retbuf[0];
+/* ---------- HTML host ---------- */
+static Str* nthStr(State*S,Value*argv,int argc,int n,const char*fn){
+  if(n>=argc) lx_rt_error(S,"bad argument #%d to '%s' (string expected)",n+1,fn);
+  if(argv[n].tag!=T_STR) lx_rt_error(S,"bad argument #%d to '%s' (string expected, got %s)",n+1,fn,lx_typename(argv[n]));
+  sflat(argv[n].u.s);
+  return argv[n].u.s;
 }
-#define UICTOR(NM) static Value ui_##NM(State*S,int argc,Value*argv){ return ui_ctor(S,#NM,argc,argv); }
-UICTOR(app) UICTOR(column) UICTOR(row) UICTOR(text) UICTOR(button) UICTOR(card)
-UICTOR(input) UICTOR(image) UICTOR(spacer) UICTOR(divider) UICTOR(scrollview)
-UICTOR(list) UICTOR(listitem) UICTOR(stack) UICTOR(page) UICTOR(switch)
-UICTOR(box) UICTOR(slider) UICTOR(progress)
-#undef UICTOR
+static Value nthFunc(State*S,Value*argv,int argc,int n,const char*fn){
+  if(n>=argc) lx_rt_error(S,"bad argument #%d to '%s' (function expected)",n+1,fn);
+  if(argv[n].tag!=T_FN && argv[n].tag!=T_CFN)
+    lx_rt_error(S,"bad argument #%d to '%s' (function expected, got %s)",n+1,fn,lx_typename(argv[n]));
+  return argv[n];
+}
+static void html_jappend(State*S,const char*s,size_t n){ buf_append(&S->json,&S->jsonsz,&S->jsonused,s,n); }
+static void html_jstr(State*S,const char*p,size_t n){
+  html_jappend(S,"\"",1);
+  for(size_t i=0;i<n;i++){ unsigned char c=(unsigned char)p[i]; char e[8];
+    switch(c){ case '"': html_jappend(S,"\\\"",2);break; case '\\': html_jappend(S,"\\\\",2);break;
+      case '\n': html_jappend(S,"\\n",2);break; case '\t': html_jappend(S,"\\t",2);break; case '\r': html_jappend(S,"\\r",2);break;
+      default: if(c<0x20){ int m=snprintf(e,sizeof(e),"\\u%04x",c); html_jappend(S,e,(size_t)m);} else html_jappend(S,(char*)&c,1); } }
+  html_jappend(S,"\"",1);
+}
+static Value html_key(State*S,const char*id,size_t ilen,const char*ev,size_t elen){
+  size_t n=ilen+1+elen; char*p=xalloc(S,n+1);
+  memcpy(p,id,ilen); p[ilen]='\x1f'; memcpy(p+ilen+1,ev,elen); p[n]=0;
+  return VSTR(newStr(S,p,n));
+}
+static void html_op_begin(State*S,const char*op,Str*id){
+  if(S->jsonused) html_jappend(S,",",1);
+  html_jappend(S,"{\"op\":",6); html_jstr(S,op,strlen(op));
+  html_jappend(S,",\"id\":",6); html_jstr(S,id->p,id->len);
+}
+static void html_op_end(State*S){ html_jappend(S,"}",1); }
+static Value html_on(State*S,int argc,Value*argv){
+  Str*id=nthStr(S,argv,argc,0,"html.on");
+  Str*ev=nthStr(S,argv,argc,1,"html.on");
+  Value fn=nthFunc(S,argv,argc,2,"html.on");
+  if(!S->html_on) S->html_on=newTable(S);
+  tset(S,S->html_on,html_key(S,id->p,id->len,ev->p,ev->len),fn);
+  S->nret=0; return VNIL;
+}
+static Value html_set_text(State*S,int argc,Value*argv){
+  Str*id=nthStr(S,argv,argc,0,"html.setText");
+  Str*text=nthStr(S,argv,argc,1,"html.setText");
+  html_op_begin(S,"setText",id); html_jappend(S,",\"text\":",8); html_jstr(S,text->p,text->len); html_op_end(S);
+  S->nret=0; return VNIL;
+}
+static Value html_set_html(State*S,int argc,Value*argv){
+  Str*id=nthStr(S,argv,argc,0,"html.setHtml");
+  Str*html=nthStr(S,argv,argc,1,"html.setHtml");
+  html_op_begin(S,"setHtml",id); html_jappend(S,",\"html\":",8); html_jstr(S,html->p,html->len); html_op_end(S);
+  S->nret=0; return VNIL;
+}
+static Value html_set_attr(State*S,int argc,Value*argv){
+  Str*id=nthStr(S,argv,argc,0,"html.setAttr");
+  Str*name=nthStr(S,argv,argc,1,"html.setAttr");
+  Str*value=nthStr(S,argv,argc,2,"html.setAttr");
+  html_op_begin(S,"setAttr",id);
+  html_jappend(S,",\"name\":",8); html_jstr(S,name->p,name->len);
+  html_jappend(S,",\"value\":",9); html_jstr(S,value->p,value->len);
+  html_op_end(S);
+  S->nret=0; return VNIL;
+}
+static Value html_set_value(State*S,int argc,Value*argv){
+  Str*id=nthStr(S,argv,argc,0,"html.setValue");
+  Str*value=nthStr(S,argv,argc,1,"html.setValue");
+  html_op_begin(S,"setValue",id); html_jappend(S,",\"value\":",9); html_jstr(S,value->p,value->len); html_op_end(S);
+  S->nret=0; return VNIL;
+}
+static Value html_class(State*S,int argc,Value*argv,const char*op,const char*fn){
+  Str*id=nthStr(S,argv,argc,0,fn);
+  Str*cls=nthStr(S,argv,argc,1,fn);
+  html_op_begin(S,op,id); html_jappend(S,",\"class\":",9); html_jstr(S,cls->p,cls->len); html_op_end(S);
+  S->nret=0; return VNIL;
+}
+static Value html_add_class(State*S,int argc,Value*argv){ return html_class(S,argc,argv,"addClass","html.addClass"); }
+static Value html_remove_class(State*S,int argc,Value*argv){ return html_class(S,argc,argv,"removeClass","html.removeClass"); }
 
 static Table* package_loaded(State*S){
   Value pkg=tget(S->globals->vars,VSTR(newStr(S,"package",7)));
@@ -2267,7 +2331,10 @@ static Value st_require(State*S,int argc,Value*argv){
   const char* name=argv[0].u.s->p;
   size_t nlen=argv[0].u.s->len;
   if(nlen==2 && memcmp(name,"ui",2)==0){
-    S->nret=1; S->retbuf[0]=tget(S->globals->vars,VSTR(mmStr(S,&S->k_uilib,"ui"))); return S->retbuf[0];
+    lx_rt_error(S,"module 'ui' has been removed; write index.html and use require('html')");
+  }
+  if(nlen==4 && memcmp(name,"html",4)==0){
+    S->nret=1; S->retbuf[0]=tget(S->globals->vars,VSTR(newStr(S,"html",4))); return S->retbuf[0];
   }
   Table*loaded=package_loaded(S);
   Value key=VSTR(newStr(S,name,nlen));
@@ -2314,74 +2381,6 @@ static Value st_require(State*S,int argc,Value*argv){
   tset(S,loaded,key,mod);
   S->nret=1; S->retbuf[0]=mod; return mod;
 }
-
-/* ---------- ui tree → json ---------- */
-static void jappend(State*S,const char*s,size_t n){ buf_append(&S->json,&S->jsonsz,&S->jsonused,s,n); }
-static void jstr(State*S,const char*p,size_t n){
-  jappend(S,"\"",1);
-  for(size_t i=0;i<n;i++){ unsigned char c=(unsigned char)p[i]; char e[8];
-    switch(c){ case '"': jappend(S,"\\\"",2);break; case '\\': jappend(S,"\\\\",2);break;
-      case '\n': jappend(S,"\\n",2);break; case '\t': jappend(S,"\\t",2);break; case '\r': jappend(S,"\\r",2);break;
-      default: if(c<0x20){ int m=snprintf(e,sizeof(e),"\\u%04x",c); jappend(S,e,m);} else jappend(S,(char*)&c,1); } }
-  jappend(S,"\"",1);
-}
-static void jnode(State*S,Table*t,int depth);
-#define LX_MAX_JSON_DEPTH 128
-static void jvalue(State*S,Value v,int depth){
-  if(depth>LX_MAX_JSON_DEPTH) lx_rt_error(S,"ui tree too deep (possible cycle)");
-  char buf[64];
-  switch(v.tag){
-    case T_NIL: jappend(S,"null",4); break;
-    case T_BOOL: if(v.u.b)jappend(S,"true",4); else jappend(S,"false",5); break;
-    case T_NUM:{ int n=snprintf(buf,sizeof(buf),"%.14g",v.u.num); jappend(S,buf,n); } break;
-    case T_STR:{ Str*s=v.u.s; sflat(s); jstr(S,s->p,s->len); } break;
-    case T_FN: case T_CFN:{ /* register handler, emit reference */
-      int id=S->nhandlers<LX_MAX_HANDLERS ? S->nhandlers++ : -1; if(id>=0)S->handlers[id]=v;
-      int n=snprintf(buf,sizeof(buf),"{\"__handler\":%d}",id); jappend(S,buf,n); } break;
-    case T_TAB:{
-      Str*ut=NULL; Value uv=tget(v.u.t,VSTR(mmStr(S,&S->k_ui,"__ui"))); if(uv.tag==T_STR)ut=uv.u.s;
-      if(ut){ jnode(S,v.u.t,depth+1); }
-      else { /* plain table → json array of its sequence part */
-        int len=tlen(v.u.t); jappend(S,"[",1);
-        for(int i=1;i<=len;i++){ if(i>1)jappend(S,",",1); jvalue(S,tget(v.u.t,VNUM(i)),depth+1); }
-        jappend(S,"]",1);
-      }
-    } break;
-  }
-}
-static void jnode(State*S,Table*t,int depth){
-  if(depth>LX_MAX_JSON_DEPTH) lx_rt_error(S,"ui tree too deep (possible cycle)");
-  Value uv=tget(t,VSTR(mmStr(S,&S->k_ui,"__ui")));
-  jappend(S,"{\"type\":",8);
-  if(uv.tag==T_STR){ sflat(uv.u.s); jstr(S,uv.u.s->p,uv.u.s->len); } else jappend(S,"\"unknown\"",9);
-  /* props: string keys except __ui and except node-valued (those go to children implicitly? keep as props if named) */
-  jappend(S,",\"props\":{",10);
-  int first=1;
-  for(int i=0;i<t->cap;i++){ if(!t->e[i].used)continue; Value k=t->e[i].k;
-    if(k.tag!=T_STR)continue; sflat(k.u.s); if(k.u.s->len==4 && memcmp(k.u.s->p,"__ui",4)==0)continue;
-    if(!first)jappend(S,",",1); first=0;
-    jstr(S,k.u.s->p,k.u.s->len); jappend(S,":",1); jvalue(S,t->e[i].v,depth+1);
-  }
-  jappend(S,"}",1);
-  /* children: sequence part entries that are ui nodes; a bare string in a
-   * child position is sugar for a text node (parity with JS/Py engines) */
-  jappend(S,",\"children\":[",13);
-  int len=tlen(t); int cfirst=1;
-  for(int i=1;i<=len;i++){ Value c=tget(t,VNUM(i));
-    if(c.tag==T_STR){
-      if(!cfirst)jappend(S,",",1); cfirst=0;
-      jappend(S,"{\"type\":\"text\",\"props\":{\"text\":",(int)sizeof("{\"type\":\"text\",\"props\":{\"text\":")-1);
-      sflat(c.u.s); jstr(S,c.u.s->p,c.u.s->len);
-      jappend(S,"},\"children\":[]}",(int)sizeof("},\"children\":[]}")-1);
-      continue;
-    }
-    if(c.tag!=T_TAB)continue;
-    Value cu=tget(c.u.t,VSTR(mmStr(S,&S->k_ui,"__ui"))); if(cu.tag!=T_STR)continue;
-    if(!cfirst)jappend(S,",",1); cfirst=0; jnode(S,c.u.t,depth+1);
-  }
-  jappend(S,"]}",2);
-}
-
 
 /* ---- cancel / stdin / io (no-root program mode) ---- */
 static void io_init(State*S){
@@ -2500,20 +2499,18 @@ static void openLibs(State*S){
   regFn(S,mt,"max",ma_max); regFn(S,mt,"min",ma_min); regFn(S,mt,"random",ma_random); regFn(S,mt,"randomseed",ma_randomseed);
   regFn(S,tb,"sort",st_tsort);
   regFn(S,g,"require",st_require); package_loaded(S);
-  Table*ui=newTable(S); tset(S,g,VSTR(newStr(S,"ui",2)),VTAB(ui));
-  regFn(S,ui,"app",ui_app); regFn(S,ui,"column",ui_column); regFn(S,ui,"row",ui_row);
-  regFn(S,ui,"text",ui_text); regFn(S,ui,"button",ui_button); regFn(S,ui,"card",ui_card);
-  regFn(S,ui,"input",ui_input); regFn(S,ui,"image",ui_image); regFn(S,ui,"spacer",ui_spacer);
-  regFn(S,ui,"divider",ui_divider); regFn(S,ui,"scrollview",ui_scrollview);
-  regFn(S,ui,"list",ui_list); regFn(S,ui,"listitem",ui_listitem);
-  regFn(S,ui,"stack",ui_stack); regFn(S,ui,"page",ui_page); regFn(S,ui,"switch",ui_switch);
-  regFn(S,ui,"box",ui_box); regFn(S,ui,"slider",ui_slider); regFn(S,ui,"progress",ui_progress);
+  Table*html=newTable(S); tset(S,g,VSTR(newStr(S,"html",4)),VTAB(html));
+  regFn(S,html,"on",html_on);
+  regFn(S,html,"setText",html_set_text); regFn(S,html,"setHtml",html_set_html);
+  regFn(S,html,"setAttr",html_set_attr); regFn(S,html,"setValue",html_set_value);
+  regFn(S,html,"addClass",html_add_class); regFn(S,html,"removeClass",html_remove_class);
+  S->html_on=newTable(S);
   lx_dostring(S,STRING_PRELUDE,NULL,0); /* string.gmatch (defined in Lua over C find) */
 }
 
 /* ---------- API ---------- */
 State* lx_new(void){ State*S=calloc(1,sizeof(State)); S->globals=xalloc(S,sizeof(Env)); S->globals->vars=newTable(S); S->globals->parent=NULL; S->step_limit=0; S->no_bc=getenv("LUAX_NO_BC")!=NULL; pthread_mutex_init(&S->dbg_mu,NULL); pthread_cond_init(&S->dbg_cv,NULL); S->dbg_inited=1; io_init(S); openLibs(S); return S; }
-void lx_close(State*S){ if(!S)return; S->cancel_flag=1; if(getenv("LUAX_BC_STATS"))fprintf(stderr,"bc: %ld compiled calls, %ld fallbacks\n",S->bc_calls,S->bc_fallbacks); if(S->dbg_inited){ pthread_mutex_lock(&S->dbg_mu); S->dbg_cmd=3; S->dbg_paused=0; pthread_cond_broadcast(&S->dbg_cv); pthread_mutex_unlock(&S->dbg_mu); pthread_mutex_destroy(&S->dbg_mu); pthread_cond_destroy(&S->dbg_cv); } if(S->io_inited){ pthread_mutex_lock(&S->io_mu); pthread_cond_broadcast(&S->io_cv); pthread_mutex_unlock(&S->io_mu); pthread_mutex_destroy(&S->io_mu); pthread_cond_destroy(&S->io_cv); } for(int i=0;i<S->npages;i++)free(S->pages[i].p); free(S->pages); free(S->vstack); free(S->out); free(S->json); free(S->dbg_locals); free(S->dbg_stack); free(S->dbg_eval_buf); free(S->stdin_q); free(S); }
+void lx_close(State*S){ if(!S)return; S->cancel_flag=1; if(getenv("LUAX_BC_STATS"))fprintf(stderr,"bc: %ld compiled calls, %ld fallbacks\n",S->bc_calls,S->bc_fallbacks); if(S->dbg_inited){ pthread_mutex_lock(&S->dbg_mu); S->dbg_cmd=3; S->dbg_paused=0; pthread_cond_broadcast(&S->dbg_cv); pthread_mutex_unlock(&S->dbg_mu); pthread_mutex_destroy(&S->dbg_mu); pthread_cond_destroy(&S->dbg_cv); } if(S->io_inited){ pthread_mutex_lock(&S->io_mu); pthread_cond_broadcast(&S->io_cv); pthread_mutex_unlock(&S->io_mu); pthread_mutex_destroy(&S->io_mu); pthread_cond_destroy(&S->io_cv); } for(int i=0;i<S->npages;i++)free(S->pages[i].p); free(S->pages); free(S->vstack); free(S->out); free(S->json); free(S->hview); free(S->dbg_locals); free(S->dbg_stack); free(S->dbg_eval_buf); free(S->stdin_q); free(S); }
 int lx_dostring(State*S,const char*src,char*errbuf,int errlen){
   if(setjmp(S->err)){ S->call_depth=0; if(errbuf)snprintf(errbuf,errlen,"%s",S->errmsg); return 1; }
   Node*chunk=parse(S,src,strlen(src));
@@ -2527,95 +2524,87 @@ int lx_dofile(State*S,const char*path,char*errbuf,int errlen){
   int r=lx_dostring(S,buf,errbuf,errlen); free(buf); return r;
 }
 
-/* reset per-run scratch (print buffer, json buffer, handlers, step counter) */
+/* reset per-run scratch (print buffer, DOM ops, handlers, step counter) */
 static void lx_reset_run(State*S){
   S->cancel_flag=0;
   S->vtop=0;
   S->outused=0; if(S->out)S->out[0]=0;
   S->jsonused=0; if(S->json)S->json[0]=0;
+  S->hviewused=0; if(S->hview)S->hview[0]=0;
+  S->html_on=newTable(S);
   S->nhandlers=0; S->steps=0; S->has_view=false; S->app_view=VNIL;
   S->dbg_paused=0; S->dbg_cmd=0; S->pause_line=0; S->pause_reason=0; S->cur_env=NULL; S->nstack=0; S->call_depth=0;
   free(S->dbg_stack); S->dbg_stack=NULL;
   free(S->dbg_eval_buf); S->dbg_eval_buf=NULL;
 }
-/* serialize the current app_view (calling it if it's a function) into S->json */
-static void lx_build_tree(State*S){
-  S->jsonused=0; if(S->json)S->json[0]=0; S->nhandlers=0;
-  Value v=S->app_view;
-  if(v.tag==T_FN||v.tag==T_CFN){ v=callValue(S,v,0,NULL); }
-  if(v.tag==T_TAB){ Value uv=tget(v.u.t,VSTR(mmStr(S,&S->k_ui,"__ui")));
-    if(uv.tag==T_STR){ jnode(S,v.u.t,0); return; } }
-  jappend(S,"null",4);
-}
+
 
 void lx_set_step_limit(State*S,long n){ if(S)S->step_limit=n; }
 
-/* run source; capture return value as app_view; serialize UI tree to json.
- * returns 0 on success. out_json/out_print point into engine-owned buffers. */
+/* Run source. DOM ops queued by the script stay pending for the host.
+ * A failing run drops that batch. Returns 0 on success. */
 int lx_run(State*S,const char*src,char*errbuf,int errlen){
   lx_reset_run(S);
-  if(setjmp(S->err)){ S->call_depth=0; if(errbuf)snprintf(errbuf,errlen,"%s",S->errmsg); return 1; }
+  if(setjmp(S->err)){
+    S->call_depth=0;
+    S->jsonused=0; if(S->json)S->json[0]=0;
+    if(errbuf)snprintf(errbuf,errlen,"%s",S->errmsg);
+    return 1;
+  }
   Node*chunk=parse(S,src,strlen(src));
   Env*env=newEnv(S,S->globals);
   dbg_push_frame(S,"main",1,1);
   S->cur_env=env;
-  struct Flow fl=execChunk(S,env,chunk);
+  execChunk(S,env,chunk);
   dbg_pop_frame(S);
-  if(fl.kind==1 && fl.nret>0){ S->app_view=fl.rets[0]; S->has_view=true; }
-  lx_build_tree(S);
   return 0;
 }
 
-/* invoke a previously-registered handler by id. Re-render contract:
- *  - arg (when non-NULL) is passed to the handler as its first argument
- *    (event payload, e.g. input text or "true"/"false" for a switch);
- *  - if the handler RETURNS a ui tree (table tagged __ui, or a function
- *    returning one), that value becomes the new app_view — the declarative
- *    equivalent of returning a fresh screen from an event handler;
- *  - otherwise the previous app_view is re-serialized (calling it first when
- *    it is a view function), so mutating state a view-function reads still
- *    re-renders. */
+/* Numeric invoke is the old UI-tree path. LuaX events are lx_html_event. */
 int lx_invoke(State*S,int handler_id,const char*arg,char*errbuf,int errlen){
-  if(handler_id<0||handler_id>=S->nhandlers){ if(errbuf)snprintf(errbuf,errlen,"invalid handler id %d",handler_id); return 1; }
-  Value h=S->handlers[handler_id];
-  S->outused=0; if(S->out)S->out[0]=0; S->steps=0;
-  /* ABI §4.4: an invoke error preserves the current tree — including a view
-   * function throwing during re-serialization. Detach the live json buffer
-   * and snapshot the handler table (ids are positional, so the old tree's
-   * __handler references must keep resolving) so both restore for free. */
-  char* sj=S->json; size_t ssz=S->jsonsz,su=S->jsonused; int snh=S->nhandlers;
-  Value sav=S->app_view; /* rollback too — a poisonous tree must not stick */
-  Value* hs=malloc(sizeof(Value)*(size_t)snh);
-  if(hs) memcpy(hs,S->handlers,sizeof(Value)*(size_t)snh);
-  S->json=NULL; S->jsonsz=0; S->jsonused=0; /* detached BEFORE any throw —
-      the error path frees only the scratch buffer, never the live tree */
+  (void)S; (void)handler_id; (void)arg;
+  if(errbuf) snprintf(errbuf,errlen,"LuaX UI is HTML; dispatch events with lx_html_event");
+  return 1;
+}
+
+static const char* html_ops_view(State*S){
+  if(!S || S->jsonused==0) return "[]";
+  S->hviewused=0;
+  buf_append(&S->hview,&S->hviewsz,&S->hviewused,"[",1);
+  buf_append(&S->hview,&S->hviewsz,&S->hviewused,S->json,S->jsonused);
+  buf_append(&S->hview,&S->hviewsz,&S->hviewused,"]",1);
+  return S->hview;
+}
+
+int lx_html_event(State*S,const char*id,const char*event,const char*payload,char*errbuf,int errlen){
+  if(!S){ if(errbuf)snprintf(errbuf,errlen,"nil state"); return 1; }
+  if(!id) id="";
+  if(!event) event="";
+  Value h=VNIL;
+  if(S->html_on) h=tget(S->html_on,html_key(S,id,strlen(id),event,strlen(event)));
+  if(h.tag==T_NIL) return 0;
+  size_t mark=S->jsonused;
+  S->outused=0; if(S->out)S->out[0]=0;
+  S->steps=0;
   if(setjmp(S->err)){
-    S->call_depth=0; S->app_view=sav;
-    free(S->json); S->json=sj; S->jsonsz=ssz; S->jsonused=su;
-    if(hs){ memcpy(S->handlers,hs,sizeof(Value)*(size_t)snh); free(hs); }
-    S->nhandlers=snh;
-    if(errbuf)snprintf(errbuf,errlen,"%s",S->errmsg); return 1;
+    S->call_depth=0;
+    S->jsonused=mark;
+    if(S->json) S->json[mark]=0;
+    if(errbuf)snprintf(errbuf,errlen,"%s",S->errmsg);
+    return 1;
   }
-  Value argv[1]; int argc=0;
-  if(arg){ argv[0]=VSTR(newStr(S,arg,strlen(arg))); argc=1; }
-  Value pre=S->app_view; long w0=S->twrites;
-  Value r=callValue(S,h,argc,argv);
-  if(r.tag==T_TAB){
-    Value uv=tget(r.u.t,VSTR(mmStr(S,&S->k_ui,"__ui")));
-    if(uv.tag==T_STR) S->app_view=r;
-  }
-  /* Zero table writes + same static view table ⇒ the serialized tree is
-   * byte-identical (and its __handler ids still resolve against the kept
-   * handler table) — reattach the detached buffer and skip the jnode walk.
-   * Function views always re-run. */
-  if(S->app_view.tag==T_TAB && pre.tag==T_TAB && S->app_view.u.t==pre.u.t && S->twrites==w0){
-    free(S->json); S->json=sj; S->jsonsz=ssz; S->jsonused=su;
-  } else { lx_build_tree(S); free(sj); }
-  free(hs);
+  Value arg=VSTR(newStr(S,payload?payload:"",payload?strlen(payload):0));
+  callValue(S,h,1,&arg);
   return 0;
 }
 
-const char* lx_last_json(lx_State*S){ return S->json?S->json:"null"; }
+void lx_html_clear_ops(lx_State*S){
+  if(!S) return;
+  S->jsonused=0; if(S->json)S->json[0]=0;
+  S->hviewused=0; if(S->hview)S->hview[0]=0;
+}
+
+const char* lx_last_json(lx_State*S){ return html_ops_view(S); }
 const char* lx_last_output(lx_State*S){ return S->out?S->out:""; }
 void lx_clear_output(lx_State*S){ if(!S)return; S->outused=0; if(S->out)S->out[0]=0; }
 /* Interactive program line: keep globals, capture print for this line only. */

@@ -10,6 +10,9 @@ object LuaxNative {
     external fun nativeSetStepLimit(handle: Long, steps: Long)
     external fun nativeRun(handle: Long, src: String): Array<String>
     external fun nativeInvoke(handle: Long, handlerId: Int, payload: String?): Array<String>
+    external fun nativeHtmlEvent(handle: Long, id: String, event: String, payload: String?): Array<String>
+    /** Pending HTML DOM ops as a JSON array. Clears the engine batch. */
+    external fun nativeTakeHtmlOps(handle: Long): String
     external fun nativeTakeOutput(handle: Long): String
     external fun nativeClearOutput(handle: Long)
     external fun nativeRepl(handle: Long, src: String): Array<String>

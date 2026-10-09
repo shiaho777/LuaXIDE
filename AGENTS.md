@@ -7,7 +7,7 @@ Android IDE for Lua: edit, run, debug, and package Lua projects into installable
 - `engine/` — single-file C Lua interpreter (`lx.c`) + desktop CLI (`lx_main.c`); tests `t1`–`t27` in `engine/tests/`, driven by `engine/Makefile`
 - `engine-js/` — QuickJS-based JavaScript engine facade (`qjs_x.c` mirrors the `lx.h` host contract); tests `j1`–`j6` in `engine-js/tests/`; vendored upstream QuickJS in `engine-js/quickjs/`
 - `engine-py/` — MicroPython engine facade (`mpy_x.c`, same host contract, wired into :app and :runtime via `mpy_jni.c`/`PyEngineHost`); tests `p1`–`p5`; `micropython_embed/` is the generated embed-port package (v1.25.0)
-- `docs/PLATFORM_ABI.md` — the language-neutral host contract both engines implement; `engine/tests/t26_invoke_tree.c` and `engine-js/tests/j6_conformance.c` assert the SAME contract on both sides
+- `docs/PLATFORM_ABI.md` — host contract. JavaScript (`j6`) and Python share the JSON UI tree. LuaX HTML is LUAX.md §4–§5 and `engine/tests/t26_invoke_tree.c`. `t26` and `j6` are not the same suite.
 - `app/` — the IDE (Kotlin, Jetpack Compose, package `dev.luaxide`); JNI bridge in `app/src/main/cpp/` builds `libluax.so` from `engine/lx.c`
 - `runtime/` — minimal template app carrying BOTH engines (libluax + libluaxjs); its release APK becomes `app/src/main/assets/runtime/template.apk` via the `syncRuntimeTemplate` Gradle task (run it after touching runtime code)
 - `docs/` — design notes: modules/UI, program mode, proot/stdin
@@ -24,7 +24,7 @@ make -C engine-py test                               # must print ALL PY ENGINE 
 
 Engine changes must keep `make -C engine test` green; JS engine changes must keep `make -C engine-js test` green; Kotlin changes must compile in both modules. Add a `t*`/`j*` test when adding engine capability.
 8. **docs/LUAX.md is the language's authoritative spec** — any change to `engine/lx.c`, component render behavior, or the event/re-render contract must update LUAX.md in the same change; LUAX.md code blocks are executed by CI (`engine/tests/doc_check.py`). Engine-internal docs live in ENGINE.md (see its §4 extension checklists).
-9. **docs/PLATFORM_ABI.md is the cross-engine contract** — contract-level changes must update it AND extend the conformance assertions on BOTH engines (t26 for Lua, j6 for JS) in the same change. One-sided contract changes are forbidden.
+9. **docs/PLATFORM_ABI.md is the cross-engine contract** — a JSON-tree change updates it and the JS conformance test (`j6`) in the same change. A LuaX HTML host change updates LUAX.md and `t26` in the same change. `t26` and `j6` no longer assert the same tree.
 
 ## Delivery loop (hard rules)
 
@@ -41,4 +41,4 @@ Engine changes must keep `make -C engine test` green; JS engine changes must kee
 - **No-root policy**: never introduce `su` / Magisk / device-root dependencies. Execution stays sandboxed under app private storage; proot is unprivileged userland only.
 - `engine/lx.c` is the single engine source for the CLI, `:app`, and `:runtime` (each Android module carries an identical `luax_jni.c`) — keep both copies in sync when touching the JNI layer.
 - `:app` and `:runtime` each have an `EngineHost`: the app variant carries the debug API (`lx_debug_*`), the runtime variant does not — do not copy debug calls across modules.
-- "Execution is truth": UI rendering follows the engine's JSON tree (`UiNode`), never a parallel schema.
+- "Execution is truth": JavaScript and Python UI follows the engine's JSON tree (`UiNode`). LuaX UI is the project's HTML/CSS; the engine emits DOM operations (`html.*`), not a second schema.

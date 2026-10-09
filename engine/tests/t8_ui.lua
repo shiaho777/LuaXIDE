@@ -1,20 +1,11 @@
--- declarative UI tree: returned value is serialized to JSON
-local ui = require("ui")
-
+-- HTML host: register a click and queue the opening text.
+local html = require("html")
 local count = 0
 
-return ui.app {
-  title = "My app",
-  ui.column {
-    ui.text { text = "Hello, LuaX!", size = 20 },
-    ui.button {
-      text = "count",
-      onClick = function() count = count + 1 end,
-    },
-    ui.row {
-      ui.text { text = "left" },
-      ui.divider {},
-      ui.text { text = "right" },
-    },
-  },
-}
+html.on("plus", "click", function()
+  count = count + 1
+  html.setText("count", "taps: " .. count)
+end)
+html.setText("count", "taps: " .. count)
+html.addClass("plus", "primary")
+print("t8-ok")

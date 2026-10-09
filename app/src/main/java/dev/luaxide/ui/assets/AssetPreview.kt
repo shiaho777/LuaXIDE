@@ -75,7 +75,7 @@ fun AssetPreview(
                             .clip(RoundedCornerShape(12.dp)),
                     )
                     isFont -> Text(
-                        "字体文件\n可在 ui.text { font = \"$path\" } 使用",
+                        "字体文件\nLua 用 CSS @font-face 指向 $path\nJavaScript / Python：ui.text { font = \"$path\" }",
                         color = cs.onSurfaceVariant,
                         style = MaterialTheme.typography.bodyMedium,
                     )
@@ -93,9 +93,9 @@ fun AssetPreview(
         ) {
             Text(
                 if (isImage) {
-                    "示例：ui.image { src = \"$path\", size = 120 }"
+                    "Lua：<img src=\"$path\">\nJavaScript / Python：ui.image { src = \"$path\", size = 120 }"
                 } else if (isFont) {
-                    "示例：ui.text { text = \"Hi\", font = \"$path\", size = 20 }"
+                    "Lua：CSS @font-face，src 指向 $path\nJavaScript / Python：ui.text { text = \"Hi\", font = \"$path\", size = 20 }"
                 } else {
                     "资源路径相对 src/，打包后位于 assets/lua/"
                 },

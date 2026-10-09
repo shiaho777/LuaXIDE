@@ -23,6 +23,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -33,6 +34,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.luaxide.html.HtmlPage
+import dev.luaxide.html.HtmlScreen
 import dev.luaxide.engine.EngineAdapter
 import dev.luaxide.engine.EngineHost
 import dev.luaxide.engine.JsEngineHost
@@ -87,7 +90,7 @@ private fun loadBundle(activity: ComponentActivity): AppBundle {
         runCatching {
             File(modRoot, "main.lua").takeIf { it.isFile }?.readText()
                 ?: am.open("lua/main.lua").bufferedReader().use { it.readText() }
-        }.getOrDefault("local ui=require(\"ui\")\nreturn ui.app{ui.text{text=\"missing main.lua\"}}")
+        }.getOrDefault("print(\"missing main.lua\")\n")
     }
     return AppBundle(entryFile = entry, source = source, appName = appName, modRoot = modRoot)
 }
@@ -145,11 +148,22 @@ private fun RuntimeApp(bundle: AppBundle) {
         loading = false
     }
 
+    val luaHost = engine as? EngineHost
+    val pageRoot = remember(bundle.modRoot) {
+        bundle.modRoot.takeIf { it.isNotEmpty() }?.let { File(it) }
+    }
+    val pageRel = if (luaHost != null) HtmlPage.resolve(pageRoot, bundle.entryFile) else ""
+    val hasPage = pageRoot != null && pageRel.isNotEmpty() && File(pageRoot, pageRel).isFile
+    var htmlGen by remember { mutableIntStateOf(0) }
+    LaunchedEffect(result) {
+        if (result?.htmlReload == true) htmlGen++
+    }
+    val showHtml = luaHost != null && hasPage && result?.ok == true
     val phase = when {
         loading || result == null -> "loading"
         result?.ok != true -> "error"
-        result?.tree == null -> "empty"
-        else -> "content"
+        showHtml || result?.tree != null -> "content"
+        else -> "empty"
     }
     val tree = result?.takeIf { it.ok }?.tree
     val contentAlpha by animateFloatAsState(
@@ -171,7 +185,18 @@ private fun RuntimeApp(bundle: AppBundle) {
 
     Surface(Modifier.fillMaxSize().safeDrawingPadding().imePadding(), color = cs.background) {
         Box(Modifier.fillMaxSize()) {
-            if (tree != null) {
+            if (showHtml) {
+                HtmlScreen(
+                    root = pageRoot,
+                    pageRel = pageRel,
+                    generation = htmlGen,
+                    ops = result?.htmlOps ?: "[]",
+                    onEvent = { id, event, payload ->
+                        val host = luaHost ?: return@HtmlScreen
+                        scope.launch { result = host.htmlEvent(id, event, payload) }
+                    },
+                )
+            } else if (tree != null) {
                 val rootKey = nodeIdentity(tree, "root")
                 androidx.compose.runtime.key(rootKey) {
                 Column(

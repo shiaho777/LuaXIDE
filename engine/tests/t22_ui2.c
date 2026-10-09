@@ -1,4 +1,4 @@
-/* t22_ui2.c — UI serialization edge cases + lx_invoke + app_view as a function. */
+/* t22_ui2.c — HTML op buffer: escapes, bad calls, empty batch, clear. */
 #include "../lx.h"
 #include <stdio.h>
 #include <string.h>
@@ -11,112 +11,46 @@ int main(void){
   char err[512]; int rc;
   const char* j;
 
-  /* non-UI return serializes to "null" */
   lx_State* g = lx_new();
   memset(err,0,sizeof(err));
   rc = lx_run(g, "local a=1\nreturn a+1\n", err, sizeof(err));
-  CHK(rc==0, "non-ui run");
-  CHK(strcmp(lx_last_json(g),"null")==0, "non-ui json null");
+  CHK(rc==0, "non-html run");
+  CHK(strcmp(lx_last_json(g),"[]")==0, "no ops is empty array");
   lx_close(g);
 
-  /* app_view is a function: lx_build_tree calls it and serializes its result */
-  g = lx_new();
-  memset(err,0,sizeof(err));
-  rc = lx_run(g, "return function() return require('ui').app{title='F'} end\n", err, sizeof(err));
-  j = lx_last_json(g);
-  CHK(rc==0 && has(j,"\"type\":\"app\""), "app_view function");
-  CHK(has(j,"\"title\":\"F\""), "app_view function title");
-  lx_close(g);
-
-  /* JSON string escapes in a UI tree (\n \t \r \" \\ and a control char) */
   g = lx_new();
   memset(err,0,sizeof(err));
   rc = lx_run(g,
-    "local ui=require('ui')\n"
-    "return ui.app{ title=\"a\\nb\\tc\\rd\\\"e\\\\f\\x01g\" }\n",
+    "local html=require('html')\n"
+    "html.setText('t', \"a\\nb\\tc\\rd\\\"e\\\\f\\x01g\")\n",
     err, sizeof(err));
   j = lx_last_json(g);
   CHK(rc==0, "escape run");
   CHK(has(j,"\\n")&&has(j,"\\t")&&has(j,"\\r")&&has(j,"\\\"")&&has(j,"\\\\")&&has(j,"\\u0001"), "json escapes");
+  CHK(has(j,"\"op\":\"setText\"") && has(j,"\"id\":\"t\""), "setText shape");
+  lx_html_clear_ops(g);
+  CHK(strcmp(lx_last_json(g),"[]")==0, "clear drops the batch");
   lx_close(g);
 
-  /* false/nil/number props + plain-array prop + ui-node prop */
   g = lx_new();
-  memset(err,0,sizeof(err));
-  rc = lx_run(g,
-    "local ui=require('ui')\n"
-    "return ui.app{\n"
-    "  flag = false,\n"
-    "  miss = nil,\n"
-    "  n = 7,\n"
-    "  items = {1, 'two', false},\n"
-    "  ui.text{text='child'},\n"
-    "}\n",
-    err, sizeof(err));
+  rc = lx_run(g, "require('html').setText('a','1')\nrequire('html').setHtml('a','<i>2</i>')\n", err, sizeof(err));
   j = lx_last_json(g);
-  CHK(rc==0, "props run");
-  CHK(has(j,"\"flag\":false"), "false prop");
-  CHK(has(j,"\"miss\":null"), "nil prop");
-  CHK(has(j,"\"items\":[1,\"two\",false]"), "plain array prop");
+  CHK(rc==0 && has(j,"\"op\":\"setText\"") && has(j,"\"op\":\"setHtml\""), "two ops one batch");
+  CHK(j[0]=='[' && j[strlen(j)-1]==']', "batch is a JSON array");
   lx_close(g);
 
-  /* string child sugar: bare string in child position serializes as a text
-   * node; ui.text("hi") shorthand ≡ ui.text{text="hi"}; non-text constructor
-   * keeps its contract (string arg is not a props table) */
   g = lx_new();
-  memset(err,0,sizeof(err));
-  rc = lx_run(g,
-    "local ui=require('ui')\n"
-    "return ui.app{\n"
-    "  ui.column{ 'hello', ui.text('hi') },\n"
-    "  ui.button('no sugar'),\n"
-    "  ui.box{ ui.slider{min=0,max=100}, ui.progress{value=50} },\n"
-    "}\n",
-    err, sizeof(err));
-  j = lx_last_json(g);
-  CHK(rc==0, "string sugar run");
-  CHK(has(j,"{\"type\":\"text\",\"props\":{\"text\":\"hello\"},\"children\":[]}"), "string child wrapped as text node");
-  CHK(has(j,"{\"type\":\"text\",\"props\":{\"text\":\"hi\"},\"children\":[]}"), "ui.text string shorthand");
-  CHK(has(j,"\"type\":\"button\",\"props\":{}"), "ui.button string arg is not a props object");
-  CHK(has(j,"\"type\":\"box\"")&&has(j,"\"type\":\"slider\"")&&has(j,"\"type\":\"progress\""), "box/slider/progress serialize");
+  rc = lx_run(g, "require('html').setText()\n", err, sizeof(err));
+  CHK(rc==1 && has(err,"bad argument"), "setText arity");
+  CHK(strcmp(lx_last_json(g),"[]")==0, "failed run drops ops");
   lx_close(g);
 
-  /* lx_invoke: a registered handler rebuilds the tree */
   g = lx_new();
-  memset(err,0,sizeof(err));
-  rc = lx_run(g,
-    "local ui=require('ui')\n"
-    "local count=0\n"
-    "return ui.app{ title='A', ui.button{ text='b', onClick=function() count=count+1 end } }\n",
-    err, sizeof(err));
-  CHK(rc==0, "invoke setup");
-  j = lx_last_json(g);
-  CHK(has(j,"\"__handler\":0"), "handler registered");
-  /* invalid handler id */
-  memset(err,0,sizeof(err));
-  rc = lx_invoke(g, 99, NULL, err, sizeof(err));
-  CHK(rc==1 && has(err,"invalid handler id"), "invoke invalid id");
-  /* valid handler: increments count and rebuilds tree */
-  memset(err,0,sizeof(err));
   rc = lx_invoke(g, 0, NULL, err, sizeof(err));
-  CHK(rc==0, "invoke valid rc");
-  CHK(has(lx_last_json(g),"\"__handler\":0"), "invoke rebuilds tree");
+  CHK(rc==1 && has(err,"lx_html_event"), "numeric invoke is retired");
   lx_close(g);
 
-  /* lx_invoke with a handler that errors reports the error */
-  g = lx_new();
-  memset(err,0,sizeof(err));
-  rc = lx_run(g,
-    "local ui=require('ui')\n"
-    "return ui.app{ ui.button{ text='x', onClick=function() error('boom') end } }\n",
-    err, sizeof(err));
-  CHK(rc==0, "invoke-err setup");
-  memset(err,0,sizeof(err));
-  rc = lx_invoke(g, 0, NULL, err, sizeof(err));
-  CHK(rc==1 && has(err,"boom"), "invoke handler error");
-  lx_close(g);
-
-  if(fails){ fprintf(stderr, "t22: %d failure(s)\n", fails); return 1; }
-  printf("t22 ok\n");
+  if(fails){ fprintf(stderr,"t22: %d failure(s)\n", fails); return 1; }
+  printf("t22-ui2 ok\n");
   return 0;
 }

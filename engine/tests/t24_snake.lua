@@ -1,16 +1,11 @@
 -- t24_snake.lua — Snake, pure Lua, for the LuaXIDE engine.
 --
--- Demonstrates what the "execution is truth" loop can do with zero C changes:
---   * the engine has no math.random  -> a tiny LCG PRNG written in Lua
---   * the engine has no timer        -> the App drives ticks via an onTick
---     handler (a function prop serialized as {"__handler":N}); the App scans
---     the returned tree, finds onTick + interval, and invokes it on a timer.
---   * no canvas                      -> the board is a grid of ui.text cells
---     (TextComponent gained a `color` prop so snake/food/empty are distinct).
+-- The board is an HTML element. The host calls html.on("tick", "click")
+-- on a timer; each tick rewrites #board and #status.
 --
 -- Board cells:  ◉ head   ● body   ★ food   · empty
 local W, H = 12, 12
-local ui = require("ui")
+local html = require("html")
 
 -- ---- minimal PRNG (MINSTD; 48271 * 2^31-1 < 2^53 so doubles stay exact) ----
 local seed = (os.clock() * 1000000) % 2147483647
@@ -85,58 +80,39 @@ local function turn(dx, dy)
 end
 
 local function cell(x, y)
-  if food and x == food.x and y == food.y then return "★", "#EF5350" end
+  if food and x == food.x and y == food.y then return "★" end
   for i = 1, #snake do
     local s = snake[i]
     if s.x == x and s.y == y then
-      if i == 1 then return "◉", "#66BB6A" end
-      return "●", "#26A69A"
+      if i == 1 then return "◉" end
+      return "●"
     end
   end
-  return "·", "#78909C"
+  return "·"
 end
 
-local function view()
+local function render()
   local rows = {}
   for y = 1, H do
-    local cells = {}
-    for x = 1, W do
-      local ch, col = cell(x, y)
-      table.insert(cells, ui.text { text = ch, size = 13, color = col, animate = false })
-    end
-    local row = ui.row { spacing = 0 }
-    for i = 1, #cells do rawset(row, i, cells[i]) end
-    table.insert(rows, row)
+    local line = {}
+    for x = 1, W do line[x] = cell(x, y) end
+    rows[y] = table.concat(line)
   end
-  local board = ui.column { spacing = 0 }
-  for i = 1, #rows do rawset(board, i, rows[i]) end
-
   local status = "Score " .. score
   if over then status = status .. "   ·   GAME OVER" end
   if paused then status = status .. "   ·   paused" end
-
-  return ui.app {
-    title = "Snake — LuaXIDE",
-    ui.text { text = status, size = 15, animate = false },
-    board,
-    ui.row { spacing = 8,
-      ui.button { text = "◀", onClick = function() turn(-1, 0) end },
-      ui.button { text = "▲", onClick = function() turn(0, -1) end },
-      ui.button { text = "▼", onClick = function() turn(0, 1) end },
-      ui.button { text = "▶", onClick = function() turn(1, 0) end },
-    },
-    ui.row { spacing = 8,
-      ui.button { text = paused and "▶ Play" or "⏸ Pause", onClick = function() paused = not paused end },
-      ui.button { text = "↻ Restart", onClick = function() reset() end },
-      ui.button { text = "＋", onClick = function() if speed > 80 then speed = speed - 40 end end },
-      ui.button { text = "－", onClick = function() speed = speed + 40 end },
-    },
-    ui.text { text = "tick " .. speed .. "ms · 纯 Lua · 无引擎改动", size = 11, animate = false },
-    -- App contract: scan the tree for onTick + interval, invoke onTick on a timer
-    onTick = function() step() end,
-    interval = speed,
-  }
+  html.setText("status", status)
+  html.setText("board", table.concat(rows, "\n"))
 end
 
+html.on("tick", "click", function()
+  step()
+  render()
+end)
+html.on("left", "click", function() turn(-1, 0) render() end)
+html.on("up", "click", function() turn(0, -1) render() end)
+html.on("down", "click", function() turn(0, 1) render() end)
+html.on("right", "click", function() turn(1, 0) render() end)
+
 reset()
-return view
+render()

@@ -1,6 +1,6 @@
 # LuaX
 
-A Lua dialect built for **writing apps on your phone** — declarative UI, event-driven re-render, a single-file C engine — plus an Android IDE (LuaXIDE) that packages it into a standalone APK.
+A Lua dialect built for **writing apps on your phone** — HTML and CSS for the page, Lua for the behavior, a single-file C engine — plus an Android IDE (LuaXIDE) that packages it into a standalone APK.
 
 [简体中文](README.zh-CN.md)
 
@@ -9,36 +9,30 @@ A Lua dialect built for **writing apps on your phone** — declarative UI, event
 </p>
 
 ```lua
--- This is LuaX. A complete interactive app:
-local ui = require("ui")
+-- This is LuaX. The page is index.html; this file is the logic.
+local html = require("html")
 local count = 0
 
-local function view()
-  return ui.app {
-    title = "Counter",
-    ui.column {
-      spacing = 12,
-      ui.text { text = "taps: " .. count, size = 28 },
-      ui.button { text = "+1", onClick = function() count = count + 1 end },
-    },
-  }
-end
+html.on("plus", "click", function()
+  count = count + 1
+  html.setText("count", "taps: " .. count)
+end)
 
-return view  -- return the view function: every tap re-calls it, UI follows state
+html.setText("count", "taps: 0")
 ```
 
-- **Declarative UI**: the UI tree is an ordinary Lua table; after `return view`, event → state change → re-render is automatic
+- **HTML page**: real HTML and CSS in a WebView. Lua registers events and applies DOM operations. JavaScript and Python projects still use the JSON UI tree.
 - **Single-file engine**: `engine/lx.c` is ~2200 lines of C, tree-walking + bytecode VM hybrid (numeric loops ~11×)
 - **Modern stdlib**: `string.format` / pattern matching (`find gsub match gmatch`) / `math.*` / `table.sort`
 - **No root**: sandboxed execution; the IDE packages projects into standalone signed APKs
-- **Three-language platform**: LuaX is the reference language; the same contract is implemented by JavaScript (QuickJS) and Python (MicroPython)
+- **Three languages**: LuaX pages are HTML. JavaScript (QuickJS) and Python (MicroPython) share the JSON UI tree.
 
 ## Thirty seconds to running
 
 ```bash
 make -C engine lx          # build the desktop CLI (needs clang)
 ./engine/lx your.lua       # run
-./engine/lx --ui your.lua  # print the UI-tree JSON (desktop check of the interaction contract)
+./engine/lx --ui your.lua  # print the DOM-op JSON (desktop check; it does not draw a page)
 ```
 
 Or install LuaXIDE (Android) — a new project seeds the counter above; debugging (breakpoints / stepping / watches) and the console (REPL, `io.read` replies) live inside the IDE.
@@ -67,8 +61,8 @@ LuaX is a dialect subset of Lua 5.1: closures and metatables are in; numbers are
 
 | You want to… | Read |
 |---|---|
-| **Write LuaX programs** | [docs/LUAX.md](docs/LUAX.md) — language reference: dialect differences, per-function stdlib, runtime semantics (events/re-render/cancel), UI DSL, metatables |
-| Port / align another language engine | [docs/PLATFORM_ABI.md](docs/PLATFORM_ABI.md) — the language-neutral host contract (shared by Lua/JS/Python) and the conformance-test mapping |
+| **Write LuaX programs** | [docs/LUAX.md](docs/LUAX.md) — language reference: dialect differences, per-function stdlib, the HTML host, metatables |
+| Port / align another language engine | [docs/PLATFORM_ABI.md](docs/PLATFORM_ABI.md) — JSON UI tree for JavaScript and Python; LuaX HTML is specified in LUAX.md |
 | Maintain the LuaX engine itself | [docs/ENGINE.md](docs/ENGINE.md) + [docs/BYTECODE_VM.md](docs/BYTECODE_VM.md) — architecture, test workflow, extension checklists, VM design |
 | Understand IDE behavior | [docs/PROGRAM_MODE.md](docs/PROGRAM_MODE.md), [docs/PROOT_AND_STDIN.md](docs/PROOT_AND_STDIN.md) |
 
@@ -78,10 +72,10 @@ Every doc ships in English (default) and Chinese (`*.zh-CN.md` sibling). LUAX.md
 
 ```
 engine/       LuaX engine (lx.c) — one source for the desktop CLI and both Android modules
-engine-js/    JavaScript engine (QuickJS facade), same host contract
-engine-py/    Python engine (MicroPython facade), same host contract
+engine-js/    JavaScript engine (QuickJS facade), JSON UI tree
+engine-py/    Python engine (MicroPython facade), JSON UI tree
 app/          LuaXIDE itself (Kotlin + Compose): edit / debug / console / packaging
-runtime/      packaging template app: carries all three engines, renders script UI trees
+runtime/      packaging template: Lua pages in a WebView; JS and Python still render UI trees
 docs/         the documents listed above
 ```
 

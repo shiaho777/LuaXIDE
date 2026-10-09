@@ -25,6 +25,10 @@ data class RunResult(
     val output: String,
     val error: String?,
     val errorLine: Int? = null,
+    /** DOM operations produced by this Lua run or HTML event. `[]` when there are none. */
+    val htmlOps: String = "[]",
+    /** True after a successful Lua `run`: the WebView should reload the page, then apply [htmlOps]. */
+    val htmlReload: Boolean = false,
 )
 
 data class BreakpointSpec(
@@ -127,7 +131,7 @@ class EngineHost(
         if (debugEnabled) startDebugPoll()
         val result = withContext(dispatcher) {
             recreate()
-            execute {
+            execute(reloadHtml = true) {
                 LuaxNative.nativeClearCancel(handle)
                 LuaxNative.nativeRun(handle, src)
             }
@@ -141,6 +145,17 @@ class EngineHost(
     override suspend fun invoke(handlerId: Int, payload: String?): RunResult {
         val result = withContext(dispatcher) {
             execute { LuaxNative.nativeInvoke(handle, handlerId, payload) }
+        }
+        publish(result)
+        return result
+    }
+
+    /** Deliver a DOM event to the handler registered with `html.on`. */
+    suspend fun htmlEvent(id: String, event: String, payload: String): RunResult {
+        val result = withContext(dispatcher) {
+            execute {
+                LuaxNative.nativeHtmlEvent(handle, id, event, payload)
+            }
         }
         publish(result)
         return result
@@ -377,15 +392,22 @@ class EngineHost(
         }
     }.getOrDefault(emptyList())
 
-private inline fun execute(block: () -> Array<String>): RunResult = runCatching {
+private inline fun execute(reloadHtml: Boolean = false, block: () -> Array<String>): RunResult = runCatching {
         ensureHandle()
         val res = block()
         val status = res.getOrElse(0) { "1" }
         val err = res.getOrElse(1) { "" }
-        val treeJson = res.getOrElse(2) { "" }
         val output = LuaxNative.nativeTakeOutput(handle)
+        val ops = runCatching { LuaxNative.nativeTakeHtmlOps(handle) }.getOrDefault("[]").ifBlank { "[]" }
         if (status == "0") {
-            RunResult(ok = true, tree = UiTreeParser.parse(treeJson), output = output, error = null)
+            RunResult(
+                ok = true,
+                tree = null,
+                output = output,
+                error = null,
+                htmlOps = ops,
+                htmlReload = reloadHtml,
+            )
         } else {
             val message = err.ifEmpty { "unknown error" }
             if (message.contains("debug stopped by user")) {

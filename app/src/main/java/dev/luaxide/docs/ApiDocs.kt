@@ -13,6 +13,70 @@ data class ApiDoc(
 object ApiDocs {
     val all: List<ApiDoc> = listOf(
         ApiDoc(
+            id = "html.on",
+            category = "html",
+            name = "html.on",
+            signature = "html.on(id, event, fn)",
+            summary = "给元素 id 登记事件。同一 id+事件再登记会换掉旧函数。LuaX 专用。",
+            example = """local html = require("html")
+html.on("plus", "click", function()
+  html.setText("count", "1")
+end)""",
+            props = listOf(
+                "click" to "载荷是空字符串",
+                "input / change" to "载荷是当前值；勾选框的 change 是 \"true\" 或 \"false\"",
+                "submit" to "表单提交，宿主取消跳转，载荷是空字符串",
+            ),
+        ),
+        ApiDoc(
+            id = "html.setText",
+            category = "html",
+            name = "html.setText",
+            signature = "html.setText(id, text)",
+            summary = "设置元素的 textContent。宿主在脚本或事件函数返回后一次性应用。",
+            example = """html.setText("count", "taps: " .. count)""",
+        ),
+        ApiDoc(
+            id = "html.setHtml",
+            category = "html",
+            name = "html.setHtml",
+            signature = "html.setHtml(id, html)",
+            summary = "设置元素的 innerHTML。",
+            example = """html.setHtml("board", "<b>◉</b>")""",
+        ),
+        ApiDoc(
+            id = "html.setAttr",
+            category = "html",
+            name = "html.setAttr",
+            signature = "html.setAttr(id, name, value)",
+            summary = "setAttribute。页面和样式写在 index.html 或与脚本同名的 .html 里。",
+            example = """html.setAttr("name", "placeholder", "your name")""",
+        ),
+        ApiDoc(
+            id = "html.setValue",
+            category = "html",
+            name = "html.setValue",
+            signature = "html.setValue(id, value)",
+            summary = "设置输入框的 value。没有同步的 html.getValue，值从 input/change 事件来。",
+            example = """html.setValue("name", "")""",
+        ),
+        ApiDoc(
+            id = "html.addClass",
+            category = "html",
+            name = "html.addClass",
+            signature = "html.addClass(id, class)",
+            summary = "classList.add。",
+            example = """html.addClass("detail", "hidden")""",
+        ),
+        ApiDoc(
+            id = "html.removeClass",
+            category = "html",
+            name = "html.removeClass",
+            signature = "html.removeClass(id, class)",
+            summary = "classList.remove。",
+            example = """html.removeClass("home", "hidden")""",
+        ),
+        ApiDoc(
             id = "ui.app",
             category = "ui",
             name = "ui.app",
@@ -296,8 +360,8 @@ local n = io.read()""",
             category = "io",
             name = "require",
             signature = "require(modname)",
-            summary = "加载 src/ 下模块。点号映射为路径。",
-            example = """local ui = require("ui")
+            summary = "加载模块。LuaX 页面用 require(\"html\")；JavaScript / Python 仍用 ui 构造器。点号映射为 src/ 下路径。",
+            example = """local html = require("html")
 local util = require("lib.util")""",
         ),
         ApiDoc(
@@ -347,12 +411,17 @@ local util = require("lib.util")""",
                 "background" to "#RRGGBB / #AARRGGBB 背景色",
                 "weight / align" to "子项作用域：Row 权重/上下对齐，Column 权重/左右对齐，Box 九宫格；weight 需主轴有界",
                 "key / id" to "节点身份；stack 选页仅认 page.key",
-                "规范名" to "别名回退已移除；switch 用 checked/onToggle，不用 value/onChange。完整迁移见 LUAX §5",
+                "规范名" to "JavaScript / Python 的 Compose 树。LuaX 页面用 html.*，见 LUAX §4–§5",
             ),
         )
     }
 
     fun categories(): List<String> = all.map { it.category }.distinct()
+
+    /** Lua projects document the HTML host. JS and Python keep the Compose tree. */
+    fun visible(languageId: String): List<ApiDoc> =
+        if (languageId == "lua") all.filter { it.category != "ui" }
+        else all.filter { it.category != "html" }
 
     fun search(q: String): List<ApiDoc> {
         val s = q.trim().lowercase()

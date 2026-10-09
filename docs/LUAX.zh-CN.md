@@ -9,27 +9,21 @@
 LuaX 是 Lua 5.1 语义的**方言子集**,为「在 Android 上写并打包小 App」而生:
 
 - 单文件 C 引擎(约 2200 行),树遍历 + 字节码 VM 混合执行(函数体**与**顶层 chunk 均编译),数值循环约 11–22× 加速
-- 声明式 UI:UI 树就是普通 Lua 表;事件驱动重渲染(§4)
+- HTML 界面:页面是真正的 HTML 与 CSS,由宿主 WebView 绘制;Lua 登记事件并排队 DOM 更新(§4、§5)
 - 无 root:沙箱执行;一键打包为独立签名 APK
 - 是 LuaXIDE 三语言平台(Lua / JavaScript / Python)的**参考语言** —— 跨语言契约见 [PLATFORM_ABI.md](PLATFORM_ABI.zh-CN.md)
 
 ```lua
--- 完整的交互 App:计数器
-local ui = require("ui")
+-- A complete interactive app. The page is index.html; this file is the logic.
+local html = require("html")
 local count = 0
 
-local function view()
-  return ui.app {
-    title = "Counter",
-    ui.column {
-      spacing = 12,
-      ui.text { text = "taps: " .. count, size = 28 },
-      ui.button { text = "+1", onClick = function() count = count + 1 end },
-    },
-  }
-end
+html.on("plus", "click", function()
+  count = count + 1
+  html.setText("count", "taps: " .. count)
+end)
 
-return view   -- 返回 view 函数 = 每次点击后自动重渲染(§4)
+html.setText("count", "taps: 0")
 ```
 
 ## 2. 与 Lua 5.1 的差异
@@ -167,152 +161,99 @@ print("hi,", name)
 ### 4.1 执行防护
 
 - **步数上限**:宿主默认 50,000,000 步;超限报 `execution step limit exceeded (possible infinite loop)`
-- **协作式取消**:宿主可随时取消正在运行的脚本;报 `cancelled by user`。新一次 `run` 清除残留取消标志;`invoke` 不清除(§4.2)
+- **协作式取消**:宿主可随时取消正在运行的脚本;报 `cancelled by user`。新一次 `run` 清除残留取消标志;HTML 事件不清除(§4.2)
 - **调用深度上限**:160 层嵌套调用;超限报 `stack overflow`(`pcall` 可捕获,引擎保持可用)
 - **参数上限**:单次调用至多 64 个实参(展开多值时同样计);超限报 `too many arguments`
-- **UI 树深度上限**:序列化至多 128 层嵌套;环形表报 `ui tree too deep (possible cycle)`
 - **`__index`/`__newindex` 链上限**:1024 跳;自环报 `'__index'/'__newindex' chain too long`
 - 错误格式统一为 `line N: message`;`pcall` 可捕获
 
-### 4.2 事件与重渲染(核心契约)
+### 4.2 事件(核心契约)
 
-函数 prop 序列化为 `{"__handler": id}`;宿主以 `invoke(id, payload)` 调用,**payload 为单个字符串**(无参事件为 `nil`)。每次调用后按序判定:
+页面是一份 HTML 文档。Lua 不再返回 view。`html.on(id, event, fn)` 给元素 id 登记处理函数;同一对 id 与事件再次登记会换掉上一个函数。宿主投递事件时只传一个字符串:
 
-1. **handler 返回 ui 树** → 新树替换当前视图;
-2. 否则**重新序列化 `app_view`**;若脚本返回的是 **view 函数**则先重新调用它。
+| 事件 | 时机 | payload |
+|---|---|---|
+| `click` | 点击带 `id` 的元素(取最近的祖先 id) | `""` |
+| `input` | 输入过程中值变化 | 当前值 |
+| `change` | 控件提交值;勾选框为 `"true"` 或 `"false"` | 当前值 |
+| `submit` | 表单提交;宿主取消这次导航 | `""` |
 
-由此三条让界面更新的正确路径:
+没有处理函数的 id 被忽略。处理函数报错时,这次调用里排队的 DOM 操作全部丢弃,页面保持原样。`run` 会清掉残留的取消标志;事件分发不会。
 
 ```lua
--- ✅ 路径 A(推荐):脚本返回 view 函数,每次事件后引擎重调,自动读到新状态
+local html = require("html")
 local count = 0
-local function view()
-  return ui.app { ui.text { text = "n=" .. count },
-                  ui.button { text = "+1", onClick = function() count = count + 1 end } }
-end
-return view
+local name = ""
 
--- ✅ 路径 B:handler 返回新树(适合整屏替换)
--- onClick = function() count = count + 1; return view() end
+html.on("plus", "click", function()
+  count = count + 1
+  html.setText("count", "taps: " .. count)
+end)
 
--- ✅ 路径 C:定时驱动 —— 树上挂 onTick(handler) + interval(毫秒),
---          宿主按 interval 调 onTick,每次走上面的判定(games/snake.lua 为范例)
-
--- ❌ 反例:返回静态表 + handler 里改局部变量 —— 树已序列化完毕,
---    改的变量无人再读,屏幕永远不变。
+html.on("name", "input", function(text)
+  name = text
+  html.setText("echo", name)
+end)
 ```
 
-事件 payload 语义:`input.onChange(text)` 每次输入都收到字段文本字符串,`input.onSubmit(text)` 在键盘确认时收到字段文本;`slider.onChange(v)` 收到数值的字符串形式;`switch.onToggle(v)` 收到 `"true"`/`"false"`。点击与定时事件无参。slider 值需 `tonumber`,开关用 `v == "true"`。
+引擎没有计时器。宿主若要做动画,用自己的时钟去分发同一个事件。
 
-### 4.3 onTick / interval
+### 4.3 页面放在哪
 
-树上 `onTick = function() ... end` + `interval = 260`(毫秒)两个 prop 构成定时驱动契约:宿主按 interval 反复 `invoke(onTick)`。`interval` 每次重建时重读,可在 handler 里调速。
+宿主加载工程里的 `index.html`。脚本旁边若有同名 html,优先用那份(`ui/counter.lua` 先找 `ui/counter.html`)。相对路径的 CSS 和图片相对工程目录解析。页面里的 `<script>` 会被去掉,行为只留在 Lua。页面不能离开工程目录,也不能访问网络。
 
-## 5. UI DSL
+`require("ui")` 会报错:`module 'ui' has been removed; write index.html and use require('html')`。
 
-`ui.<type> { props..., children... }` 给普通 Lua 表打上 `__ui = "<type>"` 标签。字符串键是属性,数组项是子节点,函数属性注册为 handler。**只有 text 支持字符串构造糖**:`ui.text('hi')` 等同于 `ui.text { text = "hi" }`。`ui.column { "hi" }` 这样的字符串子项序列化为 text 节点,并不会变成按钮标签;其他构造器仍接收属性表。
+## 5. HTML 宿主
 
-### 组件(19 个)
+`local html = require("html")`(或全局 `html`)就是全部界面 API。每次调用追加一条 DOM 操作。脚本或事件处理函数返回后,宿主一次性应用这一批。页面上找不到的元素会被跳过。
 
-以下为属性缺省值。尺寸单位为 dp,文本字号为 sp。
-
-| 构造器 | 规范属性与默认值 | 行为 |
-|---|---|---|
-| `app` | `title = ""` | 根节点;标题非空时显示标题栏 |
-| `column` / `row` | `spacing = 8` | 纵向 / 横向布局;row 子项默认垂直居中 |
-| `box` | 下述通用样式 | 子项叠放,默认左上(start) |
-| `text` | `text = ""`, `size = 16`, `color`, `font`, `bold = false`, `animate = true` | font 为资产字体路径;`animate = false` 关闭文本切换动画 |
-| `button` | `text = "button"`, `onClick` | 点击无参;忽略子节点 |
-| `card` | `spacing = 8`, `radius = 16`, `padding = 16` | 卡片内纵向排列 |
-| `input` | `value = ""`, `label = "input"`, `onChange`, `onSubmit` | 单行输入;每次编辑 / 键盘确认均传字段文本字符串 |
-| `image` | `src = ""`, `size = 96` | 资产图片,裁剪适配;路径解析失败显示 `missing` |
-| `spacer` | `size = 8` | 默认高度 |
-| `divider` | `color` | 水平分隔线 |
-| `scrollview` | `spacing = 8` | 有限视口内纵向滚动 |
-| `list` | `spacing = 8` | 普通 Column,非懒加载/回收列表,也不是独立滚动容器 |
-| `listitem` | `title = ""`, `subtitle = ""`, `onClick` | 可选点击行及子项;点击无参 |
-| `stack` / `page` | `selected = ""` / `key`, `spacing = 8` | **仅按 page.key** 选页,否则取首个 page;无 page 时显示全部子项 |
-| `switch` | `label = "switch"`, `checked = false`, `onToggle` | 传 `"true"` / `"false"` 字符串,不是布尔值 |
-| `slider` | `from = 0`, `to = 1`, `value = from`, `step = 0`, `onChange` | 传数值的**字符串**形式,用 `tonumber` 转换 |
-| `progress` | `value`, `color` | 线性进度条:值截断到 0..1;**不传 value 为不定态** |
-
-slider 的值和范围必须有限,`to > from`,step 为有限非负数(范围还必须能由宿主 float 滑杆表示)。`step = 0` 为连续滑动;正 step 是**从 from 起算的数值增量**,不是刻度数量。值会截断到范围并吸附至最近增量;即使范围不能整除 step,仍能到达 `to`。非法参数显示诊断信息。
-
-### 通用样式与子项布局
-
-- `width`、`height`、`padding`、`radius`:有限非负的 **dp 数值**,受父容器约束;非法值忽略。不支持 `"100%"` / `"fill"` 尺寸语法。radius 裁剪圆角;padding 默认 0,card 内边距默认 16dp(只应用一次)。
-- `background`:`#RRGGBB` / `#AARRGGBB`;card/button/input/listitem/image 通过各自 surface 上色。text/divider/progress 的 `color` 格式相同。
-- `weight`:**Row/Column 作用域**中子项的有限正权重,分配水平/垂直剩余空间。主轴必须有界;无界滚动内容中的 weight 被忽略。Box 不使用 weight。
-- `align` 是**子项属性**,不是容器整体对齐方式。Row 作用域:`top`、`center`、`bottom`。Column 作用域:`start`(也接受 `left`)、`center`、`end`。Box 作用域:`topleft`(默认)、`top`、`topright`、`left`、`center`、`right`、`bottomleft`、`bottom`、`bottomright`。其他以 Column 渲染子项的容器沿用该作用域规则;不适用的值被忽略。
-- 节点身份按 `key`、`id`、结构位置的优先级确定。同类型节点使用稳定 key 时,重排会保留状态;更换组件类型时重新创建状态。动态列表应显式提供稳定 key,不会根据文本或内容自动生成 key。同级重复的显式 key/id 会显示 `duplicate child key '<value>' at <parent path>`,而不渲染该冲突子列表;不同父节点下可重复使用 key。这**不代表**可以用 `page.id` 选页:`stack.selected` 必须对应 `page.key`。
-- Row 子项的水平权重不影响宿主纵向滚动。未约束的垂直权重与 scrollview 需要有限宿主视口;显式容器高度会截断该需求向上传播。仅 stack 当前选中的页面参与判断。
-
-渲染器回归测试:`./gradlew :app:testDebugUnitTest` 无需设备即可检查节点身份和视口规则;`./gradlew :app:connectedDebugAndroidTest` 在可用的专用设备上检查 Compose 布局、带 key 输入框和嵌套滚动。仅编译测试 APK 不等于验证布局。
-
-嵌套 `scrollview` 必须有**有限高度**,来自自身或真正约束它的父容器。高度无界时会显示 `scrollview needs a bounded height. Set height on this nested scrollview or its parent.`,而不是滚动。不保证任意嵌套都可用。`list` 仍是普通 Column;需要独立滚动时请用有界 scrollview。
-
-### 破坏性迁移:仅使用规范名
-
-属性/事件别名回退链已移除,**没有兼容层**。请显式改写,不要依赖回退:
-
-| 旧拼写 / 用法 | 规范替代 |
+| 函数 | 操作 |
 |---|---|
-| text/button 用 `label` / `value` / `content` 作文字 | `text` |
-| `fontSize`, `fontPath` | text 的 `size`, `font` |
-| `onTap` / `onPress` | button/listitem 的 `onClick` |
-| input 的 `text`, `placeholder`, `onEnter` | `value`, `label`, `onSubmit` |
-| switch 的 `value`, `text`, `onChange` / `onCheckedChange` | `checked`, `label`, **`onToggle`** |
-| image 的 `source` / `path`, 容器的 `gap`, card 的 `cornerRadius` / `pad` | `src`, `spacing`, `radius` / `padding` |
-| listitem 的 `text` / `description` | `title` / `subtitle` |
-| stack 的 `value` / `active`, 用于选页的 page `id` | `selected`, page **`key`** |
-| slider 的 `min` / `max` / `steps` / `onValueChanged` | `from` / `to` / `step`(增量,不是数量) / `onChange` |
+| `html.on(id, event, fn)` | 登记 `fn(payload)`;payload 一定是字符串 |
+| `html.setText(id, text)` | 设置 `textContent` |
+| `html.setHtml(id, html)` | 设置 `innerHTML` |
+| `html.setAttr(id, name, value)` | `setAttribute` |
+| `html.setValue(id, value)` | 设置输入框的 `value` |
+| `html.addClass(id, class)` | `classList.add` |
+| `html.removeClass(id, class)` | `classList.remove` |
 
-`input.onChange` 与 `slider.onChange` 是规范名称,`switch.onChange` 不是。其余名称及默认值以组件表为准。
+参数类型不对或缺参数,报 `bad argument #N to 'html.…'`。
 
-### 状态更新示例
-
-返回 view 函数,让每次事件根据更新后的状态重建树(§4.2):
+```html
+<label>Name <input id="name"></label>
+<input id="amount" type="range" min="0" max="1" step="0.1" value="0.4">
+<label><input id="enabled" type="checkbox"> Enabled</label>
+<p id="summary"></p>
+```
 
 ```lua
-local ui = require("ui")
+local html = require("html")
 local amount = 0.4
 local name = ""
 local enabled = false
-local function view()
-  return ui.app {
-    title = "Controls",
-    ui.column {
-      spacing = 12,
-      ui.text('hi'),
-      "String children become text nodes",
-      ui.row { width = 280,
-        ui.text { text = "A", weight = 1 },
-        ui.text { text = "B", weight = 2, align = "bottom" },
-      },
-      ui.box { width = 280, height = 64, background = "#202020", radius = 8,
-        ui.text { text = "Overlay", bold = true, color = "#FFFFFF",
-                  padding = 8, align = "bottomright" },
-      },
-      ui.input { label = "Name", value = name,
-        onChange = function(text) name = text end,
-        onSubmit = function(text) print(text) end,
-      },
-      ui.slider { value = amount, from = 0, to = 1, step = 0.1,
-        onChange = function(value) amount = tonumber(value) end,
-      },
-      ui.progress { value = amount },
-      ui.progress {}, -- absent value = indeterminate
-      ui.switch { label = "Enabled", checked = enabled,
-        onToggle = function(value) enabled = value == "true" end,
-      },
-      ui.text { text = name .. " / " .. amount },
-    },
-  }
+
+local function summary()
+  html.setText("summary", name .. " / " .. amount .. " / " .. tostring(enabled))
 end
-return view -- return the function, not view(): events rebuild from state
+
+html.on("name", "input", function(text)
+  name = text
+  summary()
+end)
+html.on("amount", "change", function(value)
+  amount = tonumber(value) or 0
+  summary()
+end)
+html.on("enabled", "change", function(value)
+  enabled = value == "true"
+  summary()
+end)
+summary()
 ```
 
-序列化为 `{type, props, children}` JSON;属性顺序不保证,测试断言不可依赖键序。跨语言契约见 [PLATFORM_ABI.md](PLATFORM_ABI.zh-CN.md) §6。
+CSS 就是普通 CSS(`<link>`、`<style>` 或 `style` 属性)。布局、颜色和字体都由 WebView 负责。JavaScript 与 Python 工程仍渲染 JSON 界面树;本节只属于 LuaX。见 [PLATFORM_ABI.md](PLATFORM_ABI.zh-CN.md)。
+
 
 ## 6. 元表
 

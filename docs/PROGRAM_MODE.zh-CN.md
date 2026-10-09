@@ -6,7 +6,8 @@
 
 ## Rule(唯一输出原则)
 
-- 脚本**返回 ui 树** → 预览面板(Compose 渲染,Execution is truth)
+- **JavaScript / Python** 返回 ui 树 → 预览面板(Compose 渲染)
+- **LuaX** 把工程里的 HTML 页面放进 WebView,再应用 `html.*` 操作。没有页面的 Lua 脚本,预览停在缺页说明上;`print` 仍进控制台。
 - `print` 输出 / 运行错误 / 系统日志 → **底部控制台**(唯一输出口)
 - REPL 求值 / `io.read()` 回复 → 控制台底部输入行
 
@@ -37,5 +38,4 @@ See `docs/PROOT_AND_STDIN.md`. Semantics unchanged:
 
 ## Package
 
-Packaged runtime renders the ui tree when the entry returns one; print output
-goes to the packaged app's own console view.
+打包后的 runtime:Lua 入口在工程有 HTML 页面时用 WebView;JS/Python 入口按 ui 树渲染。没有页面的 Lua 入口显示 print 终端。

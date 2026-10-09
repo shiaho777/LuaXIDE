@@ -45,6 +45,7 @@ import dev.luaxide.ui.S
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ApiDocsSheet(
+    languageId: String,
     onInsert: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -54,6 +55,7 @@ fun ApiDocsSheet(
         sheetState = sheetState,
     ) {
         ApiDocsContent(
+            languageId = languageId,
             onInsert = onInsert,
             onDismiss = onDismiss,
             modifier = Modifier
@@ -66,6 +68,7 @@ fun ApiDocsSheet(
 
 @Composable
 private fun ApiDocsContent(
+    languageId: String,
     onInsert: (String) -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
@@ -74,9 +77,18 @@ private fun ApiDocsContent(
     var query by remember { mutableStateOf("") }
     var category by remember { mutableStateOf("all") }
     var expanded by remember { mutableStateOf<String?>(null) }
-    val cats = listOf("all") + ApiDocs.categories()
-    val list = remember(query, category) {
-        ApiDocs.search(query).filter { category == "all" || it.category == category }
+    val docs = remember(languageId) { ApiDocs.visible(languageId) }
+    val cats = listOf("all") + docs.map { it.category }.distinct()
+    val list = remember(query, category, docs) {
+        val s = query.trim().lowercase()
+        docs.filter { doc ->
+            (category == "all" || doc.category == category) &&
+                (s.isEmpty() ||
+                    doc.name.lowercase().contains(s) ||
+                    doc.summary.lowercase().contains(s) ||
+                    doc.signature.lowercase().contains(s) ||
+                    doc.example.lowercase().contains(s))
+        }
     }
 
     Column(modifier.padding(horizontal = 16.dp)) {
