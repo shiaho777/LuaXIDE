@@ -52,8 +52,10 @@ ok("require bad arg", bok == false)
 local eok2, _ = pcall(require, "")
 ok("empty name", eok2 == false)
 
--- require("ui") shortcut returns the global ui table
-ok("ui shortcut", require("ui") ~= nil and type(require("ui")) == "table")
+-- require("ui") is gone; require("html") returns the host table
+local uok, uerr = pcall(require, "ui")
+ok("ui removed", uok == false and type(uerr) == "string" and string.find(uerr, "removed", 1, true) ~= nil)
+ok("html shortcut", require("html") ~= nil and type(require("html")) == "table")
 
 -- a name containing an explicit slash separator still resolves to a file
 local slashmod = require("tests/modfixture/m1")

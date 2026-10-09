@@ -1,6 +1,6 @@
 # LuaX
 
-一门为「在手机上写 App」而生的 Lua 方言 —— 声明式 UI、事件驱动重渲染、单文件 C 引擎,配一个能把它打包成独立 APK 的 Android IDE(LuaXIDE)。
+一门为「在手机上写 App」而生的 Lua 方言 —— 页面用 HTML 与 CSS,行为用 Lua,单文件 C 引擎,配一个能把它打包成独立 APK 的 Android IDE(LuaXIDE)。
 
 [English](README.md)
 
@@ -9,36 +9,30 @@
 </p>
 
 ```lua
--- 这是 LuaX。一个完整的交互 App:
-local ui = require("ui")
+-- 这是 LuaX。页面是 index.html,这个文件是逻辑。
+local html = require("html")
 local count = 0
 
-local function view()
-  return ui.app {
-    title = "Counter",
-    ui.column {
-      spacing = 12,
-      ui.text { text = "taps: " .. count, size = 28 },
-      ui.button { text = "+1", onClick = function() count = count + 1 end },
-    },
-  }
-end
+html.on("plus", "click", function()
+  count = count + 1
+  html.setText("count", "taps: " .. count)
+end)
 
-return view  -- 返回 view 函数:每次点击,引擎重调它,界面随之更新
+html.setText("count", "taps: 0")
 ```
 
-- **声明式 UI**:UI 树就是普通 Lua 表;`return view` 之后,事件 → 状态变化 → 重渲染全自动
+- **HTML 页面**:WebView 渲染真正的 HTML 与 CSS。Lua 登记事件并提交 DOM 操作。JavaScript 与 Python 工程仍使用 JSON UI 树。
 - **单文件引擎**:`engine/lx.c` 约 2200 行 C,树遍历 + 字节码 VM 混合执行(数值循环 ~11×)
 - **现代标准库**:`string.format` / 模式匹配(`find gsub match gmatch`)/ `math.*` / `table.sort`
 - **无 root**:沙箱执行;IDE 一键打包成独立签名 APK
-- **三语言平台**:LuaX 是参考语言;同一契约下还有 JavaScript(QuickJS)与 Python(MicroPython)
+- **三种语言**:LuaX 的页面是 HTML。JavaScript(QuickJS)与 Python(MicroPython)共用 JSON UI 树。
 
 ## 三十秒上手
 
 ```bash
 make -C engine lx          # 编译桌面 CLI(需要 clang)
 ./engine/lx your.lua       # 运行
-./engine/lx --ui your.lua  # 打印 UI 树 JSON(桌面验证交互契约)
+./engine/lx --ui your.lua  # 打印 DOM 操作 JSON(桌面检查,不画页面)
 ```
 
 或安装 LuaXIDE(Android),新建项目即得上述计数器种子;`调试`(断点/单步/监视)与 `控制台`(REPL、`io.read` 回复)都在 IDE 内。
@@ -69,8 +63,8 @@ LuaX 是 Lua 5.1 的方言子集:闭包与元表都在,数字只有 double、表
 
 | 你想…… | 读 |
 |---|---|
-| **写 LuaX 程序** | [docs/LUAX.zh-CN.md](docs/LUAX.zh-CN.md) —— 语言参考:方言差异、逐函数标准库、运行时语义(事件/重渲染/取消)、UI DSL、元表 |
-| 接入 / 对齐其他语言引擎 | [docs/PLATFORM_ABI.zh-CN.md](docs/PLATFORM_ABI.zh-CN.md) —— 跨语言宿主契约(Lua/JS/Python 共同遵守)与 conformance 测试映射 |
+| **写 LuaX 程序** | [docs/LUAX.zh-CN.md](docs/LUAX.zh-CN.md) —— 语言参考:方言差异、逐函数标准库、HTML 宿主、元表 |
+| 接入 / 对齐其他语言引擎 | [docs/PLATFORM_ABI.zh-CN.md](docs/PLATFORM_ABI.zh-CN.md) —— JavaScript 与 Python 的 JSON UI 树;LuaX 的 HTML 以 LUAX.md 为准 |
 | 维护 LuaX 引擎本体 | [docs/ENGINE.zh-CN.md](docs/ENGINE.zh-CN.md) + [docs/BYTECODE_VM.zh-CN.md](docs/BYTECODE_VM.zh-CN.md) —— 架构、测试工作流、扩展 checklist、VM 设计 |
 | 了解 IDE 行为 | [docs/PROGRAM_MODE.zh-CN.md](docs/PROGRAM_MODE.zh-CN.md)、[docs/PROOT_AND_STDIN.zh-CN.md](docs/PROOT_AND_STDIN.zh-CN.md) |
 
@@ -80,10 +74,10 @@ LuaX 是 Lua 5.1 的方言子集:闭包与元表都在,数字只有 double、表
 
 ```
 engine/       LuaX 引擎(lx.c)—— 桌面 CLI 与两个 Android 模块共用同一源码
-engine-js/    JavaScript 引擎(QuickJS facade),同一宿主契约
-engine-py/    Python 引擎(MicroPython facade),同一宿主契约
+engine-js/    JavaScript 引擎(QuickJS facade),JSON UI 树
+engine-py/    Python 引擎(MicroPython facade),JSON UI 树
 app/          LuaXIDE 本体(Kotlin + Compose):编辑/调试/控制台/打包
-runtime/      打包模板 App:内置三引擎,渲染脚本的 UI 树
+runtime/      打包模板:Lua 页面走 WebView;JS 与 Python 仍渲染 UI 树
 docs/         上表所列文档
 ```
 

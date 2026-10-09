@@ -438,6 +438,9 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile
     private var lastRunLang: String = dev.luaxide.lang.Language.LUA.id
 
+    @Volatile
+    private var lastLuaSource: String? = null
+
     /** Language-neutral routing for the shared host contract (docs/PLATFORM_ABI.md). */
     private fun activeEngine(): dev.luaxide.engine.EngineAdapter = when (lastRunLang) {
         dev.luaxide.lang.Language.JAVASCRIPT.id -> jsEngine
@@ -454,7 +457,10 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         return lower.endsWith(".txt") ||
             lower.endsWith(".md") ||
             lower.endsWith(".json") ||
-            lower.endsWith(".csv")
+            lower.endsWith(".csv") ||
+            lower.endsWith(".html") ||
+            lower.endsWith(".htm") ||
+            lower.endsWith(".css")
     }
 
     fun openFile(relPath: String, run: Boolean = true) {
@@ -761,6 +767,14 @@ print("got", n)
     fun onEvent(handlerId: Int, payload: String? = null) {
         viewModelScope.launch { publishResult(invokeActive(handlerId, payload)) }
     }
+
+    fun onHtmlEvent(id: String, event: String, payload: String) {
+        viewModelScope.launch { publishResult(engine.htmlEvent(id, event, payload)) }
+    }
+
+    /** HTML page for the Lua file that last ran: sibling `.html`, else `index.html`. */
+    fun htmlPageRel(): String =
+        dev.luaxide.html.HtmlPage.resolve(projectSrcRoot(), lastLuaSource ?: _project.value?.entryFile)
 
     /**
      * Single outlet for every engine result (run, event invoke, tick invoke).
@@ -1117,6 +1131,7 @@ print("got", n)
             _busy.value = false
             return
         }
+        lastLuaSource = path
         publishBreakpoints(_openPath.value)
         engine.setDebugEnabled(_debugEnabled.value)
         engine.setBreakOnError(_breakOnError.value)

@@ -56,6 +56,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -175,6 +176,7 @@ fun MainScreen(vm: EditorViewModel = viewModel()) {
 
     if (showApiDocs) {
         ApiDocsSheet(
+            languageId = project?.language ?: dev.luaxide.lang.Language.LUA.id,
             onInsert = { snippet ->
                 vm.insertAtCursor(snippet)
                 showApiDocs = false
@@ -481,6 +483,7 @@ fun MainScreen(vm: EditorViewModel = viewModel()) {
                             errorLine = result?.takeIf { !it.ok }?.errorLine,
                             onToggleBreakpoint = vm::toggleBreakpoint,
                             onEditBreakpoint = { line -> condEditLine = line },
+                            showComponentPalette = (project?.language ?: dev.luaxide.lang.Language.LUA.id) != dev.luaxide.lang.Language.LUA.id,
                             onToast = { msg -> snackbarHostState.let { host ->
                                 scope.launch { host.showSnackbar(msg) }
                             } },
@@ -494,10 +497,24 @@ fun MainScreen(vm: EditorViewModel = viewModel()) {
                         else dev.luaxide.assets.EmptyAssetResolver
                     }
                     CompositionLocalProvider(LocalAssetResolver provides resolver) {
-                        PreviewFace(
-                            result = result,
-                            onEvent = vm::onEvent,
-                        )
+                        if ((project?.language ?: dev.luaxide.lang.Language.LUA.id) == dev.luaxide.lang.Language.LUA.id) {
+                            var htmlGen by remember { mutableIntStateOf(0) }
+                            LaunchedEffect(result) {
+                                if (result?.htmlReload == true) htmlGen++
+                            }
+                            dev.luaxide.html.HtmlScreen(
+                                root = vm.projectSrcRoot(),
+                                pageRel = vm.htmlPageRel(),
+                                generation = htmlGen,
+                                ops = result?.htmlOps ?: "[]",
+                                onEvent = vm::onHtmlEvent,
+                            )
+                        } else {
+                            PreviewFace(
+                                result = result,
+                                onEvent = vm::onEvent,
+                            )
+                        }
                     }
                 },
             )

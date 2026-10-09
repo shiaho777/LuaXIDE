@@ -52,14 +52,10 @@ int main(void){
       "t.x = 1", "'__newindex' chain too long");
     lx_close(S); }
 
-  /* --- cyclic ui table → bounded serializer error --- */
+  /* --- require("ui") is a bounded error, not a missing-file hunt --- */
   { lx_State* S = lx_new(); lx_set_step_limit(S, 50000000L);
-    int rc = lx_run(S,
-      "local ui = require('ui')\n"
-      "local c = ui.column{}\n"
-      "c[1] = c\n"
-      "return ui.app{ c }", err, sizeof(err));
-    CHK(rc==1 && has(err,"ui tree too deep"), "cyclic ui tree");
+    int rc = lx_run(S, "require('ui')\n", err, sizeof(err));
+    CHK(rc==1 && has(err,"has been removed") && has(err,"index.html"), "ui module removed");
     lx_close(S); }
 
   /* --- unfinished capture → error, not a 4-billion-byte alloc --- */

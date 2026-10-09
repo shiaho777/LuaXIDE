@@ -13,9 +13,16 @@ int  lx_dofile(lx_State*, const char* path, char* errbuf, int errbuflen);
 void lx_set_step_limit(lx_State*, long steps);
 
 int  lx_run(lx_State*, const char* src, char* errbuf, int errbuflen);
-/* arg: optional event payload passed to the handler as its first argument
- * (NULL = no argument). A handler returning a ui tree replaces app_view. */
+/* Retired for LuaX HTML. Always errors: dispatch events with lx_html_event. */
 int  lx_invoke(lx_State*, int handler_id, const char* arg, char* errbuf, int errbuflen);
+
+/* HTML host. lx_last_json is a JSON array of DOM ops ("[]" when empty).
+ * lx_html_event runs the handler registered with html.on(id, event, fn) and
+ * passes payload as its first argument ("" when payload is NULL). A handler
+ * error rewinds ops queued during that call. An id with no handler succeeds
+ * and queues nothing. lx_html_clear_ops drops the pending batch. */
+int  lx_html_event(lx_State*, const char* id, const char* event, const char* payload, char* errbuf, int errbuflen);
+void lx_html_clear_ops(lx_State*);
 
 const char* lx_last_json(lx_State*);
 const char* lx_last_output(lx_State*);

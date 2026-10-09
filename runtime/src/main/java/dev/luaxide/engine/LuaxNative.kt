@@ -31,6 +31,12 @@ internal object LuaxNative {
     /** Invoke a registered event handler by id. Same String[3] layout as [nativeRun]. */
     external fun nativeInvoke(handle: Long, handlerId: Int, payload: String?): Array<String>
 
+    /** Dispatch an HTML element event. Ops are fetched with [nativeTakeHtmlOps]. */
+    external fun nativeHtmlEvent(handle: Long, id: String, event: String, payload: String?): Array<String>
+
+    /** Pending HTML DOM ops as a JSON array. Clears the engine batch. */
+    external fun nativeTakeHtmlOps(handle: Long): String
+
     /** Captured print output accumulated since the last run/invoke. */
     external fun nativeTakeOutput(handle: Long): String
     external fun nativeClearOutput(handle: Long)

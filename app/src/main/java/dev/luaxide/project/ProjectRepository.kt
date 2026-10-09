@@ -86,7 +86,7 @@ class ProjectRepository(context: Context) {
     }
 
     private fun ensureSampleLibrary() {
-        val marker = File(root, ".samples-v5")
+        val marker = File(root, ".samples-v6")
         if (marker.exists()) return
         val examples = root.listFiles { f -> f.isDirectory }
             ?.mapNotNull { dir -> readMeta(dir.name)?.let { it to dir } }
@@ -94,18 +94,14 @@ class ProjectRepository(context: Context) {
         if (examples == null) {
             createExamplesProject()
         } else {
-            // v5 refresh: the four dynamic-UI samples were rewritten in the
-            // view-function pattern (their old static trees never re-rendered
-            // on tap) — overwrite them so already-seeded devices pick up the fix.
-            overwriteSeedFiles(examples.first.id, SAMPLES_V5_REFRESH)
-            writeSeedFiles(examples.first.id, EXAMPLE_LIBRARY_FILES)
-            val main = File(srcDir(examples.first.id), "main.lua")
-            if (!main.isFile || main.length() < 40) {
-                atomicWrite(main, SEED_EXAMPLES_MAIN)
-            }
+            // v6: Lua samples are HTML pages. Overwrite the library so old
+            // installs drop require("ui"), which the engine now rejects.
+            overwriteSeedFiles(examples.first.id, EXAMPLE_LIBRARY_FILES)
+            atomicWrite(File(srcDir(examples.first.id), "main.lua"), SEED_EXAMPLES_MAIN)
         }
         seedDefaultAssets(examples?.first?.id ?: root.listFiles { f -> f.isDirectory }?.firstOrNull()?.name)
-        marker.writeText("samples-v5")
+        marker.writeText("samples-v6")
+        File(root, ".samples-v5").delete()
     }
 
     /** Overwrite seeded files even when they exist (versioned sample fixes). */
@@ -129,8 +125,9 @@ class ProjectRepository(context: Context) {
             atomicWrite(
                 note,
                 "Put images under assets/images/ and fonts under assets/fonts/.\n" +
-                    "Use ui.image { src = \"assets/images/logo.png\" }\n" +
-                    "Use ui.text { font = \"assets/fonts/Your.ttf\" }\n" +
+                    "Lua pages: <img src=\"assets/images/logo.png\"> and CSS @font-face.\n" +
+                    "JavaScript / Python: ui.image { src = \"assets/images/logo.png\" }\n" +
+                    "and ui.text { font = \"assets/fonts/Your.ttf\" }.\n" +
                     "All files under src/ ship inside the APK as assets/lua/.\n",
             )
         }
@@ -547,31 +544,30 @@ print("done")
 """.trimIndent()
 
         private val SEED_MAIN = """
-local ui = require("ui")
-
+-- The page is index.html. This file is the logic.
+local html = require("html")
 local count = 0
 
--- Canonical dynamic-UI pattern: return a view FUNCTION. The engine calls it
--- after every event, so the new state reaches the screen on every tap.
-local function view()
-  return ui.app {
-    key = "home",
-    title = "My app",
-    ui.column {
-      key = "body",
-      spacing = 12,
-      ui.text { key = "hello", text = "Hello, LuaX!", size = 20 },
-      ui.text { key = "count", text = "taps: " .. count, size = 16 },
-      ui.button {
-        key = "tap",
-        text = "+1",
-        onClick = function() count = count + 1 end,
-      },
-    },
-  }
-end
+html.on("plus", "click", function()
+  count = count + 1
+  html.setText("count", "taps: " .. count)
+end)
 
-return view
+html.setText("count", "taps: 0")
+""".trimIndent()
+
+        private val PAGE_CSS = """
+:root { color-scheme: light dark; }
+body { font-family: system-ui, sans-serif; margin: 0; padding: 20px; }
+h1 { font-size: 22px; margin: 0 0 8px; }
+p { margin: 8px 0; }
+button, input { font: inherit; }
+button { padding: 8px 14px; margin: 4px 8px 4px 0; }
+input { padding: 8px; width: min(100%, 320px); }
+.card { border: 1px solid rgba(128,128,128,.45); border-radius: 12px; padding: 12px; margin-top: 12px; }
+.muted { opacity: .72; font-size: 13px; }
+.hidden { display: none; }
+#board { font-family: ui-monospace, monospace; font-size: 16px; line-height: 1.25; }
 """.trimIndent()
 
         private val SEED_MAIN_JS = """
@@ -639,111 +635,111 @@ print("done");
 """.trimIndent()
 
         private val SEED_EXAMPLES_MAIN = """
-local ui = require("ui")
+local html = require("html")
 
-return ui.app {
-  key = "examples-home",
-  title = "LuaX Examples",
-  ui.column {
-    key = "body",
-    spacing = 10,
-    ui.text { key = "t1", text = "LuaXIDE examples", size = 22 },
-    ui.text { key = "t2", text = "Open files in the sidebar:", size = 14 },
-    ui.text { key = "t3", text = "ui/ · layouts, list, stack pages", size = 13 },
-    ui.text { key = "t4", text = "program/ · terminal + stdin", size = 13 },
-    ui.text { key = "t5", text = "lib/ · local require modules", size = 13 },
-    ui.text { key = "t6", text = "app/ · multi-file sample app", size = 13 },
-    ui.text { key = "t7", text = "games/ · snake — pure Lua game", size = 13 },
-    ui.card {
-      key = "tip",
-      ui.column {
-        key = "tip-body",
-        spacing = 6,
-        ui.text { key = "tip1", text = "Tip", size = 14 },
-        ui.text { key = "tip2", text = "require(\"lib/util\") loads src/lib/util.lua", size = 12 },
-        ui.text { key = "tip3", text = "Program scripts open the terminal face.", size = 12 },
-      },
-    },
-  },
-}
+html.setText("title", "LuaXIDE examples")
+html.setText("lead", "Open a file in the sidebar, then Run.")
+html.setText("tip", "require(\"lib.util\") loads src/lib/util.lua. Program scripts print to the console. Pages live in HTML.")
 """.trimIndent()
 
         private val UI_STARTER_FILES_EXTRA = mapOf(
             "pages/image_demo.lua" to """
-local ui = require("ui")
-return ui.app {
-  title = "Image demo",
-  ui.column {
-    spacing = 12,
-    ui.text { text = "工程图片预览", size = 18 },
-    ui.image { src = "assets/images/logo.png", size = 120 },
-    ui.text { text = "src = assets/images/logo.png", size = 13 },
-  },
-}
+-- Page: pages/image_demo.html. The picture is a file in this project.
+print("image demo")
+""".trimIndent(),
+            "pages/image_demo.html" to """
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Image demo</title>
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <h1>工程图片预览</h1>
+  <img src="../assets/images/logo.png" alt="logo" width="120">
+  <p class="muted">src = assets/images/logo.png</p>
+</body>
+</html>
 """.trimIndent(),
         )
 
         private val UI_STARTER_FILES = mapOf(
+            "index.html" to """
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>My app</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <h1>Hello, LuaX!</h1>
+  <p id="count">taps: 0</p>
+  <button id="plus" type="button">+1</button>
+</body>
+</html>
+""".trimIndent(),
+            "style.css" to PAGE_CSS,
             "ui/counter.lua" to """
-local ui = require("ui")
+local html = require("html")
 local count = 0
 
--- View-function pattern: returning view (a function) means the engine calls
--- it again after every tap, so the counter on screen actually moves.
-local function view()
-  return ui.app {
-    key = "counter",
-    title = "Counter",
-    ui.column {
-      key = "body",
-      spacing = 12,
-      ui.text { key = "title", text = "Counter demo", size = 20 },
-      ui.text { key = "value", text = tostring(count), size = 28 },
-      ui.row {
-        key = "actions",
-        ui.button {
-          key = "inc",
-          text = "+1",
-          onClick = function() count = count + 1 end,
-        },
-        ui.button {
-          key = "reset",
-          text = "reset",
-          onClick = function() count = 0 end,
-        },
-      },
-    },
-  }
+local function show()
+  html.setText("value", tostring(count))
 end
 
-return view
+html.on("inc", "click", function()
+  count = count + 1
+  show()
+end)
+html.on("reset", "click", function()
+  count = 0
+  show()
+end)
+show()
+""".trimIndent(),
+            "ui/counter.html" to """
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Counter</title>
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <h1>Counter demo</h1>
+  <p id="value">0</p>
+  <button id="inc" type="button">+1</button>
+  <button id="reset" type="button">reset</button>
+</body>
+</html>
 """.trimIndent(),
             "ui/layout.lua" to """
-local ui = require("ui")
-return ui.app {
-  key = "layout",
-  title = "Layout",
-  ui.column {
-    key = "body",
-    spacing = 10,
-    ui.text { key = "h", text = "Row + column", size = 18 },
-    ui.row {
-      key = "r1",
-      ui.text { key = "l", text = "left" },
-      ui.divider {},
-      ui.text { key = "r", text = "right" },
-    },
-    ui.card {
-      key = "c1",
-      ui.column {
-        key = "c1b",
-        spacing = 6,
-        ui.text { key = "c1t", text = "Card body", size = 14 },
-        ui.button { key = "c1b1", text = "ok", onClick = function() print("ok") end },
-      },
-    },
-  },
-}
+local html = require("html")
+html.on("ok", "click", function() print("ok") end)
+""".trimIndent(),
+            "ui/layout.html" to """
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Layout</title>
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <h1>Row + column</h1>
+  <p>left <span class="muted">|</span> right</p>
+  <div class="card">
+    <p>Card body</p>
+    <button id="ok" type="button">ok</button>
+  </div>
+</body>
+</html>
 """.trimIndent(),
         )
 
@@ -766,19 +762,11 @@ print("n * 2 =", n * 2)
 
         private val EXAMPLE_LIBRARY_FILES = mapOf(
 "games/snake.lua" to """
-            -- t24_snake.lua — Snake, pure Lua, for the LuaXIDE engine.
-            --
-            -- Demonstrates what the "execution is truth" loop can do with zero C changes:
-            --   * the engine has no math.random  -> a tiny LCG PRNG written in Lua
-            --   * the engine has no timer        -> the App drives ticks via an onTick
-            --     handler (a function prop serialized as {"__handler":N}); the App scans
-            --     the returned tree, finds onTick + interval, and invokes it on a timer.
-            --   * no canvas                      -> the board is a grid of ui.text cells
-            --     (TextComponent gained a `color` prop so snake/food/empty are distinct).
-            --
+            -- Snake, pure Lua. The page is games/snake.html.
+            -- No math.random: a tiny LCG. No engine timer: tap Step to advance.
             -- Board cells:  ◉ head   ● body   ★ food   · empty
             local W, H = 12, 12
-            local ui = require("ui")
+            local html = require("html")
 
             -- ---- minimal PRNG (MINSTD; 48271 * 2^31-1 < 2^53 so doubles stay exact) ----
             local seed = (os.clock() * 1000000) % 2147483647
@@ -794,7 +782,6 @@ print("n * 2 =", n * 2)
             local score = 0
             local over = false
             local paused = false
-            local speed = 260 -- ms per tick; the UI re-reads `interval` every tree rebuild
 
             local function occupied(x, y)
               for i = 1, #snake do
@@ -823,7 +810,7 @@ print("n * 2 =", n * 2)
               spawnFood()
             end
 
-            -- one tick: called by the App every `interval` ms via the onTick handler
+            -- one tick: the Step button calls this. There is no engine timer.
             local function step()
               if over or paused then return end
               local h = snake[1]
@@ -864,149 +851,122 @@ print("n * 2 =", n * 2)
               return "·", "#78909C"
             end
 
-            local function view()
-              local rows = {}
+            local function draw()
+              local lines = {}
               for y = 1, H do
                 local cells = {}
                 for x = 1, W do
                   local ch, col = cell(x, y)
-                  table.insert(cells, ui.text { text = ch, size = 13, color = col, animate = false })
+                  cells[#cells + 1] = '<span style="color:' .. col .. '">' .. ch .. '</span>'
                 end
-                local row = ui.row { spacing = 0 }
-                for i = 1, #cells do rawset(row, i, cells[i]) end
-                table.insert(rows, row)
+                lines[#lines + 1] = table.concat(cells)
               end
-              local board = ui.column { spacing = 0 }
-              for i = 1, #rows do rawset(board, i, rows[i]) end
-
+              html.setHtml("board", table.concat(lines, "<br>"))
               local status = "Score " .. score
+              if food == nil and not over then status = status .. "   ·   you win" end
               if over then status = status .. "   ·   GAME OVER" end
               if paused then status = status .. "   ·   paused" end
-
-              return ui.app {
-                title = "Snake — LuaXIDE",
-                ui.text { text = status, size = 15, animate = false },
-                board,
-                ui.row { spacing = 8,
-                  ui.button { text = "◀", onClick = function() turn(-1, 0) end },
-                  ui.button { text = "▲", onClick = function() turn(0, -1) end },
-                  ui.button { text = "▼", onClick = function() turn(0, 1) end },
-                  ui.button { text = "▶", onClick = function() turn(1, 0) end },
-                },
-                ui.row { spacing = 8,
-                  ui.button { text = paused and "▶ Play" or "⏸ Pause", onClick = function() paused = not paused end },
-                  ui.button { text = "↻ Restart", onClick = function() reset() end },
-                  ui.button { text = "＋", onClick = function() if speed > 80 then speed = speed - 40 end end },
-                  ui.button { text = "－", onClick = function() speed = speed + 40 end },
-                },
-                ui.text { text = "tick " .. speed .. "ms · 纯 Lua · 无引擎改动", size = 11, animate = false },
-                -- App contract: scan the tree for onTick + interval, invoke onTick on a timer
-                onTick = function() step() end,
-                interval = speed,
-              }
+              html.setText("status", status)
+              html.setText("pause", paused and "Play" or "Pause")
             end
 
+            html.on("left", "click", function() turn(-1, 0) end)
+            html.on("up", "click", function() turn(0, -1) end)
+            html.on("down", "click", function() turn(0, 1) end)
+            html.on("right", "click", function() turn(1, 0) end)
+            html.on("tick", "click", function() step(); draw() end)
+            html.on("pause", "click", function() paused = not paused; draw() end)
+            html.on("restart", "click", function() reset(); draw() end)
+
             reset()
-            return view
+            draw()
 """.trimIndent(),
             "ui/counter.lua" to """
-local ui = require("ui")
+local html = require("html")
 local count = 0
 
--- View-function pattern: returning view (a function) means the engine calls
--- it again after every tap, so the counter on screen actually moves.
-local function view()
-  return ui.app {
-    key = "counter",
-    title = "Counter",
-    ui.column {
-      key = "body",
-      spacing = 12,
-      ui.text { key = "title", text = "Counter demo", size = 20 },
-      ui.text { key = "value", text = tostring(count), size = 28 },
-      ui.row {
-        key = "actions",
-        ui.button {
-          key = "inc",
-          text = "+1",
-          onClick = function() count = count + 1 end,
-        },
-        ui.button {
-          key = "reset",
-          text = "reset",
-          onClick = function() count = 0 end,
-        },
-      },
-    },
-  }
+local function show()
+  html.setText("value", tostring(count))
 end
 
-return view
+html.on("inc", "click", function()
+  count = count + 1
+  show()
+end)
+html.on("reset", "click", function()
+  count = 0
+  show()
+end)
+show()
+""".trimIndent(),
+            "ui/counter.html" to """
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Counter</title>
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <h1>Counter demo</h1>
+  <p id="value">0</p>
+  <button id="inc" type="button">+1</button>
+  <button id="reset" type="button">reset</button>
+</body>
+</html>
 """.trimIndent(),
             "ui/layout.lua" to """
-local ui = require("ui")
-return ui.app {
-  key = "layout",
-  title = "Layout",
-  ui.column {
-    key = "body",
-    spacing = 12,
-    ui.text { key = "h", text = "Nested layout", size = 20 },
-    ui.row {
-      key = "r1",
-      ui.text { key = "a", text = "A" },
-      ui.divider {},
-      ui.text { key = "b", text = "B" },
-      ui.divider {},
-      ui.text { key = "c", text = "C" },
-    },
-    ui.card {
-      key = "card",
-      ui.column {
-        key = "card-body",
-        spacing = 8,
-        ui.text { key = "ct", text = "Card", size = 16 },
-        ui.text { key = "cd", text = "Use ui.column / ui.row / ui.card", size = 13 },
-        ui.button {
-          key = "cb",
-          text = "print",
-          onClick = function() print("layout ok") end,
-        },
-      },
-    },
-  },
-}
+local html = require("html")
+html.on("ok", "click", function() print("layout ok") end)
+""".trimIndent(),
+            "ui/layout.html" to """
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Layout</title>
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <h1>Nested layout</h1>
+  <p>A <span class="muted">|</span> B <span class="muted">|</span> C</p>
+  <div class="card">
+    <p>Card</p>
+    <p class="muted">HTML and CSS, in the project.</p>
+    <button id="ok" type="button">print</button>
+  </div>
+</body>
+</html>
 """.trimIndent(),
             "ui/form.lua" to """
-local ui = require("ui")
+local html = require("html")
 local name = ""
 
--- onSubmit receives the field's text as its argument (the event payload),
--- so typed input actually reaches the script.
-local function view()
-  return ui.app {
-    key = "form",
-    title = "Form",
-    ui.column {
-      key = "body",
-      spacing = 12,
-      ui.text { key = "h", text = "Simple form", size = 20 },
-      ui.input {
-        key = "name",
-        label = "your name",
-        value = name,
-        onSubmit = function(text) name = text end,
-      },
-      ui.text {
-        key = "echo",
-        text = "hello, " .. (name == "" and "?" or name),
-        size = 14,
-      },
-    },
-  }
-end
+-- input delivers the field text. change/submit do too; this sample uses input.
+html.on("name", "input", function(text)
+  name = text
+  html.setText("echo", "hello, " .. (name == "" and "?" or name))
+end)
 
-return view
+html.setText("echo", "hello, ?")
+""".trimIndent(),
+            "ui/form.html" to """
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Form</title>
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <h1>Simple form</h1>
+  <p><label>your name <input id="name" type="text"></label></p>
+  <p id="echo">hello, ?</p>
+</body>
+</html>
 """.trimIndent(),
             "program/hello.lua" to """
 print("hello, luax!")
@@ -1095,112 +1055,92 @@ end
 print("require ok")
 """.trimIndent(),
             "ui/list_stack.lua" to """
-local ui = require("ui")
+local html = require("html")
 local page = "home"
 local compact = false
 
--- View-function pattern + ui.stack selected: switching pages actually
--- re-renders because view() is rebuilt after every tap.
-local function view()
-  return ui.app {
-    key = "nav-demo",
-    title = "List + pages",
-    ui.column {
-      key = "body",
-      spacing = 12,
-      ui.switch {
-        key = "theme",
-        label = "compact mode",
-        checked = compact,
-        -- onToggle receives the new state as "true" / "false"
-        onToggle = function(v) compact = (v == "true") end,
-      },
-      ui.stack {
-        key = "stack",
-        selected = page,
-        ui.page {
-          key = "home",
-          ui.text { key = "h1", text = "Home", size = 20 },
-          ui.list {
-            key = "menu",
-            spacing = 8,
-            ui.listitem {
-              key = "i1",
-              title = "Open detail",
-              subtitle = "stack navigation",
-              onClick = function() page = "detail" end,
-            },
-            ui.listitem {
-              key = "i2",
-              title = "Settings",
-              subtitle = "toggle + form",
-              onClick = function() page = "settings" end,
-            },
-          },
-        },
-        ui.page {
-          key = "detail",
-          ui.text { key = "d1", text = "Detail", size = 20 },
-          ui.text { key = "d2", text = "compact mode is " .. (compact and "on" or "off"), size = 13 },
-          ui.button {
-            key = "back1",
-            text = "Back home",
-            onClick = function() page = "home" end,
-          },
-        },
-        ui.page {
-          key = "settings",
-          ui.text { key = "s1", text = "Settings", size = 20 },
-          ui.input { key = "name", label = "display name", value = "LuaX" },
-          ui.button {
-            key = "back2",
-            text = "Back home",
-            onClick = function() page = "home" end,
-          },
-        },
-      },
-    },
-  }
+local function show()
+  for _, id in ipairs({ "home", "detail", "settings" }) do
+    if id == page then html.removeClass(id, "hidden") else html.addClass(id, "hidden") end
+  end
+  html.setText("compact-state", "compact mode is " .. (compact and "on" or "off"))
 end
 
-return view
+html.on("compact", "change", function(v)
+  compact = v == "true"
+  show()
+end)
+html.on("open-detail", "click", function() page = "detail"; show() end)
+html.on("open-settings", "click", function() page = "settings"; show() end)
+html.on("back-home", "click", function() page = "home"; show() end)
+html.on("back-settings", "click", function() page = "home"; show() end)
+show()
+""".trimIndent(),
+            "ui/list_stack.html" to """
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>List + pages</title>
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <h1>List + pages</h1>
+  <p><label><input id="compact" type="checkbox"> compact mode</label></p>
+  <section id="home">
+    <h2>Home</h2>
+    <p><button id="open-detail" type="button">Open detail</button></p>
+    <p><button id="open-settings" type="button">Settings</button></p>
+  </section>
+  <section id="detail" class="hidden">
+    <h2>Detail</h2>
+    <p id="compact-state"></p>
+    <button id="back-home" type="button">Back home</button>
+  </section>
+  <section id="settings" class="hidden">
+    <h2>Settings</h2>
+    <p><label>display name <input id="display" type="text" value="LuaX"></label></p>
+    <button id="back-settings" type="button">Back home</button>
+  </section>
+</body>
+</html>
 """.trimIndent(),
             "app/main.lua" to """
-local ui = require("ui")
+local html = require("html")
 local util = require("lib.util")
 local state = require("app.state")
 
--- Multi-file app: state lives in app/state.lua, helpers in lib/util.lua,
--- and the view function re-renders the selection highlight on every tap.
-local function view()
-  local function note(i, title)
-    return ui.listitem {
-      key = "n" .. i,
-      title = title,
-      subtitle = state.selected == i and "selected" or "tap to select",
-      onClick = function() state.selected = i end,
-    }
-  end
-  return ui.app {
-    key = "sample-app",
-    title = "Notes",
-    ui.column {
-      key = "root",
-      spacing = 12,
-      ui.text { key = "hi", text = util.greet(state.user), size = 20 },
-      ui.text { key = "sub", text = "Multi-file app · require modules", size = 13 },
-      ui.list {
-        key = "notes",
-        spacing = 8,
-        note(1, "First note"),
-        note(2, "Second note"),
-      },
-      ui.text { key = "cnt", text = "notes: " .. #state.notes, size = 13 },
-    },
-  }
+local function show()
+  html.setText("hi", util.greet(state.user))
+  html.setText("n1s", state.selected == 1 and "selected" or "tap to select")
+  html.setText("n2s", state.selected == 2 and "selected" or "tap to select")
+  html.setText("cnt", "notes: " .. #state.notes)
 end
 
-return view
+html.on("n1", "click", function() state.selected = 1; show() end)
+html.on("n2", "click", function() state.selected = 2; show() end)
+show()
+""".trimIndent(),
+            "app/main.html" to """
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Notes</title>
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <h1 id="hi">hello</h1>
+  <p class="muted">Multi-file app · require modules</p>
+  <p><button id="n1" type="button">First note</button></p>
+  <p id="n1s" class="muted"></p>
+  <p><button id="n2" type="button">Second note</button></p>
+  <p id="n2s" class="muted"></p>
+  <p id="cnt"></p>
+</body>
+</html>
 """.trimIndent(),
             "app/state.lua" to """
 local M = {
@@ -1211,20 +1151,76 @@ local M = {
 
 return M
 """.trimIndent(),
+            "index.html" to """
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LuaX Examples</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <h1 id="title">LuaXIDE examples</h1>
+  <p id="lead"></p>
+  <ul>
+    <li>ui/ · counter, layout, form, pages</li>
+    <li>program/ · terminal and stdin</li>
+    <li>lib/ · local require modules</li>
+    <li>app/ · multi-file sample</li>
+    <li>games/ · snake</li>
+  </ul>
+  <div class="card"><p id="tip"></p></div>
+</body>
+</html>
+""".trimIndent(),
+            "style.css" to PAGE_CSS,
+            "games/snake.html" to """
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Snake</title>
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <h1>Snake</h1>
+  <p id="status"></p>
+  <p id="board"></p>
+  <p>
+    <button id="left" type="button">◀</button>
+    <button id="up" type="button">▲</button>
+    <button id="down" type="button">▼</button>
+    <button id="right" type="button">▶</button>
+  </p>
+  <p>
+    <button id="tick" type="button">Step</button>
+    <button id="pause" type="button">Pause</button>
+    <button id="restart" type="button">Restart</button>
+  </p>
+  <p class="muted">No engine timer. Step advances one tick.</p>
+</body>
+</html>
+""".trimIndent(),
             "docs/API.txt" to """
 LuaX local modules
 ------------------
-require("ui")           built-in UI toolkit
+require("html")         page operations (LuaX)
 require("lib.util")     loads src/lib/util.lua
 require("app.state")    loads src/app/state.lua
 
 Path rules (project src root):
   a.b  -> a/b.lua  or  a/b/init.lua
 
-UI nodes:
-  ui.app / column / row / text / button / card
-  ui.input / image / spacer / divider / scrollview
-  ui.list / listitem / stack / page / switch
+HTML host:
+  html.on(id, event, fn)
+  html.setText / setHtml / setAttr / setValue
+  html.addClass / removeClass
+  events: click, input, change, submit
+
+The page is index.html, or <script>.html beside the Lua file.
+require("ui") is an error.
 
 Program mode:
   print, io.read (blocking), input(), .run .stop .proot
@@ -1234,10 +1230,10 @@ LuaXIDE example library
 =======================
 
 ui/
-  counter.lua     button + state
-  layout.lua      row / column / card
-  form.lua        simple form
-  list_stack.lua  list + stack pages + switch
+  counter.lua     button + state (counter.html)
+  layout.lua      HTML layout (layout.html)
+  form.lua        text field (form.html)
+  list_stack.lua  pages + checkbox (list_stack.html)
 
 program/
   hello.lua       print / types
@@ -1250,8 +1246,11 @@ program/
 lib/
   util.lua        shared module for require()
 
+games/
+  snake.lua       step-driven snake (snake.html)
+
 app/
-  main.lua        multi-file sample app
+  main.lua        multi-file sample app (main.html)
   state.lua       shared app state module
 
 docs/
@@ -1262,11 +1261,6 @@ Program scripts open the terminal face.
 No device root required.
 """.trimIndent(),
         )
-
-        /** v5: samples rewritten in the view-function pattern — force-refresh on old installs. */
-        private val SAMPLES_V5_REFRESH: Map<String, String> = EXAMPLE_LIBRARY_FILES.filterKeys {
-            it == "ui/counter.lua" || it == "ui/form.lua" || it == "ui/list_stack.lua" || it == "app/main.lua"
-        }
     }
 }
 

@@ -2,7 +2,7 @@
 
 [English](ENGINE.md)
 
-> 面向**引擎维护者**。语言语义(方言、标准库、UI DSL、运行时行为)的权威定义在 [LUAX.md](LUAX.zh-CN.md) —— 本文不重复它;跨语言宿主契约见 [PLATFORM_ABI.md](PLATFORM_ABI.zh-CN.md)。改 `engine/lx.c` 必须同次更新 LUAX.md(AGENTS.md 规则 8)。
+> 面向**引擎维护者**。语言语义(方言、标准库、HTML 宿主、运行时行为)的权威定义在 [LUAX.md](LUAX.zh-CN.md) —— 本文不重复它;跨语言宿主契约见 [PLATFORM_ABI.md](PLATFORM_ABI.zh-CN.md)。改 `engine/lx.c` 必须同次更新 LUAX.md(AGENTS.md 规则 8)。
 
 ## 1. 架构
 
@@ -13,14 +13,14 @@
 
 ## 2. 实现要点(易踩区)
 
-- **序列化**(`jnode`):树 → `{type, props, children}` JSON;函数 prop 注册进 `S->handlers[id]`,**每次树重建 id 重新分配**(宿主每轮重读);上限 1024。props 键序为哈希槽序 —— 测试断言只能用子串匹配。
-- **invoke 语义**:`lx_invoke` 用 `callValue` 的**直接返回值**(非 `S->retbuf`,避免被后续调用污染)判定 handler 是否返回新树;nil → 重序列化 `app_view`(view 函数会重调)。语言级契约见 LUAX.md §4.2。
+- **HTML 操作**:`html.*` 把逗号分隔的 JSON 对象追加进 `S->json`(不加外层括号)。`lx_last_json` 在 `S->hview` 里拼出 `[...]`。`lx_html_event` 里 handler 出错会把 `jsonused` 回滚到这次调用的标记。`lx_invoke` 一律报错。
+- **事件分发**:`lx_html_event(id, event, payload)` 在 `html.on` 里查找(键是 id + `\x1f` + event),用一个字符串参数调用。语言级契约见 LUAX.md §4.2。
 - **防护**:`STEP` 宏(取消 + 步数)插在语句/循环/VM 每指令;`lx_run` 清残留取消标志,`lx_invoke` 不清。
 - **数组段**:`Table` 的整数键 `1..acap` 独占存放在 `arr[]`;`tget`/`tset` 按键路由,`agrow` 倍增 `acap` 并迁移落入范围的哈希项(`acap` 2 倍以内的非 nil 写入触发增长;稀疏远键留在哈希侧)。`next` 先迭代数组段再迭代哈希;`ahi`/`tlen` 不变。序列密集循环提速 ~5×(100 万追加 + 300 万读取:0.31s → 0.06s)。
 - **长度前缀缓存**:`Table.ahi` 记录已验证的非 nil 整数前缀 `1..ahi`;`tlen` 从 `ahi+1` 续扫(结果与全量扫描相同——hint 永不虚报),`tset` 负责增长/收缩(在 `ahi+1` 写入非 nil → `ahi++`;对 `[1,ahi]` 内整数键写 nil → `ahi=k-1`)。`tset` 是唯一的裸写入口(`__newindex` 在其上层拦截),`t[#t+1]=v` 追加循环从 O(n²) 降为 O(n)——50 万次追加 >5min → ~0.6s。
 - **动态作用域防护**:VM 编译期把"按全局处理的名字"记入 `Proto->gk`,每次调用前 `bc_globals_still_global` 复验无遮蔽,命中即回退树遍历;命中定义处 Env 链的名字编译为 `GETENV`/`SETENV`(capmode 下局部驻留 env 供闭包捕获)——见 BYTECODE_VM.md。
 - **槽位缓存**(`Proto->ec`,按 pc):`GETENV`/`SETENV` 缓存 `{cur-env, 链签名, table, slot}`;`GETGLOBAL`/`SETGLOBAL`/`GETFIELD`/`SETFIELD` 缓存 `{table, gen, slot}`。**不变量**:任何改变哈希结构的写入必须 `Table.gen++` —— 插入、`tresize`、`agrow`;原地写值不 bump(缓存命中时重读 `.v`)。env 签名 `sum(env->gen + env->vars->gen)` 对固定链是精确判据,不是启发式。字段命中只服务"存在且非 nil"的槽位 —— nil 值槽位必须照旧走 `__index`/`__newindex`。
-- **`S->twrites`** 在 `tset`(唯一裸写入口)内自增;`lx_invoke` 在事件零写且 `app_view` 为同一静态表时跳过 `lx_build_tree` —— 保留的 JSON 与 handler id 表仍然有效。
+- **`S->twrites`** 在 `tset`(唯一裸写入口)内自增。LuaX 不再序列化 UI 树,这个计数器不再用来跳过重建。
 - **`internName` 按指针驻留**(`char*` 身份而非内容):不同 AST 位置的同名得到不同 Str —— 因此槽位缓存的 `keyIs` 在指针比较后还有哈希+memcmp 兜底。
 - **`newStrBuf`/`strSeal`**:自建字节的 builtin(`string.upper/rep/char/reverse`、拼接融合)直接写 Str 缓冲再 seal 哈希 —— 省掉临时缓冲 + 二次拷贝。
 - **惰性拼接(rope)**:`..` 产出 `StrRope`(`base.p==NULL` 为标记;`len` 急切;`h` 推迟到物化),不再复制字节 —— `s = s..x` 循环每步 O(1)。**不变量**:凡是对可能携带运行时值的 `Str` 读 `->p`/`->h`,必须先 `sflat()`;`->len` 永远安全。`sflat` 用迭代式填充物化字节 —— 追加循环留下 n 层深脊柱,递归会爆 C 栈 —— 且不需要 `State*`(rope 内嵌 `owner` 持有 arena State),所以无 State 的表核心(`strEq`/`hashVal`/`tfind`)也能调用它。`sconcat` 让 ≤64B 的小结果仍走平字符串,空操作数直接折叠。
@@ -34,7 +34,7 @@ make -C engine test          # 必须输出 ALL TESTS PASSED;含:
                              #   t1–t29 功能/契约测试、bc-diff 差分(12 脚本)、
                              #   bc-fuzz(种子化生成程序,VM 开/关输出比对)、
                              #   doc-check(LUAX.md 代码块逐个实跑)、CLI 冒烟
-./engine/lx --ui foo.lua      # 打印 ---OUTPUT--- / ---TREE---
+./engine/lx --ui foo.lua      # 打印 ---OUTPUT--- / ---OPS---
 ./engine/lx --bc-dump f.lua   # 反汇编;LUAX_NO_BC=1 关 VM;LUAX_BC_STATS=1 看参与度
 make -C engine bc-fuzz FUZZ_N=200 FUZZ_SEED=7   # 更深的分歧扫描;失败程序保留在 FUZZ_DIR
 ```
@@ -43,7 +43,7 @@ make -C engine bc-fuzz FUZZ_N=200 FUZZ_SEED=7   # 更深的分歧扫描;失败�
 
 - **加引擎能力必须加 `t*` 测试**(AGENTS.md 硬规则);新标准库函数:正向断言进 t6/t14/t25,负例(bad argument)进 t14 的 `musterr` 列表
 - VM/tree-walk 语义修复在 t25 加回归断言(多值展开、循环控制流);bc-fuzz 扫更广表达式空间——命中分歧时保留的程序 + seed 就是复现
-- 涉及 invoke/UI 契约的写 C driver(范式见 `t26_invoke_tree.c`:run → 找 handler id → invoke → 断言 JSON 变化)
+- Lua HTML 宿主改动写 C driver(范式见 `t26_invoke_tree.c`:run → `lx_html_event` → 断言操作数组,含出错回滚)。JSON 树的 invoke 由 JS 引擎的 `j6` 覆盖。
 - 纯库函数天然 VM 无关,差分免费;改执行语义(名字解析/调用约定)必须过差分
 - **改 LUAX.md 的示例 = 改测试**:doc-check 会逐块实跑
 
@@ -51,15 +51,17 @@ make -C engine bc-fuzz FUZZ_N=200 FUZZ_SEED=7   # 更深的分歧扫描;失败�
 
 **加标准库函数**:`lx.c` 写 `static Value st_xxx`(类型守卫用 `argStr`/`argTab`/`num2int`,错误一律 `lx_rt_error`)→ `openLibs` 注册 → 测试(t6/t14/t25/t27)→ LUAX.md §3 加行(签名 + 一行语义 + 可运行示例)→ 可选 `LuaIntel.kt` 补全。
 
-**加 UI 组件**(五处同步,缺一不可):
+**加 Compose UI 组件**(JavaScript 与 Python 的树;LuaX 的 HTML 不走这份清单):
 
-1. `engine/lx.c`:`UICTOR(名字)` 一行
+1. `engine-js/` 里的 JS 构造器(Python 门面若暴露同一节点,一并加上)
 2. `app/` 与 `runtime/` 两份 `ComponentRegistry.kt` 各加 Composable(改完 diff 必须零差异)
-3. `ComponentCatalog.kt` 面板条目(`validateAgainstRegistry` 会抓漏)
-4. `ApiDocs.kt` 文档条目
-5. LUAX.md §5 表格加一行;若影响重渲染契约,同步 LUAX.md §4.2 与 PLATFORM_ABI.md
+3. `ComponentCatalog.kt` 面板条目(`validateAgainstRegistry` 会抓漏)。IDE 在 Lua 工程里隐藏这块面板。
+4. `ApiDocs.kt` 的 `ui` 分类条目
+5. 不要写进 LUAX.md §5(那一节是 Lua HTML 宿主)。树的属性变更写在 PLATFORM_ABI.md §6 和 `j6`。
 
-**改事件/重渲染契约**:改 `lx_invoke`/`lx_build_tree` → t26 扩用例 → `luax_jni.c` ×2、`EngineHost` ×2、JS/Python 引擎同步(PLATFORM_ABI conformance 全过)→ LUAX.md §4.2 重写。
+**改 Lua HTML 宿主**:改 `lx.c` 里的 `html.*` → 扩展 t26 → 同步 `luax_jni.c` ×2、`EngineHost` ×2、`HtmlPage.kt` ×2 → 重写 LUAX.md §4–§5(中文版的 `lua` 代码块必须与英文版逐字节相同)。
+
+**改 JSON 树的事件契约**(JS/Python):改 JS/Python 的 invoke 路径 → 扩展 j6 → 同步两份 `ComponentRegistry.kt` 与 PLATFORM_ABI.md。LuaX 上的 `lx_invoke` 保持为已退役的报错。
 
 ## 5. 维护约定
 

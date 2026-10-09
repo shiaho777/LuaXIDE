@@ -72,23 +72,17 @@ private val TOKEN_REGEX = Regex(
         "|\\b[A-Za-z_]\\w*\\b"
 )
 
-const val SAMPLE_LUA = """-- LuaXIDE · Bifold prototype
-local ui = require("ui")
+const val SAMPLE_LUA = """-- LuaXIDE · the page is index.html
+local html = require("html")
 
 local count = 0
 
-return ui.app {
-    title = "My app",
-    ui.column {
-        ui.text { text = "Hello, LuaX!", size = 20 },
-        ui.button {
-            text = "count",
-            onClick = function()
-                count = count + 1
-            end,
-        },
-    },
-}
+html.on("plus", "click", function()
+    count = count + 1
+    html.setText("count", "taps: " .. count)
+end)
+
+html.setText("count", "taps: 0")
 """
 
 @Composable
@@ -102,6 +96,7 @@ fun CodeFace(
     onToggleBreakpoint: (Int) -> Unit = {},
     onEditBreakpoint: (Int) -> Unit = {},
     onToast: (String) -> Unit = {},
+    showComponentPalette: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val cs = MaterialTheme.colorScheme
@@ -114,6 +109,9 @@ fun CodeFace(
     var completionPrefixStart by remember { mutableStateOf(0) }
 
     LaunchedEffect(text) { editor.syncExternal(text) }
+    LaunchedEffect(showComponentPalette) {
+        if (!showComponentPalette) paletteOpen = false
+    }
 
     val density = LocalDensity.current
 
@@ -212,6 +210,7 @@ fun CodeFace(
             onUndo = editor::undo,
             onRedo = editor::redo,
             onToggleFind = find::toggle,
+            showPalette = showComponentPalette,
             onTogglePalette = { paletteOpen = !paletteOpen },
             onOpenSymbols = { symbolsOpen = true },
             onGoDef = { goToDefinition() },
@@ -226,7 +225,7 @@ fun CodeFace(
         }
 
         AnimatedVisibility(
-            visible = paletteOpen,
+            visible = showComponentPalette && paletteOpen,
             enter = Motion.listEnter(),
             exit = Motion.listExit(),
         ) {
@@ -415,6 +414,7 @@ private fun EditorToolbar(
     onUndo: () -> Unit,
     onRedo: () -> Unit,
     onToggleFind: () -> Unit,
+    showPalette: Boolean,
     onTogglePalette: () -> Unit,
     onOpenSymbols: () -> Unit,
     onGoDef: () -> Unit,
@@ -445,8 +445,10 @@ private fun EditorToolbar(
         IconButton(onClick = onOpenSymbols) {
             Icon(Icons.Filled.Code, contentDescription = S.SYMBOLS, tint = cs.onSurfaceVariant)
         }
-        IconButton(onClick = onTogglePalette) {
-            Icon(Icons.Filled.Add, contentDescription = S.INSERT_COMPONENT, tint = cs.onSurfaceVariant)
+        if (showPalette) {
+            IconButton(onClick = onTogglePalette) {
+                Icon(Icons.Filled.Add, contentDescription = S.INSERT_COMPONENT, tint = cs.onSurfaceVariant)
+            }
         }
         IconButton(onClick = onToggleFind) {
             Icon(Icons.Filled.Search, contentDescription = S.FIND, tint = cs.onSurfaceVariant)

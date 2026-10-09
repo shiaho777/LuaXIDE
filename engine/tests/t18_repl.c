@@ -66,7 +66,7 @@ int main(void){
   memset(err, 0, sizeof(err));
   rc = lx_run(g, "local a=1 local b=2 return a+b", err, sizeof(err));
   CHK(rc == 0, "run sum rc");
-  CHK(strcmp(lx_last_json(g), "null") == 0, "run non-ui json null");
+  CHK(strcmp(lx_last_json(g), "[]") == 0, "run with no ops is empty");
 
   /* ---- lx_dofile: existing + missing ---- */
   memset(err, 0, sizeof(err));

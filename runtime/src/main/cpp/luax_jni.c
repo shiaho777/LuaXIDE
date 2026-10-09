@@ -170,6 +170,41 @@ Java_dev_luaxide_engine_LuaxNative_nativeInvoke(JNIEnv* env, jclass clazz, jlong
     return out;
 }
 
+JNIEXPORT jobjectArray JNICALL
+Java_dev_luaxide_engine_LuaxNative_nativeHtmlEvent(JNIEnv* env, jclass clazz, jlong handle, jstring id, jstring event, jstring payload) {
+    lx_State* S = (lx_State*)(intptr_t)handle;
+    jclass strClass = (*env)->FindClass(env, "java/lang/String");
+    jobjectArray out = (*env)->NewObjectArray(env, 3, strClass, NULL);
+    if (!S) {
+        (*env)->SetObjectArrayElement(env, out, 0, jstr(env, "1"));
+        (*env)->SetObjectArrayElement(env, out, 1, jstr(env, "engine not initialized"));
+        (*env)->SetObjectArrayElement(env, out, 2, jstr(env, ""));
+        return out;
+    }
+    const char* cid = id ? (*env)->GetStringUTFChars(env, id, NULL) : "";
+    const char* cev = event ? (*env)->GetStringUTFChars(env, event, NULL) : "";
+    const char* cpay = payload ? (*env)->GetStringUTFChars(env, payload, NULL) : "";
+    char err[ERRLEN];
+    int r = lx_html_event(S, cid ? cid : "", cev ? cev : "", cpay ? cpay : "", err, sizeof(err));
+    if (id && cid) (*env)->ReleaseStringUTFChars(env, id, cid);
+    if (event && cev) (*env)->ReleaseStringUTFChars(env, event, cev);
+    if (payload && cpay) (*env)->ReleaseStringUTFChars(env, payload, cpay);
+    (*env)->SetObjectArrayElement(env, out, 0, jstr(env, r ? "1" : "0"));
+    (*env)->SetObjectArrayElement(env, out, 1, jstr(env, r ? err : ""));
+    (*env)->SetObjectArrayElement(env, out, 2, jstr(env, ""));
+    return out;
+}
+
+JNIEXPORT jstring JNICALL
+Java_dev_luaxide_engine_LuaxNative_nativeTakeHtmlOps(JNIEnv* env, jclass clazz, jlong handle) {
+    lx_State* S = (lx_State*)(intptr_t)handle;
+    if (!S) return jstr(env, "[]");
+    const char* ops = lx_last_json(S);
+    jstring out = jstr(env, ops ? ops : "[]");
+    lx_html_clear_ops(S);
+    return out;
+}
+
 JNIEXPORT jstring JNICALL
 Java_dev_luaxide_engine_LuaxNative_nativeTakeOutput(JNIEnv* env, jclass clazz, jlong handle) {
     lx_State* S = (lx_State*)(intptr_t)handle;

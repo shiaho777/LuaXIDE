@@ -60,9 +60,9 @@ test: $(LX) $(DRIVERS)
 	@echo "=== bc fuzz ==="        && $(MAKE) -s bc-fuzz
 	@echo "=== doc examples ==="     && python3 tests/doc_check.py
 	@echo "=== cli ==="             && ./$(LX) -e "print('cli-ok')" | grep -q cli-ok
-	@echo "=== cli ui ==="          && ./$(LX) --ui -e "return require('ui').app{title='C'}" | grep -q '"type":"app"'
+	@echo "=== cli ui ==="          && ./$(LX) --ui -e "require('html').setText('t','C')" | grep -q '"op":"setText"'
 	@echo "=== cli stdin ==="       && echo 'print(123)' | ./$(LX) | grep -q 123
-	@echo "=== cli ui stdin ==="    && echo 'return require("ui").app{title="S"}' | ./$(LX) --ui | grep -q '"title":"S"'
+	@echo "=== cli ui stdin ==="    && echo 'require("html").setText("t","S")' | ./$(LX) --ui | grep -q '"text":"S"'
 	@echo "ALL TESTS PASSED"
 
 t9-debug: lx.c lx.h tests/t9_debug_driver.c

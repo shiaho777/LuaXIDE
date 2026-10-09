@@ -56,7 +56,7 @@ int main(int argc, char** argv){
         r=lx_run(S,src,err,sizeof(err));
         if(owned)free(src);
         if(r){ fprintf(stderr,"luax: %s\n",err); }
-        else { printf("---OUTPUT---\n%s---TREE---\n%s\n", lx_last_output(S), lx_last_json(S)); }
+        else { printf("---OUTPUT---\n%s---OPS---\n%s\n", lx_last_output(S), lx_last_json(S)); }
         lx_close(S);
         return r?1:0;
     }

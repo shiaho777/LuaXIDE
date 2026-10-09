@@ -3,4 +3,7 @@
     native <methods>;
 }
 -keep class dev.luaxide.runtime.** { *; }
+-keepclassmembers class dev.luaxide.html.LuaxJsBridge {
+    @android.webkit.JavascriptInterface <methods>;
+}
 -dontwarn **

@@ -9,27 +9,21 @@
 LuaX is a **dialect subset** of Lua 5.1 semantics, built for writing and packaging small apps on Android:
 
 - Single-file C engine (~2200 lines), tree-walking + bytecode VM hybrid (function bodies **and** the top-level chunk), ~11–22× on numeric loops
-- Declarative UI: the UI tree is an ordinary Lua table; event-driven re-render (§4)
+- HTML UI: the page is real HTML and CSS, drawn by the host WebView; Lua registers events and queues DOM updates (§4, §5)
 - No root: sandboxed execution; one-tap packaging into a standalone signed APK
 - The **reference language** of LuaXIDE's three-language platform (Lua / JavaScript / Python) — cross-language contract: [PLATFORM_ABI.md](PLATFORM_ABI.md)
 
 ```lua
--- 完整的交互 App:计数器
-local ui = require("ui")
+-- A complete interactive app. The page is index.html; this file is the logic.
+local html = require("html")
 local count = 0
 
-local function view()
-  return ui.app {
-    title = "Counter",
-    ui.column {
-      spacing = 12,
-      ui.text { text = "taps: " .. count, size = 28 },
-      ui.button { text = "+1", onClick = function() count = count + 1 end },
-    },
-  }
-end
+html.on("plus", "click", function()
+  count = count + 1
+  html.setText("count", "taps: " .. count)
+end)
 
-return view   -- 返回 view 函数 = 每次点击后自动重渲染(§4)
+html.setText("count", "taps: 0")
 ```
 
 ## 2. Differences from Lua 5.1
@@ -167,152 +161,99 @@ print("hi,", name)
 ### 4.1 Execution guards
 
 - **Step limit**: the host defaults to 50,000,000 steps; exceeding it reports `execution step limit exceeded (possible infinite loop)`
-- **Cooperative cancel**: the host may cancel a running script at any time; reports `cancelled by user`. A new `run` clears a stale cancel flag; `invoke` does not (§4.2)
+- **Cooperative cancel**: the host may cancel a running script at any time; reports `cancelled by user`. A new `run` clears a stale cancel flag; an HTML event does not (§4.2)
 - **Call-depth limit**: 160 nested calls; exceeding reports `stack overflow` (catchable by `pcall`; the engine stays usable)
 - **Argument limit**: at most 64 actual arguments per call (expanded multi-values count too); exceeding reports `too many arguments`
-- **UI-tree depth limit**: serialization nests at most 128 deep; a cyclic table reports `ui tree too deep (possible cycle)`
 - **`__index`/`__newindex` chain limit**: 1024 hops; a self-loop reports `'__index'/'__newindex' chain too long`
 - Errors uniformly read `line N: message`; `pcall` catches them
 
-### 4.2 Events & re-render (the core contract)
+### 4.2 Events (the core contract)
 
-A function prop serializes as `{"__handler": id}`; the host calls it via `invoke(id, payload)` where **payload is a single string** (`nil` for parameterless events). After every invoke, in order:
+The page is an HTML document. Lua does not return a view. `html.on(id, event, fn)` registers a handler for an element id; registering the same pair again replaces the previous function. The host delivers events with a single string payload:
 
-1. **handler returned a ui tree** → the new tree replaces the current view;
-2. otherwise **`app_view` is re-serialized**; if the script returned a **view function**, it is re-called first.
+| Event | When | Payload |
+|---|---|---|
+| `click` | a click on an element with an `id` (the nearest ancestor id wins) | `""` |
+| `input` | the control's value changes while typing | the current value |
+| `change` | the control commits a value; a checkbox sends `"true"` or `"false"` | the current value |
+| `submit` | a form is submitted; the host cancels the navigation | `""` |
 
-Three correct ways to update the UI:
+An id with no handler is ignored. If the handler errors, DOM operations queued during that call are discarded and the page stays as it was. `run` clears a stale cancel flag; an event dispatch does not.
 
 ```lua
--- ✅ 路径 A(推荐):脚本返回 view 函数,每次事件后引擎重调,自动读到新状态
+local html = require("html")
 local count = 0
-local function view()
-  return ui.app { ui.text { text = "n=" .. count },
-                  ui.button { text = "+1", onClick = function() count = count + 1 end } }
-end
-return view
+local name = ""
 
--- ✅ 路径 B:handler 返回新树(适合整屏替换)
--- onClick = function() count = count + 1; return view() end
+html.on("plus", "click", function()
+  count = count + 1
+  html.setText("count", "taps: " .. count)
+end)
 
--- ✅ 路径 C:定时驱动 —— 树上挂 onTick(handler) + interval(毫秒),
---          宿主按 interval 调 onTick,每次走上面的判定(games/snake.lua 为范例)
-
--- ❌ 反例:返回静态表 + handler 里改局部变量 —— 树已序列化完毕,
---    改的变量无人再读,屏幕永远不变。
+html.on("name", "input", function(text)
+  name = text
+  html.setText("echo", name)
+end)
 ```
 
-Event payload semantics: `input.onChange(text)` receives each edit and `input.onSubmit(text)` receives keyboard confirmation, both as field-text strings; `slider.onChange(v)` receives the numeric value as a string; `switch.onToggle(v)` receives `"true"`/`"false"`. Click and timer events take no argument. Use `tonumber(v)` for slider values and `v == "true"` for switches.
+There is no engine timer. A host that wants animation calls the same event dispatch on its own clock.
 
-### 4.3 onTick / interval
+### 4.3 Where the page lives
 
-Two props on a node — `onTick = function() ... end` and `interval = 260` (milliseconds) — form the timer contract: the host repeatedly `invoke`s onTick every interval. `interval` is re-read on every tree rebuild, so a handler may adjust the pace.
+The host loads `index.html` from the project, or `<name>.html` beside the script when that file exists (`ui/counter.lua` looks for `ui/counter.html` first). Relative CSS and image URLs resolve against the project directory. `<script>` elements in the page are removed; behavior stays in Lua. The page cannot navigate off the project or load the network.
 
-## 5. UI DSL
+`require("ui")` is an error: `module 'ui' has been removed; write index.html and use require('html')`.
 
-`ui.<type> { props..., children... }` tags an ordinary Lua table with `__ui = "<type>"`. String keys are props; array entries are children; function props become handlers. **Only text accepts string-constructor sugar**: `ui.text('hi')` equals `ui.text { text = "hi" }`. A string child, as in `ui.column { "hi" }`, serializes as a text node; it does not supply a button's label. Other constructors still take prop tables.
+## 5. HTML host
 
-### Components (19)
+`local html = require("html")` (or the global `html`) is the whole UI API. Each call appends one DOM operation. The host applies the batch after the script or the event handler returns. A missing element is skipped by the page.
 
-Defaults below apply when the prop is absent. Dimensions are dp except text size (sp).
-
-| Constructor | Canonical props and defaults | Behavior |
-|---|---|---|
-| `app` | `title = ""` | Root; a non-empty title renders a header |
-| `column` / `row` | `spacing = 8` | Vertical / horizontal layout; row children default to vertical center |
-| `box` | Common styles below | Overlapping children, default top-start |
-| `text` | `text = ""`, `size = 16`, `color`, `font`, `bold = false`, `animate = true` | Asset font path; `animate = false` disables text-swap animation |
-| `button` | `text = "button"`, `onClick` | No payload; children ignored |
-| `card` | `spacing = 8`, `radius = 16`, `padding = 16` | Vertical card content |
-| `input` | `value = ""`, `label = "input"`, `onChange`, `onSubmit` | Single line; every edit / keyboard confirmation sends field text as a string |
-| `image` | `src = ""`, `size = 96` | Asset image, cropped to fit; unresolved source shows `missing` |
-| `spacer` | `size = 8` | Default height |
-| `divider` | `color` | Horizontal rule |
-| `scrollview` | `spacing = 8` | Vertical scrolling with a finite viewport |
-| `list` | `spacing = 8` | Plain Column, not lazy/recycled and not an independent scroller |
-| `listitem` | `title = ""`, `subtitle = ""`, `onClick` | Optional clickable row and children; no click payload |
-| `stack` / `page` | `selected = ""` / `key`, `spacing = 8` | Selects by **page.key only**, otherwise first page; without pages, renders all children |
-| `switch` | `label = "switch"`, `checked = false`, `onToggle` | Sends `"true"` / `"false"`, not a boolean |
-| `slider` | `from = 0`, `to = 1`, `value = from`, `step = 0`, `onChange` | Sends numeric value as a **string**; convert with `tonumber` |
-| `progress` | `value`, `color` | Linear bar: value clamped to 0..1; **absent value = indeterminate** |
-
-Slider values and range must be finite, with `to > from` and a finite non-negative step (the range must also be representable by the host float slider). `step = 0` is continuous; positive step is a **numeric increment from `from`**, not a tick count. Values clamp to the range and snap to the nearest increment; `to` stays reachable even when the range is not divisible by step. Invalid parameters display a diagnostic.
-
-### Common styles and child layout
-
-- `width`, `height`, `padding`, `radius`: finite non-negative **numbers in dp**, subject to parent constraints; invalid values are ignored. No `"100%"` / `"fill"` sizing syntax. Radius clips corners; padding defaults to 0, except card's 16dp interior default (applied once).
-- `background`: `#RRGGBB` / `#AARRGGBB`; card/button/input/listitem/image apply the color through their own surfaces. Text/divider/progress `color` uses the same format.
-- `weight`: finite positive child weight in **Row/Column scope**, sharing horizontal/vertical remaining space. The main axis must be bounded; weight is ignored in unbounded scroll content. Box does not use weight.
-- `align` is a **child** prop, not a container-wide setting. Row scope: `top`, `center`, `bottom`. Column scope: `start` (`left` also accepted), `center`, `end`. Box scope: `topleft` (default), `top`, `topright`, `left`, `center`, `right`, `bottomleft`, `bottom`, `bottomright`. Other containers rendering children in a Column use that scope's rules; scope-inapplicable values are ignored.
-- Node identity uses `key`, then `id`, then structural position. A stable explicit identity preserves state when siblings reorder, but changing the component type creates fresh state. Dynamic lists should give each child a stable key; text/content is never used as an automatic key. Duplicate explicit keys/ids among siblings show `duplicate child key '<value>' at <parent path>` instead of rendering that conflicting child list. Keys may repeat under different parents. This does **not** make `page.id` a selector: set `page.key` for `stack.selected`.
-- Host vertical scrolling is independent of a Row child's horizontal weight. Unbounded vertical weights and explicit unbounded scrollviews request a finite host viewport; an explicit container height contains that requirement. Only the selected stack page participates in this decision.
-
-Renderer regression tests: `./gradlew :app:testDebugUnitTest` runs identity and viewport policy tests without a device. `./gradlew :app:connectedDebugAndroidTest` runs Compose layout, keyed-input and nested-scroll tests on an available dedicated device. Building the test APK alone does not validate layout.
-
-A nested `scrollview` needs a **finite height**, supplied on itself or by an actually constraining parent. With unbounded height it displays `scrollview needs a bounded height. Set height on this nested scrollview or its parent.` rather than scrolling. Arbitrary nesting is not guaranteed. `list` remains a plain Column; use a bounded scrollview when independent scrolling is needed.
-
-### Breaking migration: canonical names only
-
-Removed prop/event fallback chains have **no compatibility shim**. Rewrite aliases explicitly rather than expecting a fallback:
-
-| Old spelling / usage | Canonical replacement |
+| Function | Operation |
 |---|---|
-| `label` / `value` / `content` used as text or button text | `text` |
-| `fontSize`, `fontPath` | text `size`, `font` |
-| `onTap` / `onPress` | button/listitem `onClick` |
-| input `text`, `placeholder`, `onEnter` | `value`, `label`, `onSubmit` |
-| switch `value`, `text`, `onChange` / `onCheckedChange` | `checked`, `label`, **`onToggle`** |
-| image `source` / `path`, container `gap`, card `cornerRadius` / `pad` | `src`, `spacing`, `radius` / `padding` |
-| listitem `text` / `description` | `title` / `subtitle` |
-| stack `value` / `active`, page `id` used for selection | `selected`, page **`key`** |
-| slider `min` / `max` / `steps` / `onValueChanged` | `from` / `to` / `step` (increment, not count) / `onChange` |
+| `html.on(id, event, fn)` | register `fn(payload)`; payload is always a string |
+| `html.setText(id, text)` | set `textContent` |
+| `html.setHtml(id, html)` | set `innerHTML` |
+| `html.setAttr(id, name, value)` | `setAttribute` |
+| `html.setValue(id, value)` | set an input's `value` |
+| `html.addClass(id, class)` | `classList.add` |
+| `html.removeClass(id, class)` | `classList.remove` |
 
-`input.onChange` and `slider.onChange` are canonical; `switch.onChange` is not. Use the component table for all other names and defaults.
+A wrong argument type or a missing argument reports `bad argument #N to 'html.…'`.
 
-### Stateful example
-
-Return a view function so every event rebuilds the tree from the updated state (§4.2):
+```html
+<label>Name <input id="name"></label>
+<input id="amount" type="range" min="0" max="1" step="0.1" value="0.4">
+<label><input id="enabled" type="checkbox"> Enabled</label>
+<p id="summary"></p>
+```
 
 ```lua
-local ui = require("ui")
+local html = require("html")
 local amount = 0.4
 local name = ""
 local enabled = false
-local function view()
-  return ui.app {
-    title = "Controls",
-    ui.column {
-      spacing = 12,
-      ui.text('hi'),
-      "String children become text nodes",
-      ui.row { width = 280,
-        ui.text { text = "A", weight = 1 },
-        ui.text { text = "B", weight = 2, align = "bottom" },
-      },
-      ui.box { width = 280, height = 64, background = "#202020", radius = 8,
-        ui.text { text = "Overlay", bold = true, color = "#FFFFFF",
-                  padding = 8, align = "bottomright" },
-      },
-      ui.input { label = "Name", value = name,
-        onChange = function(text) name = text end,
-        onSubmit = function(text) print(text) end,
-      },
-      ui.slider { value = amount, from = 0, to = 1, step = 0.1,
-        onChange = function(value) amount = tonumber(value) end,
-      },
-      ui.progress { value = amount },
-      ui.progress {}, -- absent value = indeterminate
-      ui.switch { label = "Enabled", checked = enabled,
-        onToggle = function(value) enabled = value == "true" end,
-      },
-      ui.text { text = name .. " / " .. amount },
-    },
-  }
+
+local function summary()
+  html.setText("summary", name .. " / " .. amount .. " / " .. tostring(enabled))
 end
-return view -- return the function, not view(): events rebuild from state
+
+html.on("name", "input", function(text)
+  name = text
+  summary()
+end)
+html.on("amount", "change", function(value)
+  amount = tonumber(value) or 0
+  summary()
+end)
+html.on("enabled", "change", function(value)
+  enabled = value == "true"
+  summary()
+end)
+summary()
 ```
 
-Serialization is `{type, props, children}` JSON; prop order is unspecified, so assertions must not depend on it. See [PLATFORM_ABI.md](PLATFORM_ABI.md) §6 for the cross-language contract.
+CSS is ordinary CSS (`<link>`, `<style>`, or a `style` attribute). Layout, color, and fonts are the WebView's. JavaScript and Python projects still render the JSON UI tree; this section is LuaX only. See [PLATFORM_ABI.md](PLATFORM_ABI.md).
+
 
 ## 6. Metatables
 

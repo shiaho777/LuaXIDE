@@ -1,0 +1,8 @@
+:root { color-scheme: light dark; }
+body { font-family: system-ui, sans-serif; margin: 0; padding: 20px; }
+h1 { font-size: 22px; margin: 0 0 8px; }
+p { margin: 8px 0; }
+button, input { font: inherit; }
+button { padding: 8px 14px; margin: 4px 8px 4px 0; }
+input { padding: 8px; width: min(100%, 320px); }
+.muted { opacity: 0.72; font-size: 13px; }
