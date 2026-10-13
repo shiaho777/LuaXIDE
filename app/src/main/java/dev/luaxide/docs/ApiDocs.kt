@@ -13,70 +13,6 @@ data class ApiDoc(
 object ApiDocs {
     val all: List<ApiDoc> = listOf(
         ApiDoc(
-            id = "html.on",
-            category = "html",
-            name = "html.on",
-            signature = "html.on(id, event, fn)",
-            summary = "给元素 id 登记事件。同一 id+事件再登记会换掉旧函数。LuaX 专用。",
-            example = """local html = require("html")
-html.on("plus", "click", function()
-  html.setText("count", "1")
-end)""",
-            props = listOf(
-                "click" to "载荷是空字符串",
-                "input / change" to "载荷是当前值；勾选框的 change 是 \"true\" 或 \"false\"",
-                "submit" to "表单提交，宿主取消跳转，载荷是空字符串",
-            ),
-        ),
-        ApiDoc(
-            id = "html.setText",
-            category = "html",
-            name = "html.setText",
-            signature = "html.setText(id, text)",
-            summary = "设置元素的 textContent。宿主在脚本或事件函数返回后一次性应用。",
-            example = """html.setText("count", "taps: " .. count)""",
-        ),
-        ApiDoc(
-            id = "html.setHtml",
-            category = "html",
-            name = "html.setHtml",
-            signature = "html.setHtml(id, html)",
-            summary = "设置元素的 innerHTML。",
-            example = """html.setHtml("board", "<b>◉</b>")""",
-        ),
-        ApiDoc(
-            id = "html.setAttr",
-            category = "html",
-            name = "html.setAttr",
-            signature = "html.setAttr(id, name, value)",
-            summary = "setAttribute。页面和样式写在 index.html 或与脚本同名的 .html 里。",
-            example = """html.setAttr("name", "placeholder", "your name")""",
-        ),
-        ApiDoc(
-            id = "html.setValue",
-            category = "html",
-            name = "html.setValue",
-            signature = "html.setValue(id, value)",
-            summary = "设置输入框的 value。没有同步的 html.getValue，值从 input/change 事件来。",
-            example = """html.setValue("name", "")""",
-        ),
-        ApiDoc(
-            id = "html.addClass",
-            category = "html",
-            name = "html.addClass",
-            signature = "html.addClass(id, class)",
-            summary = "classList.add。",
-            example = """html.addClass("detail", "hidden")""",
-        ),
-        ApiDoc(
-            id = "html.removeClass",
-            category = "html",
-            name = "html.removeClass",
-            signature = "html.removeClass(id, class)",
-            summary = "classList.remove。",
-            example = """html.removeClass("home", "hidden")""",
-        ),
-        ApiDoc(
             id = "ui.app",
             category = "ui",
             name = "ui.app",
@@ -140,15 +76,15 @@ end)""",
             id = "ui.button",
             category = "ui",
             name = "ui.button",
-            signature = "ui.button { text, onClick? }",
-            summary = "按钮，onClick 为回调。",
+            signature = "ui.button { text, onClick?, enabled?, kind? }",
+            summary = "按钮，onClick 为回调。enabled = false 时变淡且不响应。kind: filled / outlined / text。",
             example = """ui.button {
   text = "点我",
   onClick = function()
     print("clicked")
   end,
 }""",
-            props = listOf("text" to "按钮文字", "onClick" to "点击回调"),
+            props = listOf("text" to "按钮文字", "onClick" to "点击回调", "enabled" to "默认 true", "kind" to "filled / outlined / text"),
         ),
         ApiDoc(
             id = "ui.card",
@@ -169,8 +105,8 @@ end)""",
             id = "ui.input",
             category = "ui",
             name = "ui.input",
-            signature = "ui.input { label?, value?, onChange?, onSubmit? }",
-            summary = "单行输入。onChange 每次编辑、onSubmit 键盘确认均传文本字符串。返回 view 函数以更新状态。",
+            signature = "ui.input { label?, value?, onChange?, onSubmit?, enabled?, keyboard? }",
+            summary = "单行输入。onChange 每次编辑、onSubmit 键盘确认均传文本字符串。keyboard: text / number / email / phone / password。",
             example = """local name = ""
 local function view()
   return ui.app {
@@ -182,19 +118,28 @@ local function view()
   }
 end
 return view""",
-            props = listOf("label" to "标签", "value" to "当前文本", "onChange" to "编辑回调(文本字符串)", "onSubmit" to "确认回调(文本字符串)"),
+            props = listOf("label" to "标签", "value" to "当前文本", "onChange" to "编辑回调(文本字符串)", "onSubmit" to "确认回调(文本字符串)", "keyboard" to "text / number / email / phone / password"),
         ),
         ApiDoc(
             id = "ui.image",
             category = "ui",
             name = "ui.image",
             signature = "ui.image { src, size? }",
-            summary = "图片。src 为工程 src/ 下相对路径，会随 APK 打包。",
+            summary = "图片。src 为工程 src/ 下相对路径，会随 APK 打包。解析失败显示占位图标。",
             example = """ui.image {
   src = "assets/images/logo.png",
   size = 120,
 }""",
             props = listOf("src" to "图片路径", "size" to "边长 (dp)"),
+        ),
+        ApiDoc(
+            id = "ui.icon",
+            category = "ui",
+            name = "ui.icon",
+            signature = "ui.icon { name, size?, color? }",
+            summary = "按名称显示 Material 图标。名称见 LUAX.md §5。未知名称显示淡色回退图标。",
+            example = """ui.icon { name = "home", size = 24 }""",
+            props = listOf("name" to "图标名 (home/settings/back/…)", "size" to "边长 (dp，默认 24)", "color" to "#RRGGBB"),
         ),
         ApiDoc(
             id = "ui.spacer",
@@ -230,7 +175,7 @@ return view""",
             category = "ui",
             name = "ui.list",
             signature = "ui.list { spacing?, children... }",
-            summary = "普通 Column 列表，无懒加载/回收或独立滚动，子项常用 ui.listitem。",
+            summary = "普通 Column 列表，默认间距 0。无懒加载/回收或独立滚动，子项常用 ui.listitem。",
             example = """ui.list {
   ui.listitem { title = "A", subtitle = "详情" },
   ui.listitem { title = "B" },
@@ -241,21 +186,22 @@ return view""",
             id = "ui.listitem",
             category = "ui",
             name = "ui.listitem",
-            signature = "ui.listitem { title?, subtitle?, onClick? }",
-            summary = "列表行。",
+            signature = "ui.listitem { title?, subtitle?, icon?, onClick?, enabled? }",
+            summary = "Material 列表行。有 onClick 时显示 chevron。icon 与 ui.icon 同名。",
             example = """ui.listitem {
   title = "标题",
   subtitle = "副标题",
+  icon = "info",
   onClick = function() print("tap") end,
 }""",
-            props = listOf("title" to "标题", "subtitle" to "副标题", "onClick" to "点击回调"),
+            props = listOf("title" to "标题", "subtitle" to "副标题", "icon" to "左侧图标名", "onClick" to "点击回调", "enabled" to "默认 true"),
         ),
         ApiDoc(
             id = "ui.stack",
             category = "ui",
             name = "ui.stack",
             signature = "ui.stack { selected?, children page... }",
-            summary = "selected 仅匹配 page.key（不匹配 id），未匹配取首个 page。key/id 仍支持节点身份。",
+            summary = "selected 仅匹配 page.key（不匹配 id），未匹配取首个 page。切页沿共享 X 轴滑动。",
             example = """ui.stack {
   selected = "home",
   ui.page { key = "home", ui.text { text = "首页" } },
@@ -279,8 +225,8 @@ return view""",
             id = "ui.switch",
             category = "ui",
             name = "ui.switch",
-            signature = "ui.switch { label?, checked?, onToggle? }",
-            summary = "开关。onToggle 在切换时触发,收到新状态字符串 \"true\"/\"false\" 作为参数。",
+            signature = "ui.switch { label?, checked?, onToggle?, enabled? }",
+            summary = "开关。整行可点（含标签）。onToggle 收到新状态字符串 \"true\"/\"false\"。",
             example = """ui.switch {
   label = "通知",
   checked = false,
@@ -290,6 +236,25 @@ return view""",
                 "label" to "标签",
                 "checked" to "是否开启",
                 "onToggle" to "切换回调(参数为新状态字符串)",
+                "enabled" to "默认 true",
+            ),
+        ),
+        ApiDoc(
+            id = "ui.checkbox",
+            category = "ui",
+            name = "ui.checkbox",
+            signature = "ui.checkbox { label?, checked?, onToggle?, enabled? }",
+            summary = "复选框。整行可点。onToggle 收到 \"true\"/\"false\"，与 switch 相同。",
+            example = """ui.checkbox {
+  label = "同意",
+  checked = false,
+  onToggle = function(v) print("now " .. v) end,
+}""",
+            props = listOf(
+                "label" to "标签",
+                "checked" to "是否勾选",
+                "onToggle" to "切换回调(参数为新状态字符串)",
+                "enabled" to "默认 true",
             ),
         ),
         ApiDoc(
@@ -303,7 +268,7 @@ return view""",
         ),
         ApiDoc(
             id = "ui.slider", category = "ui", name = "ui.slider",
-            signature = "ui.slider { value?, from?, to?, step?, onChange? }",
+            signature = "ui.slider { value?, from?, to?, step?, onChange?, enabled? }",
             summary = "数值滑杆；from=0，to=1，value=from，step=0 连续。正 step 为从 from 起算的增量，不是刻度数。",
             example = """local amount = 0.4
 local function view()
@@ -320,13 +285,64 @@ return view""",
         ),
         ApiDoc(
             id = "ui.progress", category = "ui", name = "ui.progress",
-            signature = "ui.progress { value?, color? }",
-            summary = "线性进度条；value 截断到 0..1，不传 value 为不定态。联动示例见 ui.slider。",
+            signature = "ui.progress { value?, color?, kind? }",
+            summary = "进度条；value 截断到 0..1，不传 value 为不定态。kind: linear / circular。",
             example = """ui.column {
   ui.progress { value = 0.4 },
   ui.progress {},
 }""",
-            props = listOf("value" to "0..1；缺省不定态", "color" to "#RRGGBB / #AARRGGBB"),
+            props = listOf("value" to "0..1；缺省不定态", "color" to "#RRGGBB / #AARRGGBB", "kind" to "linear / circular"),
+        ),
+        ApiDoc(
+            id = "ui.dialog",
+            category = "ui",
+            name = "ui.dialog",
+            signature = "ui.dialog { open?, title?, confirm?, cancel?, onConfirm?, onDismiss?, children... }",
+            summary = "对话框。open 为 false 时不显示。确认/取消无 payload；取消与点遮罩走 onDismiss。",
+            example = """local open = false
+local function view()
+  return ui.app {
+    ui.button { text = "Open", onClick = function() open = true end },
+    ui.dialog {
+      open = open, title = "确认", confirm = "OK", cancel = "取消",
+      onConfirm = function() open = false end,
+      onDismiss = function() open = false end,
+      ui.text { text = "正文" },
+    },
+  }
+end
+return view""",
+            props = listOf(
+                "open" to "默认 false",
+                "title" to "标题",
+                "confirm" to "确认按钮文字，默认 OK",
+                "cancel" to "取消按钮文字，空则不显示",
+                "onConfirm" to "确认回调",
+                "onDismiss" to "取消 / 点遮罩",
+            ),
+        ),
+        ApiDoc(
+            id = "ui.tabs",
+            category = "ui",
+            name = "ui.tabs",
+            signature = "ui.tabs { selected?, onSelect?, children tab... }",
+            summary = "标签栏。selected 匹配 tab.key；onSelect 收到 key 字符串。",
+            example = """ui.tabs {
+  selected = "home",
+  onSelect = function(k) print(k) end,
+  ui.tab { key = "home", label = "首页", icon = "home" },
+  ui.tab { key = "lib", label = "库", icon = "list" },
+}""",
+            props = listOf("selected" to "当前 tab key", "onSelect" to "选中回调(key 字符串)"),
+        ),
+        ApiDoc(
+            id = "ui.tab",
+            category = "ui",
+            name = "ui.tab",
+            signature = "ui.tab { key, label?, icon? }",
+            summary = "tabs 的子标签。单独放置时只显示 label。",
+            example = """ui.tab { key = "home", label = "首页", icon = "home" }""",
+            props = listOf("key" to "标识", "label" to "文字", "icon" to "图标名"),
         ),
         ApiDoc(
             id = "print",
@@ -360,8 +376,8 @@ local n = io.read()""",
             category = "io",
             name = "require",
             signature = "require(modname)",
-            summary = "加载模块。LuaX 页面用 require(\"html\")；JavaScript / Python 仍用 ui 构造器。点号映射为 src/ 下路径。",
-            example = """local html = require("html")
+            summary = "加载 src/ 下模块。点号映射为路径。",
+            example = """local ui = require("ui")
 local util = require("lib.util")""",
         ),
         ApiDoc(
@@ -411,17 +427,12 @@ local util = require("lib.util")""",
                 "background" to "#RRGGBB / #AARRGGBB 背景色",
                 "weight / align" to "子项作用域：Row 权重/上下对齐，Column 权重/左右对齐，Box 九宫格；weight 需主轴有界",
                 "key / id" to "节点身份；stack 选页仅认 page.key",
-                "规范名" to "JavaScript / Python 的 Compose 树。LuaX 页面用 html.*，见 LUAX §4–§5",
+                "规范名" to "别名回退已移除；switch 用 checked/onToggle，不用 value/onChange。完整迁移见 LUAX §5",
             ),
         )
     }
 
     fun categories(): List<String> = all.map { it.category }.distinct()
-
-    /** Lua projects document the HTML host. JS and Python keep the Compose tree. */
-    fun visible(languageId: String): List<ApiDoc> =
-        if (languageId == "lua") all.filter { it.category != "ui" }
-        else all.filter { it.category != "html" }
 
     fun search(q: String): List<ApiDoc> {
         val s = q.trim().lowercase()

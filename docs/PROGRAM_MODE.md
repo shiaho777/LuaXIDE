@@ -6,8 +6,7 @@
 
 ## Rule (single-output principle)
 
-- **JavaScript / Python** return a ui tree → the preview panel (Compose render)
-- **LuaX** loads the project's HTML page in a WebView and applies `html.*` operations. A Lua script with no page leaves the preview on the missing-page note; `print` still goes to the console.
+- Script **returns a ui tree** → the preview panel (Compose render, Execution is truth)
 - `print` output / runtime errors / system logs → the **bottom console** (the only output surface)
 - REPL eval / `io.read()` replies → the input line at the console's bottom
 
@@ -38,4 +37,5 @@ See `docs/PROOT_AND_STDIN.md`. Semantics unchanged:
 
 ## Package
 
-The packaged runtime renders a Lua entry in a WebView when the project has an HTML page, and renders a JS/Python entry from its ui tree. A Lua entry with no page shows the print terminal. Print output also goes to the packaged app's own console view when that view is what is on screen.
+The packaged runtime renders the ui tree when the entry returns one; print output
+goes to the packaged app's own console view.

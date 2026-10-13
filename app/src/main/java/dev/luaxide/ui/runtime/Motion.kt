@@ -151,14 +151,10 @@ object Motion {
             ) +
             scaleOut(targetScale = 0.97f, animationSpec = softFloat)
 
+    /** Effects-only swap for text values (counters, labels). No spatial slide. */
     fun textSwap() =
-        (
-            fadeIn(animationSpec = tween(180, easing = FastOutSlowInEasing)) +
-                slideInVertically(animationSpec = enterOffset) { it / 10 }
-            ) togetherWith (
-            fadeOut(animationSpec = tween(140, easing = FastOutSlowInEasing)) +
-                slideOutVertically(animationSpec = exitOffset) { -it / 10 }
-            )
+        fadeIn(animationSpec = tween(160, easing = FastOutSlowInEasing)) togetherWith
+            fadeOut(animationSpec = tween(110, easing = FastOutSlowInEasing))
 }
 
 private val IntOffsetConverter = TwoWayConverter<IntOffset, AnimationVector2D>(

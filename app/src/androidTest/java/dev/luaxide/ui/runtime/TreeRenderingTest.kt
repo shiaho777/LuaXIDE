@@ -80,4 +80,97 @@ class TreeRenderingTest {
         compose.onNodeWithText("scrollview needs a bounded height. Set height on this nested scrollview or its parent.").assertExists()
         compose.onNodeWithText("hidden").assertDoesNotExist()
     }
+
+    @Test fun disabledButtonDoesNotFire() {
+        var fired = 0
+        val btn = n(
+            "button",
+            "text" to s("Go"),
+            "enabled" to PropValue.Bool(false),
+            "onClick" to PropValue.Handler(7),
+        )
+        compose.setContent {
+            MaterialTheme { RenderTree(btn, onEvent = { id, _ -> if (id == 7) fired++ }) }
+        }
+        compose.onNodeWithText("Go").performClick()
+        assertEquals(0, fired)
+    }
+
+    @Test fun enabledButtonFires() {
+        var fired = 0
+        val btn = n("button", "text" to s("Go"), "onClick" to PropValue.Handler(7))
+        compose.setContent {
+            MaterialTheme { RenderTree(btn, onEvent = { id, _ -> if (id == 7) fired++ }) }
+        }
+        compose.onNodeWithText("Go").performClick()
+        assertEquals(1, fired)
+    }
+
+    @Test fun stackShowsSelectedPage() {
+        show(
+            n(
+                "stack",
+                "selected" to s("b"),
+                children = listOf(
+                    n("page", "key" to s("a"), children = listOf(text("page-a"))),
+                    n("page", "key" to s("b"), children = listOf(text("page-b"))),
+                ),
+            ),
+        )
+        compose.onNodeWithText("page-b").assertExists()
+        compose.onNodeWithText("page-a").assertDoesNotExist()
+    }
+
+    @Test fun checkboxToggleFires() {
+        var payload: String? = null
+        val box = n(
+            "checkbox",
+            "label" to s("Agree"),
+            "checked" to PropValue.Bool(false),
+            "onToggle" to PropValue.Handler(3),
+        )
+        compose.setContent {
+            MaterialTheme { RenderTree(box, onEvent = { id, p -> if (id == 3) payload = p }) }
+        }
+        compose.onNodeWithText("Agree").performClick()
+        assertEquals("true", payload)
+    }
+
+    @Test fun closedDialogIsHidden() {
+        show(n("dialog", "open" to PropValue.Bool(false), "title" to s("Confirm")))
+        compose.onNodeWithText("Confirm").assertDoesNotExist()
+    }
+
+    @Test fun tabsSelectFiresKey() {
+        var key: String? = null
+        val tabs = n(
+            "tabs",
+            "selected" to s("home"),
+            "onSelect" to PropValue.Handler(9),
+            children = listOf(
+                n("tab", "key" to s("home"), "label" to s("Home")),
+                n("tab", "key" to s("lib"), "label" to s("Library")),
+            ),
+        )
+        compose.setContent {
+            MaterialTheme { RenderTree(tabs, onEvent = { id, p -> if (id == 9) key = p }) }
+        }
+        compose.onNodeWithText("Library").performClick()
+        assertEquals("lib", key)
+    }
+
+    @Test fun outlinedButtonFires() {
+        var fired = 0
+        val btn = n(
+            "button",
+            "text" to s("Go"),
+            "kind" to s("outlined"),
+            "onClick" to PropValue.Handler(7),
+        )
+        compose.setContent {
+            MaterialTheme { RenderTree(btn, onEvent = { id, _ -> if (id == 7) fired++ }) }
+        }
+        compose.onNodeWithText("Go").performClick()
+        assertEquals(1, fired)
+    }
 }

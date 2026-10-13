@@ -13,11 +13,11 @@ src/main/cpp/mpy_jni.c
 src/main/cpp/qjs_jni.c
 src/main/java/dev/luaxide/assets/AssetResolver.kt
 src/main/java/dev/luaxide/engine/EngineAdapter.kt
-src/main/java/dev/luaxide/html/HtmlPage.kt
 src/main/java/dev/luaxide/engine/JsNative.kt
 src/main/java/dev/luaxide/engine/PyNative.kt
 src/main/java/dev/luaxide/engine/UiNode.kt
 src/main/java/dev/luaxide/ui/runtime/ComponentRegistry.kt
+src/main/java/dev/luaxide/ui/runtime/HostIcons.kt
 src/main/java/dev/luaxide/ui/runtime/NodeProps.kt
 src/main/java/dev/luaxide/ui/runtime/TreeReconciliation.kt
 src/main/java/dev/luaxide/ui/runtime/UiTreeRenderer.kt

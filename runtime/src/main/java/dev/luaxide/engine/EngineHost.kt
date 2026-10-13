@@ -13,8 +13,6 @@ data class RunResult(
     val output: String,
     val error: String?,
     val errorLine: Int? = null,
-    val htmlOps: String = "[]",
-    val htmlReload: Boolean = false,
 )
 
 private val LINE_PREFIX = Regex("""^line (\d+):""")
@@ -56,7 +54,7 @@ class EngineHost(
         _state.value = EngineState.Running
         val result = withContext(dispatcher) {
             recreate()
-            execute(reloadHtml = true) {
+            execute {
                 LuaxNative.nativeClearCancel(handle)
                 LuaxNative.nativeRun(handle, src)
             }
@@ -68,16 +66,6 @@ class EngineHost(
     override suspend fun invoke(handlerId: Int, payload: String?): RunResult {
         val result = withContext(dispatcher) {
             execute { LuaxNative.nativeInvoke(handle, handlerId, payload) }
-        }
-        publish(result)
-        return result
-    }
-
-    suspend fun htmlEvent(id: String, event: String, payload: String): RunResult {
-        val result = withContext(dispatcher) {
-            execute {
-                LuaxNative.nativeHtmlEvent(handle, id, event, payload)
-            }
         }
         publish(result)
         return result
@@ -121,22 +109,15 @@ class EngineHost(
         if (h != 0L) LuaxNative.nativeSetModroot(h, path)
     }
 
-    private inline fun execute(reloadHtml: Boolean = false, block: () -> Array<String>): RunResult = runCatching {
+    private inline fun execute(block: () -> Array<String>): RunResult = runCatching {
         ensureHandle()
         val res = block()
         val status = res.getOrElse(0) { "1" }
         val err = res.getOrElse(1) { "" }
+        val treeJson = res.getOrElse(2) { "" }
         val output = LuaxNative.nativeTakeOutput(handle)
-        val ops = runCatching { LuaxNative.nativeTakeHtmlOps(handle) }.getOrDefault("[]").ifBlank { "[]" }
         if (status == "0") {
-            RunResult(
-                ok = true,
-                tree = null,
-                output = output,
-                error = null,
-                htmlOps = ops,
-                htmlReload = reloadHtml,
-            )
+            RunResult(ok = true, tree = UiTreeParser.parse(treeJson), output = output, error = null)
         } else {
             val message = err.ifEmpty { "unknown error" }
             RunResult(ok = false, tree = null, output = output, error = message, errorLine = parseErrorLine(message))
