@@ -31,7 +31,6 @@ return view  -- 返回 view 函数:每次点击,引擎重调它,界面随之更�
 - **单文件引擎**:`engine/lx.c` 约 2200 行 C,树遍历 + 字节码 VM 混合执行(数值循环 ~11×)
 - **现代标准库**:`string.format` / 模式匹配(`find gsub match gmatch`)/ `math.*` / `table.sort`
 - **无 root**:沙箱执行;IDE 一键打包成独立签名 APK
-- **三语言平台**:LuaX 是参考语言;同一契约下还有 JavaScript(QuickJS)与 Python(MicroPython)
 
 ## 三十秒上手
 
@@ -70,7 +69,7 @@ LuaX 是 Lua 5.1 的方言子集:闭包与元表都在,数字只有 double、表
 | 你想…… | 读 |
 |---|---|
 | **写 LuaX 程序** | [docs/LUAX.zh-CN.md](docs/LUAX.zh-CN.md) —— 语言参考:方言差异、逐函数标准库、运行时语义(事件/重渲染/取消)、UI DSL、元表 |
-| 接入 / 对齐其他语言引擎 | [docs/PLATFORM_ABI.zh-CN.md](docs/PLATFORM_ABI.zh-CN.md) —— 跨语言宿主契约(Lua/JS/Python 共同遵守)与 conformance 测试映射 |
+| 引擎 ↔ 宿主 ABI | [docs/PLATFORM_ABI.zh-CN.md](docs/PLATFORM_ABI.zh-CN.md) —— run / invoke / 树 JSON 契约与 conformance 测试映射 |
 | 维护 LuaX 引擎本体 | [docs/ENGINE.zh-CN.md](docs/ENGINE.zh-CN.md) + [docs/BYTECODE_VM.zh-CN.md](docs/BYTECODE_VM.zh-CN.md) —— 架构、测试工作流、扩展 checklist、VM 设计 |
 | 了解 IDE 行为 | [docs/PROGRAM_MODE.zh-CN.md](docs/PROGRAM_MODE.zh-CN.md)、[docs/PROOT_AND_STDIN.zh-CN.md](docs/PROOT_AND_STDIN.zh-CN.md) |
 
@@ -80,10 +79,8 @@ LuaX 是 Lua 5.1 的方言子集:闭包与元表都在,数字只有 double、表
 
 ```
 engine/       LuaX 引擎(lx.c)—— 桌面 CLI 与两个 Android 模块共用同一源码
-engine-js/    JavaScript 引擎(QuickJS facade),同一宿主契约
-engine-py/    Python 引擎(MicroPython facade),同一宿主契约
 app/          LuaXIDE 本体(Kotlin + Compose):编辑/调试/控制台/打包
-runtime/      打包模板 App:内置三引擎,渲染脚本的 UI 树
+runtime/      打包模板 App:内置 libluax,渲染脚本的 UI 树
 docs/         上表所列文档
 ```
 
@@ -91,12 +88,10 @@ docs/         上表所列文档
 
 ```bash
 make -C engine test      # Lua 引擎: t1–t28 + bc-diff 差分 + 文档示例门禁 → ALL TESTS PASSED
-make -C engine-js test   # JS 引擎: j1–j6 conformance
-make -C engine-py test   # Python 引擎: p1–p2
 ./gradlew :app:assembleDebug :runtime:assembleDebug   # Android(需 SDK / JDK 17)
 ```
 
-CI 在每个 PR 上运行以上全部(`engine-tests` / `engine-js-tests` / `engine-py-tests` / `android-build` 四个必需检查),作为合并门禁。
+CI 在每个 PR 上运行以上检查(`engine-tests` 与 `android-build` 为必需门禁)。
 
 ## 参与贡献
 
@@ -106,4 +101,4 @@ CI 在每个 PR 上运行以上全部(`engine-tests` / `engine-js-tests` / `engi
 
 ## License
 
-本项目以 [Apache-2.0](LICENSE) 许可发布;随仓库分发的第三方组件(QuickJS、ARSCLib、apksig、Termux proot 等)清单与许可见 [THIRD_PARTY_NOTICES.zh-CN.md](THIRD_PARTY_NOTICES.zh-CN.md)。
+本项目以 [Apache-2.0](LICENSE) 许可发布;随仓库分发的第三方组件(ARSCLib、apksig、Termux proot 等)清单与许可见 [THIRD_PARTY_NOTICES.zh-CN.md](THIRD_PARTY_NOTICES.zh-CN.md)。

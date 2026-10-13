@@ -31,7 +31,6 @@ return view  -- return the view function: every tap re-calls it, UI follows stat
 - **Single-file engine**: `engine/lx.c` is ~2200 lines of C, tree-walking + bytecode VM hybrid (numeric loops ~11×)
 - **Modern stdlib**: `string.format` / pattern matching (`find gsub match gmatch`) / `math.*` / `table.sort`
 - **No root**: sandboxed execution; the IDE packages projects into standalone signed APKs
-- **Three-language platform**: LuaX is the reference language; the same contract is implemented by JavaScript (QuickJS) and Python (MicroPython)
 
 ## Thirty seconds to running
 
@@ -68,7 +67,7 @@ LuaX is a dialect subset of Lua 5.1: closures and metatables are in; numbers are
 | You want to… | Read |
 |---|---|
 | **Write LuaX programs** | [docs/LUAX.md](docs/LUAX.md) — language reference: dialect differences, per-function stdlib, runtime semantics (events/re-render/cancel), UI DSL, metatables |
-| Port / align another language engine | [docs/PLATFORM_ABI.md](docs/PLATFORM_ABI.md) — the language-neutral host contract (shared by Lua/JS/Python) and the conformance-test mapping |
+| Engine ↔ host ABI | [docs/PLATFORM_ABI.md](docs/PLATFORM_ABI.md) — run / invoke / tree JSON contract and the conformance-test mapping |
 | Maintain the LuaX engine itself | [docs/ENGINE.md](docs/ENGINE.md) + [docs/BYTECODE_VM.md](docs/BYTECODE_VM.md) — architecture, test workflow, extension checklists, VM design |
 | Understand IDE behavior | [docs/PROGRAM_MODE.md](docs/PROGRAM_MODE.md), [docs/PROOT_AND_STDIN.md](docs/PROOT_AND_STDIN.md) |
 
@@ -78,10 +77,8 @@ Every doc ships in English (default) and Chinese (`*.zh-CN.md` sibling). LUAX.md
 
 ```
 engine/       LuaX engine (lx.c) — one source for the desktop CLI and both Android modules
-engine-js/    JavaScript engine (QuickJS facade), same host contract
-engine-py/    Python engine (MicroPython facade), same host contract
 app/          LuaXIDE itself (Kotlin + Compose): edit / debug / console / packaging
-runtime/      packaging template app: carries all three engines, renders script UI trees
+runtime/      packaging template app: carries libluax, renders script UI trees
 docs/         the documents listed above
 ```
 
@@ -89,12 +86,10 @@ docs/         the documents listed above
 
 ```bash
 make -C engine test      # Lua engine: t1–t28 + bc-diff differential + doc-example gate → ALL TESTS PASSED
-make -C engine-js test   # JS engine: j1–j6 conformance
-make -C engine-py test   # Python engine: p1–p2
 ./gradlew :app:assembleDebug :runtime:assembleDebug   # Android (needs SDK / JDK 17)
 ```
 
-CI runs all of the above on every PR — `engine-tests` / `engine-js-tests` / `engine-py-tests` / `android-build` are the four required merge-gate checks.
+CI runs the above on every PR — `engine-tests` and `android-build` are the required merge-gate checks.
 
 ## Contributing
 
@@ -104,4 +99,4 @@ Delivery loop: **Issue → PR (base `main`, body contains `Fixes #N`) → CI gat
 
 ## License
 
-Released under [Apache-2.0](LICENSE). Third-party components shipped with the repo (QuickJS, ARSCLib, apksig, Termux proot, …) are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Released under [Apache-2.0](LICENSE). Third-party components shipped with the repo (ARSCLib, apksig, Termux proot, …) are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

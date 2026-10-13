@@ -24,7 +24,7 @@ On-device self-check: after installing the debug build, open the in-app "Self-ch
 1. **Open an Issue first** (or claim an existing one): state the problem / goal / acceptance criteria.
 2. Branch from the latest `main`, named like `codex/topic` or `feat/topic`.
 3. Open a PR against `main`, use the PR template, and **it must contain `Fixes #N`**.
-4. Wait for the required CI checks to go green: `engine-tests`, `engine-js-tests`, `engine-py-tests`, `android-build` (see `.github/workflows/ci.yml`).
+4. Wait for the required CI checks to go green: `engine-tests`, `android-build` (see `.github/workflows/ci.yml`).
 5. A maintainer merges once CI is green; the Issue closes automatically on merge. Never merge red, never close an Issue early.
 
 ## Conventions

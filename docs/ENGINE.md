@@ -61,7 +61,7 @@ Conventions:
 4. `ApiDocs.kt` doc entry
 5. Add a row to the LUAX.md §5 table; if the re-render contract is affected, sync LUAX.md §4.2 and PLATFORM_ABI.md
 
-**Changing the event/re-render contract**: change `lx_invoke`/`lx_build_tree` → extend t26 cases → sync `luax_jni.c` ×2, `EngineHost` ×2, and the JS/Python engines (all PLATFORM_ABI conformance passing) → rewrite LUAX.md §4.2.
+**Changing the event/re-render contract**: change `lx_invoke`/`lx_build_tree` → extend t26 cases → sync `luax_jni.c` ×2 and `EngineHost` ×2 → rewrite LUAX.md §4.2.
 
 ## 5. Maintenance conventions
 

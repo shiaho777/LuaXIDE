@@ -1,123 +1,86 @@
-# LuaX Platform ABI (authoritative cross-language contract)
+# LuaX Platform ABI (engine ↔ host)
 
 [简体中文](PLATFORM_ABI.zh-CN.md)
 
-> This file defines the **language-neutral host contract**: any script engine that plugs into the LuaXIDE platform must implement the API surface and semantics below. Three reference implementations exist today: `engine/lx.c` (LuaX, Lua), `engine-js/qjs_x.c` (QuickJS, JavaScript), `engine-py/mpy_x.c` (MicroPython, Python — pilot, limitations in §10). **Changing contract behavior in any engine must update this file in the same change, and keep the conformance tests on both sides (t26 / j6) passing together** — the two suites assert the same contract, and any one-sided semantic drift is blocked by CI. Language dialect: [LUAX.md](LUAX.md) (LuaX) / each engine directory; LuaX engine internals: [ENGINE.md](ENGINE.md).
+> This file is the **host contract** between the LuaX engine (`engine/lx.c`, `lx.h`) and the Android host (`EngineAdapter` / `EngineHost`). Changing run / invoke / cancel / tree-JSON behavior must update this file in the same change and keep `engine/tests/t26_invoke_tree.c` passing. Language dialect: [LUAX.md](LUAX.md). Engine internals: [ENGINE.md](ENGINE.md).
 
 ## 1. Platform layers
 
 ```
-script (Lua / JS / future languages)
+LuaX script
    │ drives
    ▼
-UI tree contract: {type, props, children} JSON   ← language-neutral; the renderer only speaks this
+UI tree: {type, props, children} JSON   ← the renderer only speaks this
    ▲
    │ run(src) / invoke(id, payload) / cancel / step-limit
-host adapter (EngineAdapter @ Kotlin / facade C API)
+host adapter (EngineAdapter @ Kotlin / lx.h)
    │
-   ├── lx.h     LuaX engine (Lua)          t1–t28 tests
-   └── qjs_x.h  QuickJS engine (JavaScript) j1–j6 tests
+   └── lx.h     LuaX engine     t1–t28 tests
 ```
 
-**Core principle: every language produces the same tree.** Language-adaptation differences may only exist in *how the driving script is written* (constructor syntax, closure syntax) — never in the tree structure, event semantics, or host behavior.
+**Core principle: the renderer follows the engine's JSON tree.** Script syntax lives in LUAX.md; tree structure, event semantics, and host behavior live here.
 
 ## 2. Host API surface (C contract)
 
-Every engine facade must provide these functions (names may follow language conventions; semantics must match):
+| Contract | lx.h |
+|---|---|
+| create/destroy | `lx_new` / `lx_close` |
+| run | `lx_run(S, src, err, errlen)` |
+| event callback | `lx_invoke(S, id, arg, err, errlen)` |
+| tree/output | `lx_last_json` / `lx_last_output` |
+| cancel | `lx_cancel` / `lx_clear_cancel` |
+| step limit | `lx_set_step_limit` |
+| module root | `lx_set_modroot` / `lx_modroot` |
 
-| Contract | lx.h (Lua) | qjs_x.h (JS) | mpy_x.h (Python, pilot) |
-|---|---|---|---|
-| create/destroy | `lx_new` / `lx_close` | `qjsx_new` / `qjsx_free` | `mpyx_new` / `mpyx_free` |
-| run | `lx_run(S, src, err, errlen)` | `qjsx_run(x, src, err, errlen)` | `mpyx_run(x, src, err, errlen)` |
-| event callback | `lx_invoke(S, id, arg, err, errlen)` | `qjsx_invoke(x, id, arg, err, errlen)` | `mpyx_invoke(x, id, arg, err, errlen)` |
-| tree/output | `lx_last_json` / `lx_last_output` | `qjsx_last_json` / `qjsx_last_output` | `mpyx_last_json` / `mpyx_last_output` |
-| cancel | `lx_cancel` / `lx_clear_cancel` | `qjsx_cancel` / `qjsx_clear_cancel` | `mpyx_cancel` / `mpyx_clear_cancel` (§10 note) |
-| step limit | `lx_set_step_limit` | `qjsx_set_step_limit` | `mpyx_set_step_limit` (§10 note) |
-| module root | `lx_set_modroot` / `lx_modroot` | — | `mpyx_set_modroot` / `mpyx_modroot` |
-
-The Kotlin side unifies everything as [`EngineAdapter`](../app/src/main/java/dev/luaxide/engine/EngineAdapter.kt) (`state / run / invoke / cancel / close`); Lua-only capabilities (REPL, blocking stdin, debugger, rootfs) are **outside the ABI** — they live in `EngineHost` and language-neutral callers must not touch them.
+The Kotlin side is [`EngineAdapter`](../app/src/main/java/dev/luaxide/engine/EngineAdapter.kt) (`state / run / invoke / cancel / close`). REPL, blocking stdin, debugger, and rootfs are **outside this ABI** — they live on `EngineHost` and generic callers must not touch them.
 
 ## 3. run semantics
 
 1. `run(src)` executes synchronously on a dedicated engine thread; returns 0 on success, non-zero on failure with err filled.
-2. **Per-engine guarantee**: `run` resets the output buffer and step counter at start, and clears any stale cancel flag (a new run is unaffected by an old cancel).
+2. `run` resets the output buffer and step counter at start, and clears any stale cancel flag (a new run is unaffected by an old cancel).
 3. The script's return value decides the first frame:
-   - returns a ui tree (Lua: table tagged `__ui`; JS: `{type: string, ...}` object) → serialized as tree JSON;
-   - returns a **function** → remembered as the live view (`app_view` / `__lx_view` / `view()` convention), called immediately to produce the first frame; on later invokes, if the handler does not return a tree it is re-called — this describes Lua/JS. Python discovers a global `view()` or `_lx_tree` instead (§10);
-   - anything else / no return → tree is `null` (Lua) or keeps the previous tree (JS); the host returns to the idle state.
-4. `print` (and equivalent output) is captured into the output buffer, pulled by the host via `last_output` — engines never write to the terminal directly.
+   - returns a ui tree (Lua table tagged `__ui`) → serialized as tree JSON;
+   - returns a **function** → remembered as the live view, called immediately to produce the first frame; on later invokes, if the handler does not return a tree it is re-called;
+   - anything else / no return → tree is `null`; the host returns to the idle state.
+4. `print` is captured into the output buffer, pulled by the host via `last_output` — the engine never writes to the terminal directly.
 
-## 4. invoke & re-render contract (the soul of the ABI)
+## 4. invoke & re-render contract
 
 `invoke(handlerId, payload)`:
 
 1. Function props serialize in the tree JSON as `{"__handler": N}`; **ids are re-assigned on every tree rebuild** — the host re-reads them each round.
 2. A non-null `payload` is passed as the handler's first (and only) argument: `input.onChange(text)` / `input.onSubmit(text)` receive the field text as a string; `slider.onChange(v)` receives the numeric value as a string; `switch.onToggle(v)` receives `"true"`/`"false"`; all other events take no argument.
-3. **Re-render decision** (Lua/JS conformance target; Python limitations in §10):
+3. **Re-render decision**:
    - handler returns a ui tree → the new tree replaces the current view (and any stored view function is dropped);
    - handler returns a function → it becomes the new live view and is called immediately to produce the new tree;
-   - nil/undefined/non-tree return → **the old tree is retained** (the JS side must not clear the json early; on the Lua side `lx_build_tree` re-serialization guarantees it); if a view function is stored, it is re-called first and then serialized (LUAX.md §4.2 path A).
+   - nil / non-tree return → **the old tree is retained**; if a view function is stored, it is re-called first and then serialized (LUAX.md §4.2 path A).
 4. Handler-internal errors: return non-zero + error message (prefixed `line N:` when a line is known); the engine stays usable and **the current tree stays unchanged** — including the case where the handler succeeded but the view function threw during re-serialization (the json buffer and handler table are retained as a whole).
 
 ## 5. Runtime guards
 
-- **Cancel**: `cancel()` sets a cooperative cancel flag (poll points are engine-specific: the STEP macro for Lua, an interrupt handler for JS); hitting it reports `"cancelled by user"`. `invoke` does **not** clear the cancel flag — an event handler fired after a mid-run cancel is cancelled too; `run` does clear it.
-- **Step limit**: `set_step_limit` (App-side default 50,000,000); exceeding reports `"execution step limit exceeded (possible infinite loop)"`. The message is byte-identical across the wired engines — the host does no re-translation.
-- QuickJS extras: 64 MB memory limit, 4 MB stack limit (fixed in `qjsx_new`).
+- **Cancel**: `cancel()` sets a cooperative cancel flag (Lua polls via the STEP macro); hitting it reports `"cancelled by user"`. `invoke` does **not** clear the cancel flag — an event handler fired after a mid-run cancel is cancelled too; `run` does clear it.
+- **Step limit**: `set_step_limit` (App-side default 50,000,000); exceeding reports `"execution step limit exceeded (possible infinite loop)"`. The host does no re-translation of that message.
 
-## 6. UI component parity
+## 6. UI tree
 
-**The JS side must expose the same 24 constructors as Lua** (`app column row text button card input image icon spacer divider scrollview list listitem stack page switch checkbox box slider progress dialog tabs tab`), producing identically-shaped tree nodes. Prop semantics (canonical names only — removed alias chains are a documented breaking migration, see LUAX.md §5; defaults, event names, string-constructor sugar for `text`, string children wrapping) follow the prop table in LUAX.md §5 — that is the language-neutral renderer contract. Conformance tests assert per type (§7).
+The engine exposes 24 constructors (`app column row text button card input image icon spacer divider scrollview list listitem stack page switch checkbox box slider progress dialog tabs tab`), producing `{type, props, children}` nodes. Prop semantics (canonical names only — removed alias chains are a documented breaking migration, see LUAX.md §5; defaults, event names, string-constructor sugar for `text`, string children wrapping) follow the prop table in LUAX.md §5. Conformance tests assert per type (§7).
 
-## 7. Conformance tests (the anti-drift mechanism)
+## 7. Conformance tests
 
-The two suites assert **the same contract** and must evolve in lockstep:
+| Assertion | Test |
+|---|---|
+| invoke tri-state (adopt/retain/error) | `t26_invoke_tree.c` |
+| payload reaches the handler | t26 |
+| all 24 component types serialize | t15 (constructors); t22 (new types / JSON) |
+| text-only string constructor / string children | t15 / t22 |
+| print capture / error line numbers | t22 / t23 |
+| cancel / step-limit semantics | t19 |
 
-| Assertion | Lua side | JS side |
-|---|---|---|
-| invoke tri-state (adopt/retain/error) | `t26_invoke_tree.c` | `j6_conformance.c` |
-| payload reaches the handler | t26 | j6 |
-| all 24 component types serialize | t15 (constructors); t22 (new types / JSON) | j6 |
-| text-only string constructor / string children | t15 / t22 | j6 |
-| print capture / error line numbers | t22/t23 | j4/j6 |
-| cancel / step-limit semantics | t19 (stdio/cancel) | j5_cancel.c |
+Adding a contract capability extends these tests in the same change (AGENTS.md).
 
-**Adding a contract capability = extending both conformance suites in the same change** (AGENTS.md hard rule).
+## 8. Packaging & standalone run
 
-## 8. Packaging & standalone run (from phase three)
-
-The packaging chain's multi-language support is closed-loop:
-
-- The template runtime (`:runtime` release APK → `template.apk`) embeds **multiple engines** (libluax.so + libluaxjs.so × each ABI)
-- `entryFile` in `luaxcfg.json` decides the language: ending in `.js` → RuntimeActivity picks `JsEngineHost`, otherwise `EngineHost` (see the isJs routing in RuntimeActivity)
-- Pre-packaging smoke validation picks the engine by entry suffix the same way (BuildPipeline.validateEntry)
-- Project sources ship whole under `assets/lua/` (historical directory name, language-neutral)
-
-## 9. New-engine onboarding checklist
-
-1. Pick a language engine (embed-friendly, cooperatively interruptible); write a facade implementing the §2 API surface + §3–§6 semantics;
-2. Register in `Language.kt` (must pass 1–4 before supported=true);
-3. Kotlin `EngineAdapter` implementation + JNI bridge;
-4. **Write a conformance driver test** (copy j6's assertion structure); add to Makefile + `ci.yml` + branch protection;
-5. Wire packaging: module CMake adds the .so → RuntimeActivity routing gains a branch → BuildPipeline.validateEntry gains a branch → syncRuntimeTemplate;
-6. Update the §2/§7 tables in this file and cross-link LUAX.md/ENGINE.md.
-
-## 10. Python engine (engine-py) status & limits
-
-`engine-py/mpy_x.c` is built on the MicroPython v1.25.0 embed port (self-contained generated package) and is **wired into the App**: JNI bridge `mpy_jni.c` ×2, `PyEngineHost` (implements EngineAdapter; IDE and packaged-runtime dual variants), `Language.PYTHON.supported = true`, entry routing (`.py` → PyEngineHost) and pre-packaging validation are all live; emulator E2E: create a Python project → run renders → tap +1 re-renders (taps 0→1→2).
-
-Implementation notes (parts matching the other engines): run → tree JSON + print capture; invoke(id, payload) → handler + re-render (view() first); `MICROPY_VM_HOOK_LOOP`-driven cooperative cancel and step limit (error messages byte-identical to Lua/JS, see p2); globals survive across invokes.
-
-Module root: `mpyx_set_modroot` mirrors `lx_set_modroot` — the dir is rebuilt into `sys.path` before each `run`, so `import helper` / `import pkg.mod` resolve sibling files next to the entry point (builtin modules still win). Wired through `PyNative.nativeSetModroot` → `PyEngineHost.setModuleRoot`, applied by the IDE run path, packaging validation, and `RuntimeActivity` (p3 covers flat modules, packages, in-handler imports and the no-modroot failure).
-
-Multiple engines per process: each `MpyX` owns a private MicroPython ctx — `mp_state_ctx` is memcpy-swapped under a mutex around every VM window, so heaps, globals, handler tables and `sys.path` stay independent (p4 covers interleaved and concurrent use; windows serialize across engines).
-
-Stdlib: `json` (vendored `extmod/modjson.c`), `re` (`extmod/modre.c` + `lib/re1.5`), `io.StringIO`/`BytesIO` are in; `open()` exists but raises `OSError` (no FileIO in the embed tree — by design). `pystack` is enabled for `re`'s local allocations.
-
-Python is not covered by t26/j6: p1_smoke.c and p2_cancel.c cover only their tested subset, not full component/event parity. Its global `view()` takes precedence over handler-returned trees; callable handler returns do not implement Lua/JS live-view replacement. Do not infer full ABI parity from the counter smoke test.
-
-**Remaining limits (to be handled by follow-up Issues)**:
-- debugger/REPL/stdin do not apply to Python (allowed by contract: those are Lua-only extensions)
-- no filesystem file objects: `open()` raises `OSError`; `io` is limited to in-memory streams (would need `extmod/vfs_*` vendored)
-- `sys.modules` persists across `run()` calls in one engine (module cache is VM-level, not cleared with globals)
-- engine windows serialize process-wide (the ctx swap mutex); CPU-bound scripts in different engines do not run truly concurrently
+- The template runtime (`:runtime` release APK → `template.apk`) embeds `libluax.so` for each ABI.
+- `entryFile` in `luaxcfg.json` is a Lua path; `RuntimeActivity` always uses `EngineHost`.
+- Pre-packaging smoke validation runs the entry through `EngineHost` (`BuildPipeline.validateEntry`).
+- Project sources ship under `assets/lua/`.

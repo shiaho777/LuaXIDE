@@ -59,7 +59,7 @@ make -C engine bc-fuzz FUZZ_N=200 FUZZ_SEED=7   # 更深的分歧扫描;失败�
 4. `ApiDocs.kt` 文档条目
 5. LUAX.md §5 表格加一行;若影响重渲染契约,同步 LUAX.md §4.2 与 PLATFORM_ABI.md
 
-**改事件/重渲染契约**:改 `lx_invoke`/`lx_build_tree` → t26 扩用例 → `luax_jni.c` ×2、`EngineHost` ×2、JS/Python 引擎同步(PLATFORM_ABI conformance 全过)→ LUAX.md §4.2 重写。
+**改事件/重渲染契约**:改 `lx_invoke`/`lx_build_tree` → t26 扩用例 → `luax_jni.c` ×2、`EngineHost` ×2 同步 → LUAX.md §4.2 重写。
 
 ## 5. 维护约定
 

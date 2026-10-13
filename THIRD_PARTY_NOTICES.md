@@ -6,7 +6,6 @@ LuaXIDE's engine (`engine/lx.c`) and all Kotlin/Java sources are original work. 
 
 | Component | Version | License (per actual build source) | Origin / in-repo location |
 |---|---|---|---|
-| quickjs-ng | 0.10.1 | MIT | [quickjs-ng/quickjs](https://github.com/quickjs-ng/quickjs), vendored at `engine-js/quickjs/`, compiled into `libluaxjs.so` |
 | ARSCLib | 1.4.0 | Apache-2.0 | [reandroid/ARSCLib](https://github.com/reandroid/ARSCLib), packaged as `app/libs/ARSCLib-1.4.0.jar` |
 | apksig | ships with AGP 8.7.3 | Apache-2.0 | [tools/apksig](https://android.googlesource.com/platform/tools/apksig/), Gradle dependency `com.android.tools.build:apksig` |
 | proot (Termux build) | 5.1.107.84 | GPL-2.0 (Termux package metadata) | [termux-packages/packages/proot](https://github.com/termux/termux-packages/tree/master/packages/proot), distributed with the APK at `app/src/main/assets/proot/` |

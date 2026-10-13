@@ -61,8 +61,6 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     val logs = LogStore(viewModelScope)
     private val engine = EngineHost(logSink = logs)
-    private val jsEngine = dev.luaxide.engine.JsEngineHost(logSink = logs)
-    private val pyEngine = dev.luaxide.engine.PyEngineHost(logSink = logs)
     private val nativeLogs = NativeLogBridge(logs)
 
     private val _projects = MutableStateFlow<List<Project>>(emptyList())
@@ -430,20 +428,11 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     private fun isLuaPath(path: String?): Boolean =
         !path.isNullOrBlank() && path.endsWith(".lua", ignoreCase = true)
 
-    /** Any language with an engine wired in (Lua today, JS via QuickJS). */
+    /** LuaX source the engine can run. */
     private fun isRunnablePath(path: String?): Boolean =
         !path.isNullOrBlank() && dev.luaxide.lang.Language.ofPath(path)?.supported == true
 
-    /** Language id of the last executed source — routes onEvent/tick invokes. */
-    @Volatile
-    private var lastRunLang: String = dev.luaxide.lang.Language.LUA.id
-
-    /** Language-neutral routing for the shared host contract (docs/PLATFORM_ABI.md). */
-    private fun activeEngine(): dev.luaxide.engine.EngineAdapter = when (lastRunLang) {
-        dev.luaxide.lang.Language.JAVASCRIPT.id -> jsEngine
-        dev.luaxide.lang.Language.PYTHON.id -> pyEngine
-        else -> engine
-    }
+    private fun activeEngine(): dev.luaxide.engine.EngineAdapter = engine
 
     private suspend fun invokeActive(handlerId: Int, payload: String? = null): RunResult =
         activeEngine().invoke(handlerId, payload)
@@ -1100,23 +1089,6 @@ print("got", n)
             toast("只能运行代码文件")
             return
         }
-        val lang = path?.let { dev.luaxide.lang.Language.ofPath(it) }
-        lastRunLang = lang?.id ?: dev.luaxide.lang.Language.LUA.id
-        if (lang?.id == dev.luaxide.lang.Language.JAVASCRIPT.id) {
-            val result = jsEngine.run(src)
-            publishResult(result)
-            _busy.value = false
-            return
-        }
-        if (lang?.id == dev.luaxide.lang.Language.PYTHON.id) {
-            val pyProjId = _project.value?.id ?: "_anon"
-            val pyRoot = runCatching { repo.srcDirOf(pyProjId).absolutePath }.getOrNull().orEmpty()
-            if (pyRoot.isNotEmpty()) pyEngine.setModuleRoot(pyRoot)
-            val result = pyEngine.run(src)
-            publishResult(result)
-            _busy.value = false
-            return
-        }
         publishBreakpoints(_openPath.value)
         engine.setDebugEnabled(_debugEnabled.value)
         engine.setBreakOnError(_breakOnError.value)
@@ -1232,11 +1204,7 @@ print("got", n)
 
     fun cancelProgram() {
         prootExecutor?.cancel()
-        // stop whichever engine is executing (idle engines are unaffected:
-        // a fresh run clears a stale cancel flag on both engines)
         engine.cancel()
-        jsEngine.cancel()
-        pyEngine.cancel()
         _busy.value = false
         _waitingStdin.value = false
         logs.log(LogLevel.INFO, LogSource.SYSTEM, S.STOPPED, tag = "console")
@@ -1245,8 +1213,6 @@ print("got", n)
     override fun onCleared() {
         nativeLogs.stop()
         engine.close()
-        jsEngine.close()
-        pyEngine.close()
         super.onCleared()
     }
 }

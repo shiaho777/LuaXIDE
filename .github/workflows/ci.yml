@@ -24,22 +24,6 @@ jobs:
       - name: Build & run engine tests (t1-t28)
         run: make -C engine test
 
-  engine-js-tests:
-    name: engine-js-tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build & run QuickJS engine tests (j1-j6)
-        run: make -C engine-js test
-
-  engine-py-tests:
-    name: engine-py-tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build & run MicroPython engine tests (p1-p2)
-        run: make -C engine-py test
-
   android-build:
     name: android-build
     runs-on: ubuntu-latest

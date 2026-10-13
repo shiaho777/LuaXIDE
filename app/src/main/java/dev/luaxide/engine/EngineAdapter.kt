@@ -3,12 +3,10 @@ package dev.luaxide.engine
 import kotlinx.coroutines.flow.StateFlow
 
 /**
- * The language-neutral host contract every script engine implements — the
- * Kotlin mirror of docs/PLATFORM_ABI.md. The LuaX engine (Lua) and the
- * QuickJS facade (JavaScript) both implement exactly this surface plus the
- * ui-tree JSON their native side emits; the Lua engine additionally exposes
- * debugging, the REPL, blocking stdin and the proot rootfs, which stay on
- * [EngineHost] and must not leak into language-neutral callers.
+ * Host contract the LuaX engine implements — the Kotlin mirror of
+ * docs/PLATFORM_ABI.md. The engine emits ui-tree JSON from this surface;
+ * debugging, the REPL, blocking stdin and the proot rootfs stay on
+ * [EngineHost] and must not leak into generic callers.
  */
 interface EngineAdapter {
     /** Run-state stream (Idle / Running / Ready(tree) / Error). */

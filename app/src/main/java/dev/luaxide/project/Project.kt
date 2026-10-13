@@ -46,7 +46,7 @@ data class Project(
     val id: String,
     val name: String,
     val entryFile: String = "main.lua",
-    /** [dev.luaxide.lang.Language.id]; persisted so multi-language projects survive reloads. */
+    /** [dev.luaxide.lang.Language.id]; persisted on the project. */
     val language: String = "lua",
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
