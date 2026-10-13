@@ -67,7 +67,7 @@ The Kotlin side unifies everything as [`EngineAdapter`](../app/src/main/java/dev
 
 ## 6. UI component parity
 
-**The JS side must expose the same 19 constructors as Lua** (`app column row text button card input image spacer divider scrollview list listitem stack page switch box slider progress`), producing identically-shaped tree nodes. Prop semantics (canonical names only — removed alias chains are a documented breaking migration, see LUAX.md §5; defaults, event names, string-constructor sugar for `text`, string children wrapping) follow the prop table in LUAX.md §5 — that is the language-neutral renderer contract. Conformance tests assert per type (§7).
+**The JS side must expose the same 24 constructors as Lua** (`app column row text button card input image icon spacer divider scrollview list listitem stack page switch checkbox box slider progress dialog tabs tab`), producing identically-shaped tree nodes. Prop semantics (canonical names only — removed alias chains are a documented breaking migration, see LUAX.md §5; defaults, event names, string-constructor sugar for `text`, string children wrapping) follow the prop table in LUAX.md §5 — that is the language-neutral renderer contract. Conformance tests assert per type (§7).
 
 ## 7. Conformance tests (the anti-drift mechanism)
 
@@ -77,7 +77,7 @@ The two suites assert **the same contract** and must evolve in lockstep:
 |---|---|---|
 | invoke tri-state (adopt/retain/error) | `t26_invoke_tree.c` | `j6_conformance.c` |
 | payload reaches the handler | t26 | j6 |
-| all 19 component types serialize | t15 (constructors); t22 (new types / JSON) | j6 |
+| all 24 component types serialize | t15 (constructors); t22 (new types / JSON) | j6 |
 | text-only string constructor / string children | t15 / t22 | j6 |
 | print capture / error line numbers | t22/t23 | j4/j6 |
 | cancel / step-limit semantics | t19 (stdio/cancel) | j5_cancel.c |

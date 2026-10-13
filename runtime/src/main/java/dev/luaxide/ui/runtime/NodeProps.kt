@@ -15,6 +15,10 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.luaxide.engine.UiNode
 
+private val SURFACE_TYPES = setOf(
+    "card", "button", "input", "listitem", "image", "switch", "checkbox", "dialog", "tabs",
+)
+
 internal fun parseHexColor(hex: String): Color? {
     val h = hex.trim().removePrefix("#")
     if (h.length != 6 && h.length != 8 || h.any { it.digitToIntOrNull(16) == null }) return null
@@ -28,13 +32,13 @@ internal fun UiNode.dpProp(key: String): Dp? = number(key, Double.NaN)
 internal fun UiNode.weightProp(): Float? = number("weight", Double.NaN).toFloat()
     .takeIf { it.isFinite() && it > 0f }
 
-/** Generic padding; Card keeps its animated 16dp interior default (no doubling). */
+/** Generic padding; Card keeps its 16dp interior default (no doubling). */
 internal fun nodeStyle(node: UiNode): Modifier {
     var m: Modifier = Modifier
     node.dpProp("width")?.let { m = m.width(it) }
     node.dpProp("height")?.let { m = m.height(it) }
     node.dpProp("radius")?.let { m = m.clip(RoundedCornerShape(it)) }
-    if (node.type !in setOf("card", "button", "input", "listitem", "image")) {
+    if (node.type !in SURFACE_TYPES) {
         parseHexColor(node.string("background"))?.let { m = m.background(it) }
     }
     if (node.type != "card") m = m.padding(node.dpProp("padding") ?: 0.dp)

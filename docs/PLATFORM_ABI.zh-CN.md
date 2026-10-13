@@ -66,7 +66,7 @@ Kotlin 侧统一为 [`EngineAdapter`](../app/src/main/java/dev/luaxide/engine/En
 
 ## 6. UI 组件一致性
 
-**JS 侧必须暴露与 Lua 完全相同的 19 个构造器**(`app column row text button card input image spacer divider scrollview list listitem stack page switch box slider progress`),生成的树节点结构一致。属性语义(仅规范名 —— 移除别名链属破坏性迁移,见 LUAX.zh-CN.md §5;默认值、事件名、text 字符串构造糖、字符串子项包装)以 LUAX.zh-CN.md §5 的属性表为准 —— 那是语言无关的渲染器契约。conformance 测试逐类型断言(见 §7)。
+**JS 侧必须暴露与 Lua 完全相同的 24 个构造器**(`app column row text button card input image icon spacer divider scrollview list listitem stack page switch checkbox box slider progress dialog tabs tab`),生成的树节点结构一致。属性语义(仅规范名 —— 移除别名链属破坏性迁移,见 LUAX.zh-CN.md §5;默认值、事件名、text 字符串构造糖、字符串子项包装)以 LUAX.zh-CN.md §5 的属性表为准 —— 那是语言无关的渲染器契约。conformance 测试逐类型断言(见 §7)。
 
 ## 7. Conformance 测试(防漂移机制)
 
@@ -76,7 +76,7 @@ Kotlin 侧统一为 [`EngineAdapter`](../app/src/main/java/dev/luaxide/engine/En
 |---|---|---|
 | invoke 三态(树采纳/保留/错误) | `t26_invoke_tree.c` | `j6_conformance.c` |
 | payload 到达 handler | t26 | j6 |
-| 19 组件类型全序列化 | t15(serialize 覆盖)、t22(ui2) | j6 |
+| 24 组件类型全序列化 | t15(serialize 覆盖)、t22(ui2) | j6 |
 | text 专属字符串构造糖 / 字符串子项 | t15 / t22 | j6 |
 | print 捕获/错误行号 | t22/t23 | j4/j6 |
 | 取消/步数语义 | t19(stdio/cancel) | j5_cancel.c |

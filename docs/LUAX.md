@@ -212,7 +212,7 @@ Two props on a node — `onTick = function() ... end` and `interval = 260` (mill
 
 `ui.<type> { props..., children... }` tags an ordinary Lua table with `__ui = "<type>"`. String keys are props; array entries are children; function props become handlers. **Only text accepts string-constructor sugar**: `ui.text('hi')` equals `ui.text { text = "hi" }`. A string child, as in `ui.column { "hi" }`, serializes as a text node; it does not supply a button's label. Other constructors still take prop tables.
 
-### Components (19)
+### Components (24)
 
 Defaults below apply when the prop is absent. Dimensions are dp except text size (sp).
 
@@ -222,19 +222,23 @@ Defaults below apply when the prop is absent. Dimensions are dp except text size
 | `column` / `row` | `spacing = 8` | Vertical / horizontal layout; row children default to vertical center |
 | `box` | Common styles below | Overlapping children, default top-start |
 | `text` | `text = ""`, `size = 16`, `color`, `font`, `bold = false`, `animate = true` | Asset font path; `animate = false` disables text-swap animation |
-| `button` | `text = "button"`, `onClick` | No payload; children ignored |
+| `button` | `text = "button"`, `onClick`, `enabled = true`, `kind = "filled"` | No payload; children ignored; disabled ignores taps. `kind`: `filled` / `outlined` / `text` |
 | `card` | `spacing = 8`, `radius = 16`, `padding = 16` | Vertical card content |
-| `input` | `value = ""`, `label = "input"`, `onChange`, `onSubmit` | Single line; every edit / keyboard confirmation sends field text as a string |
-| `image` | `src = ""`, `size = 96` | Asset image, cropped to fit; unresolved source shows `missing` |
+| `input` | `value = ""`, `label = "input"`, `onChange`, `onSubmit`, `enabled = true`, `keyboard = "text"` | Single line; every edit / keyboard confirmation sends field text as a string. `keyboard`: `text` / `number` / `email` / `phone` / `password` |
+| `image` | `src = ""`, `size = 96` | Asset image, cropped to fit; unresolved source shows a placeholder icon |
+| `icon` | `name = ""`, `size = 24`, `color` | Named Material icon (`home`, `settings`, `back`, …); unknown names show a faint fallback |
 | `spacer` | `size = 8` | Default height |
 | `divider` | `color` | Horizontal rule |
 | `scrollview` | `spacing = 8` | Vertical scrolling with a finite viewport |
-| `list` | `spacing = 8` | Plain Column, not lazy/recycled and not an independent scroller |
-| `listitem` | `title = ""`, `subtitle = ""`, `onClick` | Optional clickable row and children; no click payload |
-| `stack` / `page` | `selected = ""` / `key`, `spacing = 8` | Selects by **page.key only**, otherwise first page; without pages, renders all children |
-| `switch` | `label = "switch"`, `checked = false`, `onToggle` | Sends `"true"` / `"false"`, not a boolean |
-| `slider` | `from = 0`, `to = 1`, `value = from`, `step = 0`, `onChange` | Sends numeric value as a **string**; convert with `tonumber` |
-| `progress` | `value`, `color` | Linear bar: value clamped to 0..1; **absent value = indeterminate** |
+| `list` | `spacing = 0` | Plain Column, not lazy/recycled and not an independent scroller |
+| `listitem` | `title = ""`, `subtitle = ""`, `icon`, `onClick`, `enabled = true` | Material list row; `icon` is a name like `ui.icon`; a chevron appears when `onClick` is set; no click payload |
+| `stack` / `page` | `selected = ""` / `key`, `spacing = 8` | Selects by **page.key only**, otherwise first page; without pages, renders all children; page changes slide on the shared-X axis |
+| `switch` | `label = "switch"`, `checked = false`, `onToggle`, `enabled = true` | Sends `"true"` / `"false"`, not a boolean; the whole row toggles |
+| `checkbox` | `label = "checkbox"`, `checked = false`, `onToggle`, `enabled = true` | Same payload contract as `switch` |
+| `slider` | `from = 0`, `to = 1`, `value = from`, `step = 0`, `onChange`, `enabled = true` | Sends numeric value as a **string**; convert with `tonumber` |
+| `progress` | `value`, `color`, `kind = "linear"` | Bar: value clamped to 0..1; **absent value = indeterminate**. `kind`: `linear` / `circular` |
+| `dialog` | `open = false`, `title = ""`, `confirm = "OK"`, `cancel = ""`, `onConfirm`, `onDismiss` | Host dialog; hidden when `open` is false; scrim / cancel fire `onDismiss` (no payload); children are the body |
+| `tabs` / `tab` | `selected = ""`, `onSelect` / `key`, `label`, `icon` | `selected` matches **tab.key**; `onSelect` sends that key as a string; `tab` is only meaningful as a `tabs` child |
 
 Slider values and range must be finite, with `to > from` and a finite non-negative step (the range must also be representable by the host float slider). `step = 0` is continuous; positive step is a **numeric increment from `from`**, not a tick count. Values clamp to the range and snap to the nearest increment; `to` stays reachable even when the range is not divisible by step. Invalid parameters display a diagnostic.
 
@@ -246,10 +250,13 @@ Slider values and range must be finite, with `to > from` and a finite non-negati
 - `align` is a **child** prop, not a container-wide setting. Row scope: `top`, `center`, `bottom`. Column scope: `start` (`left` also accepted), `center`, `end`. Box scope: `topleft` (default), `top`, `topright`, `left`, `center`, `right`, `bottomleft`, `bottom`, `bottomright`. Other containers rendering children in a Column use that scope's rules; scope-inapplicable values are ignored.
 - Node identity uses `key`, then `id`, then structural position. A stable explicit identity preserves state when siblings reorder, but changing the component type creates fresh state. Dynamic lists should give each child a stable key; text/content is never used as an automatic key. Duplicate explicit keys/ids among siblings show `duplicate child key '<value>' at <parent path>` instead of rendering that conflicting child list. Keys may repeat under different parents. This does **not** make `page.id` a selector: set `page.key` for `stack.selected`.
 - Host vertical scrolling is independent of a Row child's horizontal weight. Unbounded vertical weights and explicit unbounded scrollviews request a finite host viewport; an explicit container height contains that requirement. Only the selected stack page participates in this decision.
+- **Host motion and input.** Haptics, keyed enter/exit, text crossfades, and stack page slides (shared-X plus size) are supplied by the renderer. Authors do not pass duration or easing. `enabled = false` on `button`, `switch`, `checkbox`, `slider`, `input`, and `listitem` dims the control and ignores events; default is `true`.
 
 Renderer regression tests: `./gradlew :app:testDebugUnitTest` runs identity and viewport policy tests without a device. `./gradlew :app:connectedDebugAndroidTest` runs Compose layout, keyed-input and nested-scroll tests on an available dedicated device. Building the test APK alone does not validate layout.
 
 A nested `scrollview` needs a **finite height**, supplied on itself or by an actually constraining parent. With unbounded height it displays `scrollview needs a bounded height. Set height on this nested scrollview or its parent.` rather than scrolling. Arbitrary nesting is not guaranteed. `list` remains a plain Column; use a bounded scrollview when independent scrolling is needed.
+
+Icon names accepted by `ui.icon`, `listitem.icon`, and `tab.icon` (snake_case): `home`, `back`, `arrow_back`, `arrow_forward`, `chevron_right`, `chevron_left`, `close`, `add`, `check`, `done`, `search`, `settings`, `star`, `person`, `favorite`, `info`, `help`, `warning`, `error`, `delete`, `edit`, `share`, `more`, `menu`, `image`, `list`, `check_box`, `check_box_outline`, `notifications`, `lock`, `mail`, `email`, `phone`, `send`, `refresh`, `play`, `pause`, `stop`, `cancel`, `visibility`, `visibility_off`, `folder`, `file`, `link`, `calendar`, `camera`, `location`, `build`, `check_circle`.
 
 ### Breaking migration: canonical names only
 
@@ -278,6 +285,7 @@ local ui = require("ui")
 local amount = 0.4
 local name = ""
 local enabled = false
+local agreed = false
 local function view()
   return ui.app {
     title = "Controls",
@@ -305,6 +313,10 @@ local function view()
       ui.switch { label = "Enabled", checked = enabled,
         onToggle = function(value) enabled = value == "true" end,
       },
+      ui.checkbox { label = "I agree", checked = agreed,
+        onToggle = function(value) agreed = value == "true" end,
+      },
+      ui.icon { name = "home", size = 24 },
       ui.text { text = name .. " / " .. amount },
     },
   }

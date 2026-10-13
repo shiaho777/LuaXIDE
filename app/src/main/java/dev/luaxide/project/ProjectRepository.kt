@@ -54,20 +54,10 @@ class ProjectRepository(context: Context) {
         writeMeta(project)
         val isProgram = kind.equals("program", ignoreCase = true) || kind.equals("cli", ignoreCase = true)
         if (isProgram) {
-            val pseed = when (lang) {
-                dev.luaxide.lang.Language.JAVASCRIPT -> SEED_PROGRAM_JS
-                dev.luaxide.lang.Language.PYTHON -> SEED_PROGRAM_PY
-                else -> SEED_PROGRAM
-            }
-            atomicWrite(File(srcDir(id), project.entryFile), pseed)
+            atomicWrite(File(srcDir(id), project.entryFile), SEED_PROGRAM)
             writeSeedFiles(id, PROGRAM_STARTER_FILES)
         } else {
-            val seed = when (lang) {
-                dev.luaxide.lang.Language.JAVASCRIPT -> SEED_MAIN_JS
-                dev.luaxide.lang.Language.PYTHON -> SEED_MAIN_PY
-                else -> SEED_MAIN
-            }
-            atomicWrite(File(srcDir(id), project.entryFile), seed)
+            atomicWrite(File(srcDir(id), project.entryFile), SEED_MAIN)
             writeSeedFiles(id, UI_STARTER_FILES + UI_STARTER_FILES_EXTRA)
         }
         seedDefaultAssets(id)
@@ -86,7 +76,7 @@ class ProjectRepository(context: Context) {
     }
 
     private fun ensureSampleLibrary() {
-        val marker = File(root, ".samples-v5")
+        val marker = File(root, ".samples-v7")
         if (marker.exists()) return
         val examples = root.listFiles { f -> f.isDirectory }
             ?.mapNotNull { dir -> readMeta(dir.name)?.let { it to dir } }
@@ -94,10 +84,8 @@ class ProjectRepository(context: Context) {
         if (examples == null) {
             createExamplesProject()
         } else {
-            // v5 refresh: the four dynamic-UI samples were rewritten in the
-            // view-function pattern (their old static trees never re-rendered
-            // on tap) — overwrite them so already-seeded devices pick up the fix.
-            overwriteSeedFiles(examples.first.id, SAMPLES_V5_REFRESH)
+            // v7 refresh: list_stack/form pick up tabs, checkbox, dialog.
+            overwriteSeedFiles(examples.first.id, SAMPLES_V7_REFRESH)
             writeSeedFiles(examples.first.id, EXAMPLE_LIBRARY_FILES)
             val main = File(srcDir(examples.first.id), "main.lua")
             if (!main.isFile || main.length() < 40) {
@@ -105,7 +93,7 @@ class ProjectRepository(context: Context) {
             }
         }
         seedDefaultAssets(examples?.first?.id ?: root.listFiles { f -> f.isDirectory }?.firstOrNull()?.name)
-        marker.writeText("samples-v5")
+        marker.writeText("samples-v7")
     }
 
     /** Overwrite seeded files even when they exist (versioned sample fixes). */
@@ -574,70 +562,6 @@ end
 return view
 """.trimIndent()
 
-        private val SEED_MAIN_JS = """
-var count = 0;
-
-function page() {
-  return ui.app({ key: "home", title: "My app" },
-    ui.column({ key: "body", spacing: 12 },
-      ui.text({ key: "hello", text: "Hello, QuickJS!", size: 20 }),
-      ui.text({ key: "count", text: "count = " + count, size: 16 }),
-      ui.button({
-        key: "tap",
-        text: "+1",
-        onClick: function () {
-          count++;
-          print("count " + count);
-          return page();
-        }
-      })
-    )
-  );
-}
-
-return page();
-""".trimIndent()
-
-        private val SEED_MAIN_PY = """
-count = 0
-
-# Canonical dynamic-UI pattern (same as the Lua/JS seeds): return a view()
-# function so the engine re-renders after every event.
-def bump():
-    global count
-    count += 1
-
-def view():
-    return ui.app({"title": "My app"},
-        ui.column({"spacing": 12},
-            ui.text({"text": "Hello, LuaX!", "size": 20}),
-            ui.text({"text": "taps: " + str(count), "size": 16}),
-            ui.button({"text": "+1", "onClick": bump})))
-
-return view()
-""".trimIndent()
-
-        private val SEED_PROGRAM_PY = """
-print("hello from micropython")
-
-total = 0
-for i in range(1, 6):
-    total += i
-    print("step", i, "sum", total)
-print("done")
-""".trimIndent()
-
-        private val SEED_PROGRAM_JS = """
-print("hello from quickjs terminal");
-
-var sum = 0;
-for (var i = 1; i <= 5; i++) {
-  sum += i;
-  print("step", i, "sum", sum);
-}
-print("done");
-""".trimIndent()
-
         private val SEED_EXAMPLES_MAIN = """
 local ui = require("ui")
 
@@ -980,6 +904,7 @@ return ui.app {
             "ui/form.lua" to """
 local ui = require("ui")
 local name = ""
+local agreed = false
 
 -- onSubmit receives the field's text as its argument (the event payload),
 -- so typed input actually reaches the script.
@@ -995,7 +920,21 @@ local function view()
         key = "name",
         label = "your name",
         value = name,
+        keyboard = "text",
+        onChange = function(text) name = text end,
         onSubmit = function(text) name = text end,
+      },
+      ui.checkbox {
+        key = "agree",
+        label = "I agree",
+        checked = agreed,
+        onToggle = function(v) agreed = (v == "true") end,
+      },
+      ui.button {
+        key = "go",
+        text = "Continue",
+        enabled = agreed,
+        onClick = function() print("hello, " .. name) end,
       },
       ui.text {
         key = "echo",
@@ -1098,64 +1037,97 @@ print("require ok")
 local ui = require("ui")
 local page = "home"
 local compact = false
+local agreed = false
+local confirm = false
 
--- View-function pattern + ui.stack selected: switching pages actually
--- re-renders because view() is rebuilt after every tap.
+-- tabs + stack + listitem + switch/checkbox + dialog, all driven by a view()
+-- function so every event rebuilds the tree from state.
 local function view()
   return ui.app {
     key = "nav-demo",
     title = "List + pages",
     ui.column {
       key = "body",
-      spacing = 12,
-      ui.switch {
-        key = "theme",
-        label = "compact mode",
-        checked = compact,
-        -- onToggle receives the new state as "true" / "false"
-        onToggle = function(v) compact = (v == "true") end,
+      spacing = 0,
+      ui.tabs {
+        key = "tabs",
+        selected = page,
+        onSelect = function(k) page = k end,
+        ui.tab { key = "home", label = "Home", icon = "home" },
+        ui.tab { key = "detail", label = "Detail", icon = "info" },
+        ui.tab { key = "settings", label = "Settings", icon = "settings" },
       },
       ui.stack {
         key = "stack",
         selected = page,
         ui.page {
           key = "home",
-          ui.text { key = "h1", text = "Home", size = 20 },
+          spacing = 0,
           ui.list {
             key = "menu",
-            spacing = 8,
             ui.listitem {
               key = "i1",
               title = "Open detail",
               subtitle = "stack navigation",
+              icon = "info",
               onClick = function() page = "detail" end,
             },
             ui.listitem {
               key = "i2",
               title = "Settings",
               subtitle = "toggle + form",
+              icon = "settings",
               onClick = function() page = "settings" end,
             },
           },
         },
         ui.page {
           key = "detail",
+          spacing = 12,
           ui.text { key = "d1", text = "Detail", size = 20 },
           ui.text { key = "d2", text = "compact mode is " .. (compact and "on" or "off"), size = 13 },
           ui.button {
             key = "back1",
             text = "Back home",
+            kind = "text",
             onClick = function() page = "home" end,
           },
         },
         ui.page {
           key = "settings",
-          ui.text { key = "s1", text = "Settings", size = 20 },
-          ui.input { key = "name", label = "display name", value = "LuaX" },
+          spacing = 8,
+          ui.switch {
+            key = "theme",
+            label = "compact mode",
+            checked = compact,
+            onToggle = function(v) compact = (v == "true") end,
+          },
+          ui.checkbox {
+            key = "agree",
+            label = "I agree",
+            checked = agreed,
+            onToggle = function(v) agreed = (v == "true") end,
+          },
           ui.button {
-            key = "back2",
-            text = "Back home",
-            onClick = function() page = "home" end,
+            key = "reset",
+            text = "Reset",
+            kind = "outlined",
+            enabled = agreed,
+            onClick = function() confirm = true end,
+          },
+          ui.dialog {
+            key = "dlg",
+            open = confirm,
+            title = "Reset?",
+            confirm = "Reset",
+            cancel = "Cancel",
+            onConfirm = function()
+              compact = false
+              agreed = false
+              confirm = false
+            end,
+            onDismiss = function() confirm = false end,
+            ui.text { text = "This clears compact mode and the agreement." },
           },
         },
       },
@@ -1223,8 +1195,9 @@ Path rules (project src root):
 
 UI nodes:
   ui.app / column / row / text / button / card
-  ui.input / image / spacer / divider / scrollview
-  ui.list / listitem / stack / page / switch
+  ui.input / image / icon / spacer / divider / scrollview
+  ui.list / listitem / stack / page / switch / checkbox
+  ui.dialog / tabs / tab / slider / progress / box
 
 Program mode:
   print, io.read (blocking), input(), .run .stop .proot
@@ -1237,7 +1210,7 @@ ui/
   counter.lua     button + state
   layout.lua      row / column / card
   form.lua        simple form
-  list_stack.lua  list + stack pages + switch
+  list_stack.lua  tabs + list + stack + switch/checkbox + dialog
 
 program/
   hello.lua       print / types
@@ -1263,9 +1236,9 @@ No device root required.
 """.trimIndent(),
         )
 
-        /** v5: samples rewritten in the view-function pattern — force-refresh on old installs. */
-        private val SAMPLES_V5_REFRESH: Map<String, String> = EXAMPLE_LIBRARY_FILES.filterKeys {
-            it == "ui/counter.lua" || it == "ui/form.lua" || it == "ui/list_stack.lua" || it == "app/main.lua"
+        /** v7: list_stack/form pick up tabs, checkbox, dialog, listitem icons. */
+        private val SAMPLES_V7_REFRESH: Map<String, String> = EXAMPLE_LIBRARY_FILES.filterKeys {
+            it == "ui/form.lua" || it == "ui/list_stack.lua" || it == "docs/API.txt" || it == "README.txt"
         }
     }
 }

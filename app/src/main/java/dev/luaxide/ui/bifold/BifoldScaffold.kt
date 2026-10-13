@@ -89,8 +89,12 @@ fun BifoldScaffold(
 
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val widthPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
-        val usable = (widthPx - hingePx).coerceAtLeast(1f)
         val codeFrac = ratioAnim.value.coerceIn(0f, 1f)
+        // Collapse the 22.dp hinge in CODE/PREVIEW so it does not sit as a gray
+        // strip on the preview. BOTH (and an in-flight drag) keep the full width.
+        val hingeFactor = (1f - abs(codeFrac - 0.5f) * 2f).coerceIn(0f, 1f)
+        val liveHingePx = hingePx * hingeFactor
+        val usable = (widthPx - liveHingePx).coerceAtLeast(1f)
         val codeW = usable * codeFrac
         val previewW = usable * (1f - codeFrac)
         val codeVisible = codeW > 0.5f
@@ -116,39 +120,38 @@ fun BifoldScaffold(
                 if (codeVisible) codeFace()
             }
 
-            Hinge(
-                progress = codeFrac,
-                onDrag = { delta ->
-                    dragging = true
-                    val newRatio = (ratioAnim.value + delta / usable).coerceIn(0f, 1f)
-                    state.ratio = newRatio
-                    if (newRatio in 0.18f..0.82f) {
-                        state.bothRatio = newRatio
-                    }
-                    state.mode = BifoldMode.BOTH
-                    scope.launch { ratioAnim.snapTo(newRatio) }
-                },
-                onDragEnd = { velocityPx ->
-                    dragging = false
-                    // velocityPx is px/s; normalize to ratio/s by the usable pane width.
-                    // A fast flick commits to the far anchor even before the ratio crosses
-                    // the positional threshold — "decide by momentum, not raw position".
-                    val vRatio = velocityPx / usable
-                    when {
-                        vRatio > 1.5f -> state.mode = BifoldMode.CODE
-                        vRatio < -1.5f -> state.mode = BifoldMode.PREVIEW
-                        state.ratio < 0.12f -> state.mode = BifoldMode.PREVIEW
-                        state.ratio > 0.88f -> state.mode = BifoldMode.CODE
-                        else -> {
-                            state.bothRatio = state.ratio.coerceIn(0.18f, 0.82f)
-                            state.mode = BifoldMode.BOTH
+            if (liveHingePx >= 1f) {
+                Hinge(
+                    progress = codeFrac,
+                    onDrag = { delta ->
+                        dragging = true
+                        val newRatio = (ratioAnim.value + delta / usable).coerceIn(0f, 1f)
+                        state.ratio = newRatio
+                        if (newRatio in 0.18f..0.82f) {
+                            state.bothRatio = newRatio
                         }
-                    }
-                },
-                modifier = Modifier
-                    .width(HingeWidth)
-                    .fillMaxHeight(),
-            )
+                        state.mode = BifoldMode.BOTH
+                        scope.launch { ratioAnim.snapTo(newRatio) }
+                    },
+                    onDragEnd = { velocityPx ->
+                        dragging = false
+                        val vRatio = velocityPx / usable
+                        when {
+                            vRatio > 1.5f -> state.mode = BifoldMode.CODE
+                            vRatio < -1.5f -> state.mode = BifoldMode.PREVIEW
+                            state.ratio < 0.12f -> state.mode = BifoldMode.PREVIEW
+                            state.ratio > 0.88f -> state.mode = BifoldMode.CODE
+                            else -> {
+                                state.bothRatio = state.ratio.coerceIn(0.18f, 0.82f)
+                                state.mode = BifoldMode.BOTH
+                            }
+                        }
+                    },
+                    modifier = Modifier
+                        .width(with(density) { liveHingePx.toDp() })
+                        .fillMaxHeight(),
+                )
+            }
 
             Box(
                 Modifier

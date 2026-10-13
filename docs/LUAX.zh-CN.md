@@ -212,7 +212,7 @@ return view
 
 `ui.<type> { props..., children... }` 给普通 Lua 表打上 `__ui = "<type>"` 标签。字符串键是属性,数组项是子节点,函数属性注册为 handler。**只有 text 支持字符串构造糖**:`ui.text('hi')` 等同于 `ui.text { text = "hi" }`。`ui.column { "hi" }` 这样的字符串子项序列化为 text 节点,并不会变成按钮标签;其他构造器仍接收属性表。
 
-### 组件(19 个)
+### 组件(24 个)
 
 以下为属性缺省值。尺寸单位为 dp,文本字号为 sp。
 
@@ -222,19 +222,23 @@ return view
 | `column` / `row` | `spacing = 8` | 纵向 / 横向布局;row 子项默认垂直居中 |
 | `box` | 下述通用样式 | 子项叠放,默认左上(start) |
 | `text` | `text = ""`, `size = 16`, `color`, `font`, `bold = false`, `animate = true` | font 为资产字体路径;`animate = false` 关闭文本切换动画 |
-| `button` | `text = "button"`, `onClick` | 点击无参;忽略子节点 |
+| `button` | `text = "button"`, `onClick`, `enabled = true`, `kind = "filled"` | 点击无参;忽略子节点;禁用时不响应。`kind`:`filled` / `outlined` / `text` |
 | `card` | `spacing = 8`, `radius = 16`, `padding = 16` | 卡片内纵向排列 |
-| `input` | `value = ""`, `label = "input"`, `onChange`, `onSubmit` | 单行输入;每次编辑 / 键盘确认均传字段文本字符串 |
-| `image` | `src = ""`, `size = 96` | 资产图片,裁剪适配;路径解析失败显示 `missing` |
+| `input` | `value = ""`, `label = "input"`, `onChange`, `onSubmit`, `enabled = true`, `keyboard = "text"` | 单行输入;每次编辑 / 键盘确认均传字段文本字符串。`keyboard`:`text` / `number` / `email` / `phone` / `password` |
+| `image` | `src = ""`, `size = 96` | 资产图片,裁剪适配;路径解析失败显示占位图标 |
+| `icon` | `name = ""`, `size = 24`, `color` | 按名称取 Material 图标(`home`、`settings`、`back` 等);未知名称显示淡色回退图标 |
 | `spacer` | `size = 8` | 默认高度 |
 | `divider` | `color` | 水平分隔线 |
 | `scrollview` | `spacing = 8` | 有限视口内纵向滚动 |
-| `list` | `spacing = 8` | 普通 Column,非懒加载/回收列表,也不是独立滚动容器 |
-| `listitem` | `title = ""`, `subtitle = ""`, `onClick` | 可选点击行及子项;点击无参 |
-| `stack` / `page` | `selected = ""` / `key`, `spacing = 8` | **仅按 page.key** 选页,否则取首个 page;无 page 时显示全部子项 |
-| `switch` | `label = "switch"`, `checked = false`, `onToggle` | 传 `"true"` / `"false"` 字符串,不是布尔值 |
-| `slider` | `from = 0`, `to = 1`, `value = from`, `step = 0`, `onChange` | 传数值的**字符串**形式,用 `tonumber` 转换 |
-| `progress` | `value`, `color` | 线性进度条:值截断到 0..1;**不传 value 为不定态** |
+| `list` | `spacing = 0` | 普通 Column,非懒加载/回收列表,也不是独立滚动容器 |
+| `listitem` | `title = ""`, `subtitle = ""`, `icon`, `onClick`, `enabled = true` | Material 列表行;`icon` 与 `ui.icon` 同名;有 `onClick` 时显示 chevron;点击无参 |
+| `stack` / `page` | `selected = ""` / `key`, `spacing = 8` | **仅按 page.key** 选页,否则取首个 page;无 page 时显示全部子项;切页沿共享 X 轴滑动 |
+| `switch` | `label = "switch"`, `checked = false`, `onToggle`, `enabled = true` | 传 `"true"` / `"false"` 字符串,不是布尔值;整行可点 |
+| `checkbox` | `label = "checkbox"`, `checked = false`, `onToggle`, `enabled = true` | 与 `switch` 相同的回调约定 |
+| `slider` | `from = 0`, `to = 1`, `value = from`, `step = 0`, `onChange`, `enabled = true` | 传数值的**字符串**形式,用 `tonumber` 转换 |
+| `progress` | `value`, `color`, `kind = "linear"` | 进度条:值截断到 0..1;**不传 value 为不定态**。`kind`:`linear` / `circular` |
+| `dialog` | `open = false`, `title = ""`, `confirm = "OK"`, `cancel = ""`, `onConfirm`, `onDismiss` | 宿主对话框;`open` 为 false 时不显示;点遮罩 / 取消触发 `onDismiss`(无参);子节点为正文 |
+| `tabs` / `tab` | `selected = ""`, `onSelect` / `key`, `label`, `icon` | `selected` 匹配 **tab.key**;`onSelect` 传该 key 字符串;`tab` 只作为 `tabs` 的子节点有意义 |
 
 slider 的值和范围必须有限,`to > from`,step 为有限非负数(范围还必须能由宿主 float 滑杆表示)。`step = 0` 为连续滑动;正 step 是**从 from 起算的数值增量**,不是刻度数量。值会截断到范围并吸附至最近增量;即使范围不能整除 step,仍能到达 `to`。非法参数显示诊断信息。
 
@@ -246,10 +250,13 @@ slider 的值和范围必须有限,`to > from`,step 为有限非负数(范围还
 - `align` 是**子项属性**,不是容器整体对齐方式。Row 作用域:`top`、`center`、`bottom`。Column 作用域:`start`(也接受 `left`)、`center`、`end`。Box 作用域:`topleft`(默认)、`top`、`topright`、`left`、`center`、`right`、`bottomleft`、`bottom`、`bottomright`。其他以 Column 渲染子项的容器沿用该作用域规则;不适用的值被忽略。
 - 节点身份按 `key`、`id`、结构位置的优先级确定。同类型节点使用稳定 key 时,重排会保留状态;更换组件类型时重新创建状态。动态列表应显式提供稳定 key,不会根据文本或内容自动生成 key。同级重复的显式 key/id 会显示 `duplicate child key '<value>' at <parent path>`,而不渲染该冲突子列表;不同父节点下可重复使用 key。这**不代表**可以用 `page.id` 选页:`stack.selected` 必须对应 `page.key`。
 - Row 子项的水平权重不影响宿主纵向滚动。未约束的垂直权重与 scrollview 需要有限宿主视口;显式容器高度会截断该需求向上传播。仅 stack 当前选中的页面参与判断。
+- **宿主动效与输入。** 触感、带 key 节点进出、文本交叉淡入、stack 切页(共享 X 轴加尺寸)由渲染器提供,作者不传 duration 或 easing。`button`、`switch`、`checkbox`、`slider`、`input`、`listitem` 的 `enabled = false` 会变淡并忽略事件,默认 `true`。
 
 渲染器回归测试:`./gradlew :app:testDebugUnitTest` 无需设备即可检查节点身份和视口规则;`./gradlew :app:connectedDebugAndroidTest` 在可用的专用设备上检查 Compose 布局、带 key 输入框和嵌套滚动。仅编译测试 APK 不等于验证布局。
 
 嵌套 `scrollview` 必须有**有限高度**,来自自身或真正约束它的父容器。高度无界时会显示 `scrollview needs a bounded height. Set height on this nested scrollview or its parent.`,而不是滚动。不保证任意嵌套都可用。`list` 仍是普通 Column;需要独立滚动时请用有界 scrollview。
+
+`ui.icon`、`listitem.icon`、`tab.icon` 接受的名称(snake_case):`home`、`back`、`arrow_back`、`arrow_forward`、`chevron_right`、`chevron_left`、`close`、`add`、`check`、`done`、`search`、`settings`、`star`、`person`、`favorite`、`info`、`help`、`warning`、`error`、`delete`、`edit`、`share`、`more`、`menu`、`image`、`list`、`check_box`、`check_box_outline`、`notifications`、`lock`、`mail`、`email`、`phone`、`send`、`refresh`、`play`、`pause`、`stop`、`cancel`、`visibility`、`visibility_off`、`folder`、`file`、`link`、`calendar`、`camera`、`location`、`build`、`check_circle`。
 
 ### 破坏性迁移:仅使用规范名
 
@@ -278,6 +285,7 @@ local ui = require("ui")
 local amount = 0.4
 local name = ""
 local enabled = false
+local agreed = false
 local function view()
   return ui.app {
     title = "Controls",
@@ -305,6 +313,10 @@ local function view()
       ui.switch { label = "Enabled", checked = enabled,
         onToggle = function(value) enabled = value == "true" end,
       },
+      ui.checkbox { label = "I agree", checked = agreed,
+        onToggle = function(value) agreed = value == "true" end,
+      },
+      ui.icon { name = "home", size = 24 },
       ui.text { text = name .. " / " .. amount },
     },
   }

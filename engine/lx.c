@@ -2200,9 +2200,9 @@ static Value ui_ctor(State*S,const char*type,int argc,Value*argv){
 }
 #define UICTOR(NM) static Value ui_##NM(State*S,int argc,Value*argv){ return ui_ctor(S,#NM,argc,argv); }
 UICTOR(app) UICTOR(column) UICTOR(row) UICTOR(text) UICTOR(button) UICTOR(card)
-UICTOR(input) UICTOR(image) UICTOR(spacer) UICTOR(divider) UICTOR(scrollview)
-UICTOR(list) UICTOR(listitem) UICTOR(stack) UICTOR(page) UICTOR(switch)
-UICTOR(box) UICTOR(slider) UICTOR(progress)
+UICTOR(input) UICTOR(image) UICTOR(icon) UICTOR(spacer) UICTOR(divider) UICTOR(scrollview)
+UICTOR(list) UICTOR(listitem) UICTOR(stack) UICTOR(page) UICTOR(switch) UICTOR(checkbox)
+UICTOR(box) UICTOR(slider) UICTOR(progress) UICTOR(dialog) UICTOR(tabs) UICTOR(tab)
 #undef UICTOR
 
 static Table* package_loaded(State*S){
@@ -2503,11 +2503,14 @@ static void openLibs(State*S){
   Table*ui=newTable(S); tset(S,g,VSTR(newStr(S,"ui",2)),VTAB(ui));
   regFn(S,ui,"app",ui_app); regFn(S,ui,"column",ui_column); regFn(S,ui,"row",ui_row);
   regFn(S,ui,"text",ui_text); regFn(S,ui,"button",ui_button); regFn(S,ui,"card",ui_card);
-  regFn(S,ui,"input",ui_input); regFn(S,ui,"image",ui_image); regFn(S,ui,"spacer",ui_spacer);
+  regFn(S,ui,"input",ui_input); regFn(S,ui,"image",ui_image); regFn(S,ui,"icon",ui_icon);
+  regFn(S,ui,"spacer",ui_spacer);
   regFn(S,ui,"divider",ui_divider); regFn(S,ui,"scrollview",ui_scrollview);
   regFn(S,ui,"list",ui_list); regFn(S,ui,"listitem",ui_listitem);
   regFn(S,ui,"stack",ui_stack); regFn(S,ui,"page",ui_page); regFn(S,ui,"switch",ui_switch);
+  regFn(S,ui,"checkbox",ui_checkbox);
   regFn(S,ui,"box",ui_box); regFn(S,ui,"slider",ui_slider); regFn(S,ui,"progress",ui_progress);
+  regFn(S,ui,"dialog",ui_dialog); regFn(S,ui,"tabs",ui_tabs); regFn(S,ui,"tab",ui_tab);
   lx_dostring(S,STRING_PRELUDE,NULL,0); /* string.gmatch (defined in Lua over C find) */
 }
 

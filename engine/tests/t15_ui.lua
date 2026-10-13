@@ -7,11 +7,11 @@ local ui = require("ui")
 
 local clicks = 0
 
--- all 19 constructors must exist
+-- all 24 constructors must exist
 for _, name in ipairs{
-  "app","column","row","text","button","card","input","image","spacer",
-  "divider","scrollview","list","listitem","stack","page","switch",
-  "box","slider","progress",
+  "app","column","row","text","button","card","input","image","icon","spacer",
+  "divider","scrollview","list","listitem","stack","page","switch","checkbox",
+  "box","slider","progress","dialog","tabs","tab",
 } do
   assert(type(ui[name]) == "function", "missing ui." .. name)
 end
@@ -42,6 +42,7 @@ return ui.app{
     ui.card{ ui.text{ text = "in card" } },
     ui.input{ value = "v" },
     ui.image{ src = "img.png" },
+    ui.icon{ name = "home" },
     ui.spacer{ size = 8 },
     ui.divider{},
     ui.scrollview{ ui.text{ text = "scrolled" } },
@@ -55,6 +56,13 @@ return ui.app{
       ui.page{ key = "b", ui.text{ text = "pageB" } },
     },
     ui.switch{ label = "on", checked = true, onChange = function() end },
+    ui.checkbox{ label = "ok", checked = false, onToggle = function() end },
+    ui.dialog{ open = false, title = "t" },
+    ui.tabs{
+      selected = "a",
+      ui.tab{ key = "a", label = "A" },
+      ui.tab{ key = "b", label = "B" },
+    },
 
     -- plain-array prop -> serialized as a json array of mixed values
     items = { 1, "two", false, nil },

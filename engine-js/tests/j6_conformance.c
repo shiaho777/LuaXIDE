@@ -1,7 +1,7 @@
 /* j6_conformance.c — the JS side of the cross-engine conformance suite.
  * Mirrors the assertions of engine/tests/t26_invoke_tree.c so the LuaX and
  * QuickJS facades cannot drift apart on the PLATFORM_ABI contract:
- *   - every one of the 19 ui constructors must produce its type in the tree
+ *   - every one of the 24 ui constructors must produce its type in the tree
  *   - a handler returning a ui tree replaces the view
  *   - a handler returning undefined keeps the previous tree
  *   - the event payload reaches the handler as its first argument
@@ -31,6 +31,7 @@ static const char* ALL_COMPONENTS =
     "      ui.card({}, ui.text({ text: 'c' })),"
     "      ui.input({ label: 'i', onSubmit: function(){} }),"
     "      ui.image({ src: 'x.png' }),"
+    "      ui.icon({ name: 'home' }),"
     "      ui.spacer({ size: 4 }),"
     "      ui.divider({}),"
     "      ui.scrollview({}, ui.text({ text: 's' }))),"
@@ -39,6 +40,9 @@ static const char* ALL_COMPONENTS =
     "      ui.page({ key: 'a' }, ui.text({ text: 'pa' })),"
     "      ui.page({ key: 'b' }, ui.text({ text: 'pb' }))),"
     "    ui.switch({ label: 'sw', onToggle: function(){} }),"
+    "    ui.checkbox({ label: 'cb', onToggle: function(){} }),"
+    "    ui.dialog({ open: false, title: 't' }),"
+    "    ui.tabs({ selected: 'a' }, ui.tab({ key: 'a', label: 'A' }), ui.tab({ key: 'b', label: 'B' })),"
     "    ui.box({}, ui.progress({ value: 50 })),"
     "    ui.slider({ min: 0, max: 100 })));";
 
@@ -72,12 +76,12 @@ int main(void){
   QjsX* x = qjsx_new();
   CHK(x != NULL, "engine created");
 
-  /* --- 1. component parity: all 16 types serialize --- */
+  /* --- 1. component parity: all constructors serialize --- */
   {
     static const char* types[] = { "app","column","row","text","button","card","input",
-                                   "image","spacer","divider","scrollview","list",
-                                   "listitem","stack","page","switch",
-                                   "box","slider","progress" };
+                                   "image","icon","spacer","divider","scrollview","list",
+                                   "listitem","stack","page","switch","checkbox",
+                                   "box","slider","progress","dialog","tabs","tab" };
     int rc = qjsx_run(x, ALL_COMPONENTS, err, sizeof(err));
     CHK(rc == 0, "all-components run");
     if (rc) fprintf(stderr, "  err: %s\n", err);

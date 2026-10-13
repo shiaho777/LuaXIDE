@@ -4,14 +4,18 @@ import android.util.Log
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Notes
 import androidx.compose.material.icons.automirrored.filled.ViewList
+import androidx.compose.material.icons.filled.CheckBox
 import androidx.compose.material.icons.filled.CropSquare
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.HorizontalRule
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.SmartButton
 import androidx.compose.material.icons.filled.SpaceBar
+import androidx.compose.material.icons.filled.Tab
 import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material.icons.filled.ViewColumn
+import androidx.compose.material.icons.filled.WebAsset
 import androidx.compose.ui.graphics.vector.ImageVector
 
 /**
@@ -99,6 +103,12 @@ object ComponentCatalog {
             snippet = """ui.image { src = "assets/images/logo.png", size = 96 }""",
         ),
         CatalogEntry(
+            type = "icon",
+            label = "icon",
+            icon = Icons.Filled.Home,
+            snippet = """ui.icon { name = "home", size = 24 }""",
+        ),
+        CatalogEntry(
             type = "spacer",
             label = "spacer",
             icon = Icons.Filled.SpaceBar,
@@ -135,6 +145,7 @@ object ComponentCatalog {
             snippet = """ui.listitem {
     title = "Title",
     subtitle = "Subtitle",
+    icon = "info",
     onClick = function() print("item") end,
 }""",
         ),
@@ -174,6 +185,16 @@ object ComponentCatalog {
 }""",
         ),
         CatalogEntry(
+            type = "checkbox",
+            label = "checkbox",
+            icon = Icons.Filled.CheckBox,
+            snippet = """ui.checkbox {
+    label = "I agree",
+    checked = false,
+    onToggle = function(v) print("now " .. v) end,
+}""",
+        ),
+        CatalogEntry(
             type = "box",
             label = "box",
             icon = Icons.Filled.CropSquare,
@@ -196,6 +217,37 @@ object ComponentCatalog {
             label = "progress",
             icon = Icons.Filled.HorizontalRule,
             snippet = """ui.progress { value = 0.4 }""",
+        ),
+        CatalogEntry(
+            type = "dialog",
+            label = "dialog",
+            icon = Icons.Filled.WebAsset,
+            snippet = """ui.dialog {
+    open = true,
+    title = "Confirm",
+    confirm = "OK",
+    cancel = "Cancel",
+    onConfirm = function() print("ok") end,
+    onDismiss = function() print("dismiss") end,
+    ui.text { text = "body" },
+}""",
+        ),
+        CatalogEntry(
+            type = "tabs",
+            label = "tabs",
+            icon = Icons.Filled.Tab,
+            snippet = """ui.tabs {
+    selected = "home",
+    onSelect = function(k) print(k) end,
+    ui.tab { key = "home", label = "Home", icon = "home" },
+    ui.tab { key = "lib", label = "Library", icon = "list" },
+}""",
+        ),
+        CatalogEntry(
+            type = "tab",
+            label = "tab",
+            icon = Icons.Filled.Tab,
+            snippet = """ui.tab { key = "home", label = "Home", icon = "home" }""",
         ),
     )
 
