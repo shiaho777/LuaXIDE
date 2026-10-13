@@ -9,12 +9,8 @@ cd "$(dirname "$0")/.."
 # These MUST be byte-identical between app/ and runtime/.
 PAIRED="
 src/main/cpp/luax_jni.c
-src/main/cpp/mpy_jni.c
-src/main/cpp/qjs_jni.c
 src/main/java/dev/luaxide/assets/AssetResolver.kt
 src/main/java/dev/luaxide/engine/EngineAdapter.kt
-src/main/java/dev/luaxide/engine/JsNative.kt
-src/main/java/dev/luaxide/engine/PyNative.kt
 src/main/java/dev/luaxide/engine/UiNode.kt
 src/main/java/dev/luaxide/ui/runtime/ComponentRegistry.kt
 src/main/java/dev/luaxide/ui/runtime/HostIcons.kt
@@ -29,8 +25,6 @@ src/main/java/dev/luaxide/ui/theme/Type.kt
 # These are intentionally different (app-only debug API / LogSink / IDE chrome).
 DUAL_VARIANT="
 src/main/java/dev/luaxide/engine/EngineHost.kt
-src/main/java/dev/luaxide/engine/JsEngineHost.kt
-src/main/java/dev/luaxide/engine/PyEngineHost.kt
 src/main/java/dev/luaxide/engine/LuaxNative.kt
 src/main/java/dev/luaxide/ui/runtime/Motion.kt
 "

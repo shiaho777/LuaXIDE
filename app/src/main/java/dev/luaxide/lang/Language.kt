@@ -1,14 +1,10 @@
 package dev.luaxide.lang
 
 /**
- * Language registry — the single place that knows which languages the IDE can
- * edit/run, which file extensions belong to them, and what a new project's
- * entry file is called.
+ * Language registry — which file extensions the IDE treats as runnable LuaX
+ * source, and what a new project's entry file is called.
  *
- * Today only [LUA] is executable (engine/lx.c). [JAVASCRIPT] and [PYTHON] are
- * declared so the UI can present them as "coming soon" and so project metadata
- * already carries a language field — when a second engine lands, nothing in
- * the project/drawer/shell layers needs to change shape.
+ * LuaXIDE runs Lua only. Unknown persisted language ids fall back to [LUA].
  */
 enum class Language(
     val id: String,
@@ -27,24 +23,6 @@ enum class Language(
         defaultEntry = "main.lua",
         lineComment = "--",
         accent = 0xFF4E7BD9,
-        supported = true,
-    ),
-    JAVASCRIPT(
-        id = "javascript",
-        displayName = "JavaScript",
-        extensions = listOf("js", "mjs"),
-        defaultEntry = "main.js",
-        lineComment = "//",
-        accent = 0xFFD9B84E,
-        supported = true,
-    ),
-    PYTHON(
-        id = "python",
-        displayName = "Python",
-        extensions = listOf("py"),
-        defaultEntry = "main.py",
-        lineComment = "#",
-        accent = 0xFF4EA3D9,
         supported = true,
     ),
     ;

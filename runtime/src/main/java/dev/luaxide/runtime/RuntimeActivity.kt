@@ -33,10 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import dev.luaxide.engine.EngineAdapter
 import dev.luaxide.engine.EngineHost
-import dev.luaxide.engine.JsEngineHost
-import dev.luaxide.engine.PyEngineHost
 import dev.luaxide.engine.RunResult
 import dev.luaxide.ui.runtime.Motion
 import dev.luaxide.ui.runtime.RenderTree
@@ -117,14 +114,7 @@ private fun extractLuaTree(activity: ComponentActivity): String {
 
 @Composable
 private fun RuntimeApp(bundle: AppBundle) {
-    // Language routing per PLATFORM_ABI: the entry file extension picks the engine.
-    val engine = remember {
-        when {
-            bundle.entryFile.endsWith(".js") -> JsEngineHost()
-            bundle.entryFile.endsWith(".py") -> PyEngineHost()
-            else -> EngineHost()
-        }
-    }
+    val engine = remember { EngineHost() }
     var result by remember { mutableStateOf<RunResult?>(null) }
     var loading by remember { mutableStateOf(true) }
     val scope = rememberCoroutineScope()
@@ -136,11 +126,7 @@ private fun RuntimeApp(bundle: AppBundle) {
 
     LaunchedEffect(bundle.source, bundle.modRoot) {
         loading = true
-        if (bundle.modRoot.isNotEmpty()) when (engine) {
-            is EngineHost -> engine.setModuleRoot(bundle.modRoot)
-            is PyEngineHost -> engine.setModuleRoot(bundle.modRoot)
-            else -> {}
-        }
+        if (bundle.modRoot.isNotEmpty()) engine.setModuleRoot(bundle.modRoot)
         result = engine.run(bundle.source)
         loading = false
     }
@@ -252,7 +238,7 @@ private fun ProgramTerminal(output: String, entryFile: String) {
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             Text("luax · terminal · no-root", color = dim, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
-            Text("› ${when { entryFile.endsWith(".js") -> "node"; entryFile.endsWith(".py") -> "python"; else -> "lua" }} $entryFile", color = cyan, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+            Text("› lua $entryFile", color = cyan, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
             if (output.isBlank()) {
                 Text("(no output)", color = dim, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
             } else {

@@ -798,7 +798,7 @@ private fun FilesOverflowMenu(
     }
 }
 
-/** Small language tag shown beside project names — the drawer-level hint of the multi-language roadmap. */
+/** Small language tag shown beside project names. */
 @Composable
 private fun LanguageBadge(languageId: String) {
     val lang = dev.luaxide.lang.Language.byId(languageId)

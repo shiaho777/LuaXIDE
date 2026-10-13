@@ -13,8 +13,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -260,8 +258,8 @@ fun MainScreen(vm: EditorViewModel = viewModel()) {
     }
     if (showNewProject) {
         NewProjectDialog(
-            onCreateUi = { name, lang -> vm.createProject(name, lang.id); showNewProject = false },
-            onCreateProgram = { name, lang -> vm.createProgramProject(name, lang.id); showNewProject = false },
+            onCreateUi = { name -> vm.createProject(name); showNewProject = false },
+            onCreateProgram = { name -> vm.createProgramProject(name); showNewProject = false },
             onDismiss = { showNewProject = false },
         )
     }
@@ -603,17 +601,14 @@ private fun TopBarOverflow(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun NewProjectDialog(
-    onCreateUi: (String, dev.luaxide.lang.Language) -> Unit,
-    onCreateProgram: (String, dev.luaxide.lang.Language) -> Unit,
+    onCreateUi: (String) -> Unit,
+    onCreateProgram: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var text by remember { mutableStateOf("") }
     var kind by remember { mutableStateOf("ui") }
-    var language by remember { mutableStateOf(dev.luaxide.lang.Language.LUA) }
-    var langHint by remember { mutableStateOf(false) }
     val valid = text.trim().isNotEmpty()
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -626,37 +621,6 @@ private fun NewProjectDialog(
                     singleLine = true,
                     placeholder = { Text(S.PROJECT_NAME) },
                 )
-                Text(
-                    text = S.LANGUAGE,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.labelMedium,
-                )
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    dev.luaxide.lang.Language.entries.forEach { lang ->
-                        val selected = language == lang
-                        LanguageChip(
-                            language = lang,
-                            selected = selected,
-                            onClick = {
-                                if (lang.supported) {
-                                    language = lang
-                                } else {
-                                    langHint = true
-                                }
-                            },
-                        )
-                    }
-                }
-                if (langHint) {
-                    Text(
-                        text = S.LANG_COMING_HINT,
-                        color = MaterialTheme.colorScheme.tertiary,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("ui" to S.UI_APP, "program" to S.PROGRAM).forEach { (id, label) ->
                         val selected = kind == id
@@ -691,7 +655,7 @@ private fun NewProjectDialog(
                 onClick = {
                     if (!valid) return@TextButton
                     val name = text.trim()
-                    if (kind == "program") onCreateProgram(name, language) else onCreateUi(name, language)
+                    if (kind == "program") onCreateProgram(name) else onCreateUi(name)
                 },
                 enabled = valid,
             ) { Text(S.CREATE) }
@@ -700,52 +664,6 @@ private fun NewProjectDialog(
             TextButton(onClick = onDismiss) { Text(S.CANCEL) }
         },
     )
-}
-
-/** Language pill in the new-project dialog; unsupported languages show greyed. */
-@Composable
-private fun LanguageChip(
-    language: dev.luaxide.lang.Language,
-    selected: Boolean,
-    onClick: () -> Unit,
-) {
-    val cs = MaterialTheme.colorScheme
-    val enabledLook = language.supported
-    val label = if (enabledLook) language.displayName else "${language.displayName} · ${S.COMING_SOON}"
-    Surface(
-        color = when {
-            selected -> cs.primary
-            enabledLook -> cs.surfaceVariant
-            else -> cs.surfaceVariant.copy(alpha = 0.45f)
-        },
-        shape = RoundedCornerShape(12.dp),
-        modifier = Modifier.pressableClickable(onClick = onClick),
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(7.dp)
-                    .clip(androidx.compose.foundation.shape.CircleShape)
-                    .background(
-                        androidx.compose.ui.graphics.Color(language.accent)
-                            .copy(alpha = if (enabledLook) 1f else 0.35f),
-                    ),
-            )
-            Text(
-                text = label,
-                color = when {
-                    selected -> cs.onPrimary
-                    enabledLook -> cs.onSurfaceVariant
-                    else -> cs.onSurfaceVariant.copy(alpha = 0.55f)
-                },
-                style = MaterialTheme.typography.labelLarge,
-            )
-        }
-    }
 }
 
 @Composable

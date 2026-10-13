@@ -112,10 +112,5 @@ object S {
     const val ROOT_DIR = "根目录"
     const val DELETE_PROJECT_MSG = "将永久删除该项目及其全部文件。"
 
-    // languages
-    const val LANGUAGE = "语言"
-    const val COMING_SOON = "即将支持"
-    const val LANG_COMING_HINT = "该语言即将支持，当前请使用 Lua"
-
     fun deleteTitle(name: String) = "删除 $name？"
 }

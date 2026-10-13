@@ -24,7 +24,7 @@ make -C engine test
 1. **先开 Issue**(或认领现有 Issue):写清问题 / 目标 / 验收标准。
 2. 从最新 `main` 切分支,命名如 `codex/主题` 或 `feat/主题`。
 3. 提交 PR 到 `main`,正文使用 PR 模板,**必须包含 `Fixes #N`**。
-4. 等待 CI 四个必需检查变绿:`engine-tests`、`engine-js-tests`、`engine-py-tests`、`android-build`(见 `.github/workflows/ci.yml`)。
+4. 等待 CI 必需检查变绿:`engine-tests`、`android-build`(见 `.github/workflows/ci.yml`)。
 5. CI 绿后由维护者合并;合并后 Issue 自动关闭。CI 红时不合并、不提前关 Issue。
 
 ## 约定
