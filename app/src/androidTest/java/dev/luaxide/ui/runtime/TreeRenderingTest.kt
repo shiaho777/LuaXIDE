@@ -90,7 +90,7 @@ class TreeRenderingTest {
             "onClick" to PropValue.Handler(7),
         )
         compose.setContent {
-            MaterialTheme { RenderTree(btn) { id, _ -> if (id == 7) fired++ } }
+            MaterialTheme { RenderTree(btn, onEvent = { id, _ -> if (id == 7) fired++ }) }
         }
         compose.onNodeWithText("Go").performClick()
         assertEquals(0, fired)
@@ -100,7 +100,7 @@ class TreeRenderingTest {
         var fired = 0
         val btn = n("button", "text" to s("Go"), "onClick" to PropValue.Handler(7))
         compose.setContent {
-            MaterialTheme { RenderTree(btn) { id, _ -> if (id == 7) fired++ } }
+            MaterialTheme { RenderTree(btn, onEvent = { id, _ -> if (id == 7) fired++ }) }
         }
         compose.onNodeWithText("Go").performClick()
         assertEquals(1, fired)
@@ -130,7 +130,7 @@ class TreeRenderingTest {
             "onToggle" to PropValue.Handler(3),
         )
         compose.setContent {
-            MaterialTheme { RenderTree(box) { id, p -> if (id == 3) payload = p } }
+            MaterialTheme { RenderTree(box, onEvent = { id, p -> if (id == 3) payload = p }) }
         }
         compose.onNodeWithText("Agree").performClick()
         assertEquals("true", payload)
@@ -153,7 +153,7 @@ class TreeRenderingTest {
             ),
         )
         compose.setContent {
-            MaterialTheme { RenderTree(tabs) { id, p -> if (id == 9) key = p } }
+            MaterialTheme { RenderTree(tabs, onEvent = { id, p -> if (id == 9) key = p }) }
         }
         compose.onNodeWithText("Library").performClick()
         assertEquals("lib", key)
@@ -168,7 +168,7 @@ class TreeRenderingTest {
             "onClick" to PropValue.Handler(7),
         )
         compose.setContent {
-            MaterialTheme { RenderTree(btn) { id, _ -> if (id == 7) fired++ } }
+            MaterialTheme { RenderTree(btn, onEvent = { id, _ -> if (id == 7) fired++ }) }
         }
         compose.onNodeWithText("Go").performClick()
         assertEquals(1, fired)
