@@ -1,40 +1,35 @@
-# AGENTS.md — LuaXIDE
+# AGENTS.md — WebViewIDE
 
-Android IDE for Lua: edit, run, debug, and package Lua projects into installable APKs — no root required.
+Android IDE for HTML, CSS, and JavaScript. Edit a project, preview it in the system WebView, and package it into a signed APK. No root required.
 
 ## Layout
 
-- `engine/` — single-file C Lua interpreter (`lx.c`) + desktop CLI (`lx_main.c`); tests `t1`–`t27` in `engine/tests/`, driven by `engine/Makefile`
-- `docs/PLATFORM_ABI.md` — host contract between `lx.h` and the Android host; `engine/tests/t26_invoke_tree.c` asserts run / invoke / tree JSON
-- `app/` — the IDE (Kotlin, Jetpack Compose, package `dev.luaxide`); JNI bridge in `app/src/main/cpp/` builds `libluax.so` from `engine/lx.c`
-- `runtime/` — minimal template app carrying `libluax`; its release APK becomes `app/src/main/assets/runtime/template.apk` via the `syncRuntimeTemplate` Gradle task (run it after touching runtime code)
-- `docs/` — design notes: modules/UI, program mode, proot/stdin
+- `app/` — the IDE (Kotlin, Jetpack Compose, package `dev.webviewide`). Preview uses `androidx.webkit.WebViewAssetLoader` against the project `src/` directory.
+- `runtime/` — the packaged app. A single `RuntimeActivity` loads `assets/www/` plus `assets/webcfg.json`. Its release APK is copied to `app/src/main/assets/runtime/template.apk` by the `syncRuntimeTemplate` Gradle task. `*.apk` is gitignored; CI generates the template.
+- Packaging rewrites that template with ARSCLib and apksig (`app/src/main/java/dev/webviewide/build/`).
 
 ## Build & verify
 
 ```bash
-make -C engine test                                  # must print ALL TESTS PASSED
-./gradlew :app:assembleDebug :runtime:assembleDebug  # Android build
-./gradlew :runtime:syncRuntimeTemplate               # after touching runtime UI/assets
+./gradlew :app:testDebugUnitTest :runtime:syncRuntimeTemplate :app:assembleDebug :runtime:assembleDebug
 ```
 
-Engine changes must keep `make -C engine test` green; Kotlin changes must compile in both modules. Add a `t*` test when adding engine capability.
-8. **docs/LUAX.md is the language's authoritative spec** — any change to `engine/lx.c`, component render behavior, or the event/re-render contract must update LUAX.md in the same change; LUAX.md code blocks are executed by CI (`engine/tests/doc_check.py`). Engine-internal docs live in ENGINE.md (see its §4 extension checklists).
-9. **docs/PLATFORM_ABI.md is the engine ↔ host contract** — contract-level changes must update it AND extend t26 (and related t15/t22/t19 cases) in the same change.
+`:app:mergeDebugAssets` depends on `:runtime:syncRuntimeTemplate`, so a plain `:app:assembleDebug` also refreshes the template. JDK 17. Do not commit `local.properties`, keystores, or build outputs.
 
-## Delivery loop (hard rules)
+## Delivery loop
 
 1. Feature PRs target `main` only; never push feature work directly to `main`.
 2. Every intentional change starts from a GitHub Issue (reuse an open one when it exists).
 3. PR body must include `Fixes #N` (or `Closes #N`). Issues close on merge only — never on PR open, never while CI is red.
-4. **CI is the merge gate.** Required checks: `engine-tests` and `android-build` (`.github/workflows/ci.yml`). Do not merge red; CI never closes Issues.
+4. **CI is the merge gate.** Required check: `android-build` (`.github/workflows/ci.yml`). Do not merge red; CI never closes Issues.
 5. One primary Issue per PR; link extra Issues without closing keywords.
 6. Never commit secrets or machine-local junk: `local.properties`, keystores (`*.jks`, `*.p12`), IDE caches, build outputs.
 7. If merge permission is missing: open the PR, comment on the Issue with links, leave the Issue open, hand off to a maintainer.
 
 ## Project invariants
 
-- **No-root policy**: never introduce `su` / Magisk / device-root dependencies. Execution stays sandboxed under app private storage; proot is unprivileged userland only.
-- `engine/lx.c` is the single engine source for the CLI, `:app`, and `:runtime` (each Android module carries an identical `luax_jni.c`) — keep both copies in sync when touching the JNI layer.
-- `:app` and `:runtime` each have an `EngineHost`: the app variant carries the debug API (`lx_debug_*`), the runtime variant does not — do not copy debug calls across modules.
-- "Execution is truth": UI rendering follows the engine's JSON tree (`UiNode`), never a parallel schema.
+- **No-root policy**: never introduce `su` / Magisk / device-root dependencies. The IDE and the packaged app run as a normal app.
+- The packaged page lives at `assets/www/`. `assets/webcfg.json` names the entry file (default `index.html`).
+- Preview and the packaged app both render with the system WebView. Do not add a second UI description format.
+- `:runtime` is only the WebView shell. Do not put the editor or the packager into it.
+- Material 3 comes from the Compose BOM. Do not override it with an alpha.

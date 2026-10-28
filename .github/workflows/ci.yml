@@ -2,6 +2,7 @@ name: CI
 
 # CI is the merge gate for PRs into main.
 # It never closes Issues — Issues close via "Fixes #N" when the PR merges.
+# Required check: android-build
 
 on:
   push:
@@ -16,14 +17,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  engine-tests:
-    name: engine-tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build & run engine tests (t1-t28)
-        run: make -C engine test
-
   android-build:
     name: android-build
     runs-on: ubuntu-latest
@@ -35,15 +28,7 @@ jobs:
           java-version: '17'
       - uses: android-actions/setup-android@v3
         with:
-          # 'tools' no longer exists in the SDK repository for cmdline-tools 16+;
-          # only install packages that still resolve.
           packages: platform-tools
       - uses: gradle/actions/setup-gradle@v4
-      - name: Check :app/:runtime paired files are byte-identical
-        run: ./scripts/check_sync.sh
-      - name: Run UI policy unit tests
-        run: ./gradlew :app:testDebugUnitTest --stacktrace
-      - name: Sync runtime template APK into app assets
-        run: ./gradlew :runtime:syncRuntimeTemplate --stacktrace
-      - name: Build debug APKs and Compose test APK
-        run: ./gradlew :app:assembleDebug :runtime:assembleDebug :app:assembleDebugAndroidTest --stacktrace
+      - name: Unit tests, runtime template, and debug APKs
+        run: ./gradlew :app:testDebugUnitTest :runtime:syncRuntimeTemplate :app:assembleDebug :runtime:assembleDebug :app:assembleDebugAndroidTest --stacktrace

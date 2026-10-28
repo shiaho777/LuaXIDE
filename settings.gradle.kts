@@ -19,6 +19,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "LuaXIDE"
+rootProject.name = "WebViewIDE"
 include(":app")
 include(":runtime")

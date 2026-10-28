@@ -4,7 +4,7 @@
 .DS_Store
 
 # Gradle
-# scoped: a bare `build/` would also ignore the dev/luaxide/build source package
+# A bare `build/` would also ignore app/src/main/java/dev/webviewide/build
 .gradle/
 /build/
 app/build/
@@ -20,29 +20,5 @@ local.properties
 *.aab
 *.hprof
 
-# Engine compiled binaries
-engine/lx
-engine/lx_cov
-engine/t[0-9]*
-engine/*.dSYM
-engine/*.o
-# JS engine compiled binaries
-engine-js/qjsx
-engine-js/*.dSYM
-# Python engine compiled binaries
-engine-py/p1-smoke
-engine-py/p2-cancel
-engine-py/*.dSYM
-# Generated test output (run `make -C engine test > engine/TEST_OUTPUT.txt` to capture)
-engine/TEST_OUTPUT.txt
-# Coverage artifacts
-engine/cov/
-engine/*.gcov
-engine/run-coverage.log
-
 # Runtime template APK (generated, not source)
-runtime/src/main/assets/runtime/template.apk
-engine-js/j[0-9]*
-engine-js/*.dSYM
-engine-py/p[0-9]*
-engine-py/*.dSYM
+app/src/main/assets/runtime/template.apk

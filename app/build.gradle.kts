@@ -4,33 +4,17 @@ plugins {
 }
 
 android {
-    namespace = "dev.luaxide"
+    namespace = "dev.webviewide"
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "dev.luaxide"
+        applicationId = "dev.webviewide"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
-
-        ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
-        }
-        externalNativeBuild {
-            cmake {
-                arguments += "-DANDROID_STL=none"
-            }
-        }
-    }
-
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
-        }
     }
 
     buildTypes {
@@ -38,7 +22,7 @@ android {
             isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
+                "proguard-rules.pro",
             )
         }
         debug { isMinifyEnabled = false }
@@ -50,9 +34,6 @@ android {
     }
     buildFeatures { compose = true }
     packaging {
-        jniLibs {
-            useLegacyPackaging = true
-        }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
             excludes += "META-INF/DEPENDENCIES"
@@ -72,7 +53,7 @@ dependencies {
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
     implementation(libs.androidx.material.icons.extended)
-    implementation(libs.androidx.security.crypto)
+    implementation(libs.androidx.webkit)
 
     implementation(files("libs/ARSCLib-1.4.0.jar"))
     implementation("com.android.tools.build:apksig:8.7.3")
@@ -82,4 +63,13 @@ dependencies {
     androidTestImplementation(libs.androidx.ui.test.junit4)
     debugImplementation(libs.androidx.ui.test.manifest)
     debugImplementation(libs.androidx.ui.tooling)
+}
+
+afterEvaluate {
+    tasks.named("mergeDebugAssets").configure {
+        dependsOn(":runtime:syncRuntimeTemplate")
+    }
+    tasks.named("mergeReleaseAssets").configure {
+        dependsOn(":runtime:syncRuntimeTemplate")
+    }
 }

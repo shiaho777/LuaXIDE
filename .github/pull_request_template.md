@@ -12,6 +12,4 @@ Fixes #
 
 <!-- How was this verified? -->
 
-- [ ] `make -C engine test`
-- [ ] `./gradlew :app:assembleDebug :runtime:assembleDebug`
-- [ ] On-device check (if runtime/UI behavior changed):
+- [ ] `./gradlew :app:testDebugUnitTest :runtime:syncRuntimeTemplate :app:assembleDebug :runtime:assembleDebug`

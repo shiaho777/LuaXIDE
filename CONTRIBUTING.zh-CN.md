@@ -2,39 +2,32 @@
 
 [English](CONTRIBUTING.md)
 
-感谢关注 LuaXIDE —— 一个纯 Android 端、无需 root 的 Lua IDE。开工前建议先读 [README](README.zh-CN.md) 了解架构。
+WebViewIDE 是在手机上编辑 HTML、CSS、JavaScript 的 IDE。改预览或打包前先读 [README](README.zh-CN.md)。
 
-## 快速上手
+## 开始
 
 ```bash
-# 引擎测试套件(需要 clang)
-make -C engine test
-
-# Android 构建(需要 JDK 17 + Android SDK)
-./gradlew :app:assembleDebug :runtime:assembleDebug
-
-# 修改 runtime 后同步模板 APK
-./gradlew :runtime:syncRuntimeTemplate
+./gradlew :app:testDebugUnitTest :runtime:syncRuntimeTemplate :app:assembleDebug :runtime:assembleDebug
 ```
 
-真机自检:安装 debug 包后,在应用内打开"自检"面板(沙箱 / proot / stdin / 取消 / 模板 / 安装 六项),或用 `scripts/device-checklist.sh` 配合 adb 查看日志。
+需要 JDK 17 和 Android SDK。改过 `runtime/` 之后，下一次 `:app:assembleDebug` 会重新带上模板（`mergeDebugAssets` 依赖 `syncRuntimeTemplate`）。
 
-## 交付流程(Issue → PR → CI → merge)
+## 交付（Issue → PR → CI → 合并）
 
-1. **先开 Issue**(或认领现有 Issue):写清问题 / 目标 / 验收标准。
-2. 从最新 `main` 切分支,命名如 `codex/主题` 或 `feat/主题`。
-3. 提交 PR 到 `main`,正文使用 PR 模板,**必须包含 `Fixes #N`**。
-4. 等待 CI 必需检查变绿:`engine-tests`、`android-build`(见 `.github/workflows/ci.yml`)。
-5. CI 绿后由维护者合并;合并后 Issue 自动关闭。CI 红时不合并、不提前关 Issue。
+1. **先开 Issue**（或认领已有的）：写清问题、目标和验收标准。
+2. 从最新的 `main` 拉分支。
+3. 向 `main` 开 PR，使用 PR 模板，正文**必须包含 `Fixes #N`**。
+4. 等必需检查 `android-build` 变绿（`.github/workflows/ci.yml`）。
+5. 维护者在 CI 变绿后合并。Issue 在合并时关闭。不要合并红的检查，也不要提前关 Issue。
 
 ## 约定
 
-- 提交信息说清"为什么",而不只是"改了什么"。
-- 不提交机器本地文件与密钥:`local.properties`、任何 `*.jks` / `*.p12` 密钥库、IDE 缓存、构建产物。
-- 引擎(`engine/lx.c`)改动必须保证 `make -C engine test` 全绿;新增能力请顺手补一个 t 系列测试。
-- `:app` 与 `:runtime` 各有一份 `EngineHost`:app 版带调试 API,runtime 版没有——不要把调试调用跨模块拷贝。
-- **无 root 政策不可违反**:不引入 su / Magisk / 设备 root 依赖;proot 仅限非特权用户态。
+- 提交说明写为什么。
+- 不要提交 `local.properties`、密钥库（`*.jks`、`*.p12`）、IDE 缓存或构建产物。`*.apk` 是生成的。
+- **不需要 root。** 不要加入 `su`、Magisk 或设备 root 依赖。
+- 打包进去的页面在 `assets/www/`，入口写在 `assets/webcfg.json`。预览和安装包都用系统 WebView。
+- `:runtime` 只做 WebView 壳。编辑器和打包留在 `:app`。
 
-## 报告 Bug
+## 报 bug
 
-开 Issue 时请附:设备型号与 Android 版本、复现用的 Lua 脚本、终端或日志面板的完整输出、期望行为与实际行为。
+请附上设备型号、Android 版本、能复现的 HTML/CSS/JS，以及你期望看到的结果。

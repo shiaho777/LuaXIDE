@@ -1,12 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
-    <!-- Build artifacts live under filesDir/luax-projects/<id>/builds/... -->
     <files-path
         name="projects"
-        path="luax-projects/" />
-    <files-path
-        name="signing"
-        path="signing/" />
+        path="web-projects/" />
     <cache-path
         name="cache"
         path="." />

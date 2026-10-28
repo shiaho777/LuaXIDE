@@ -1,40 +1,33 @@
-# Contributing Guide
+# Contributing
 
 [简体中文](CONTRIBUTING.zh-CN.md)
 
-Thanks for your interest in LuaXIDE — a pure on-device, root-free Lua IDE for Android. Before starting, read the [README](README.md) for the architecture.
+WebViewIDE is an on-device editor for HTML, CSS, and JavaScript. Read the [README](README.md) before changing the preview or the packager.
 
 ## Quick start
 
 ```bash
-# Engine test suite (requires clang)
-make -C engine test
-
-# Android build (requires JDK 17 + Android SDK)
-./gradlew :app:assembleDebug :runtime:assembleDebug
-
-# Sync the template APK after touching runtime
-./gradlew :runtime:syncRuntimeTemplate
+./gradlew :app:testDebugUnitTest :runtime:syncRuntimeTemplate :app:assembleDebug :runtime:assembleDebug
 ```
 
-On-device self-check: after installing the debug build, open the in-app "Self-check" panel (sandbox / proot / stdin / cancel / template / install — six items), or use `scripts/device-checklist.sh` with adb to inspect logs.
+JDK 17 and an Android SDK. After touching `runtime/`, the IDE picks up a new template on the next `:app:assembleDebug` (`mergeDebugAssets` depends on `syncRuntimeTemplate`).
 
 ## Delivery loop (Issue → PR → CI → merge)
 
-1. **Open an Issue first** (or claim an existing one): state the problem / goal / acceptance criteria.
-2. Branch from the latest `main`, named like `codex/topic` or `feat/topic`.
-3. Open a PR against `main`, use the PR template, and **it must contain `Fixes #N`**.
-4. Wait for the required CI checks to go green: `engine-tests`, `android-build` (see `.github/workflows/ci.yml`).
-5. A maintainer merges once CI is green; the Issue closes automatically on merge. Never merge red, never close an Issue early.
+1. **Open an Issue first** (or claim an existing one): state the problem, the goal, and the acceptance criteria.
+2. Branch from the latest `main`.
+3. Open a PR against `main`. Use the PR template. The body **must contain `Fixes #N`**.
+4. Wait for the required check `android-build` (`.github/workflows/ci.yml`).
+5. A maintainer merges once CI is green. The Issue closes on merge. Never merge red, and never close an Issue early.
 
 ## Conventions
 
-- Commit messages explain the "why", not just the "what".
-- Never commit machine-local files or secrets: `local.properties`, any `*.jks` / `*.p12` keystore, IDE caches, build outputs.
-- Engine (`engine/lx.c`) changes must keep `make -C engine test` fully green; when adding capability, add a `t*` test alongside.
-- `:app` and `:runtime` each carry an `EngineHost`: the app variant has the debug API, the runtime variant does not — never copy debug calls across modules.
-- **The no-root policy is inviolable**: no su / Magisk / device-root dependencies; proot stays unprivileged userland only.
+- Commit messages explain why.
+- Never commit `local.properties`, keystores (`*.jks`, `*.p12`), IDE caches, or build outputs. `*.apk` is generated.
+- **No root.** Do not add `su`, Magisk, or device-root dependencies.
+- The packaged page is `assets/www/` plus `assets/webcfg.json`. Preview and the installed app both use the system WebView.
+- `:runtime` stays a WebView shell. The editor and the packager stay in `:app`.
 
 ## Reporting bugs
 
-When opening an Issue please include: device model and Android version, a reproducing Lua script, complete output from the terminal or log panel, and expected vs. actual behavior.
+Include the device model, the Android version, the HTML/CSS/JS that reproduces it, and what you expected to see.
